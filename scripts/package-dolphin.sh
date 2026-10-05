@@ -5,14 +5,17 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/ps4-env.sh"
-SRC="${DOLPHIN_SRC:-$PS4_BUILD_ROOT/src/dolphin}"
-BUILD="$PS4_BUILD_ROOT/build/dolphin"
+# LAB COPY (experiment/split-cpu): builds the experimental Dolphin from src/dolphin-lab into
+# build/dolphin-lab, packaged as the separate app "Dolphin Lab" (DLPH00011). The stable port is
+# J:\DolphinPS4 with src/dolphin and build/dolphin; the two never share a build.
+SRC="${DOLPHIN_SRC:-$PS4_BUILD_ROOT/src/dolphin-lab}"
+BUILD="${DOLPHIN_BUILD:-$PS4_BUILD_ROOT/build/dolphin-lab}"
 EBOOT="$BUILD/Source/Core/DolphinNoGUI/dolphin-nogui_eboot/eboot.bin"
 VERSION="${DOLPHIN_PS4_VERSION:-01.00}"
 HOST="ftp://${PS4_HOST:-192.168.0.90}:${PS4_FTP_PORT:-2121}"
 
 [ -f "$EBOOT" ] || { echo "missing $EBOOT: build first" >&2; exit 1; }
-STAGE="$PS4_BUILD_ROOT/build/dolphin-stage"
+STAGE="$BUILD-stage"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/sce_sys"
 cp "$EBOOT" "$STAGE/eboot.bin"
@@ -29,12 +32,12 @@ echo "$VERSION" > "$STAGE/xmb/version.txt"
 # SFO_STYLE=retroarch + PS4_PAID 0x3100000000000002 for the OpenGL (Piglet) backend.
 # PS4_TITLE_ID / PS4_APP_NAME / PS4_CONTENT_LABEL: experimental builds install as a separate app
 # ("Dolphin Lab", DLPH00011) next to the normal one, which they never replace.
-PKG="$(SFO_STYLE="${SFO_STYLE:-plain}" "$HERE/make-pkg.sh" "$STAGE" "${PS4_TITLE_ID:-DLPH00010}"     "${PS4_APP_NAME:-Dolphin}" "$VERSION" "${PS4_CONTENT_LABEL:-DOLPHIN}" "$PS4_BUILD_ROOT/out" | tail -1)"
+PKG="$(SFO_STYLE="${SFO_STYLE:-plain}" "$HERE/make-pkg.sh" "$STAGE" "${PS4_TITLE_ID:-DLPH00011}"     "${PS4_APP_NAME:-Dolphin Lab}" "$VERSION" "${PS4_CONTENT_LABEL:-DOLPHINLAB}" "$PS4_BUILD_ROOT/out" | tail -1)"
 ls -la "$PKG"
 # Keep the symbols of every packaged build: profiles and crash logs from the console must be
 # symbolized against the exact binary that produced them, not a later rebuild.
-mkdir -p "$PS4_BUILD_ROOT/oelf"
-cp "${EBOOT%/eboot.bin}/dolphin-nogui.oelf" "$PS4_BUILD_ROOT/oelf/v$VERSION.oelf"
+mkdir -p "$PS4_BUILD_ROOT/oelf-lab"
+cp "${EBOOT%/eboot.bin}/dolphin-nogui.oelf" "$PS4_BUILD_ROOT/oelf-lab/v$VERSION.oelf"
 if [ "${1:-}" = upload ]; then
     curl -sS -T "$PKG" "$HOST/data/pkg/"
     echo "uploaded $(basename "$PKG")"

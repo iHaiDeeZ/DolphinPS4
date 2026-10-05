@@ -7,8 +7,11 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/ps4-env.sh"
-SRC="${DOLPHIN_SRC:-$PS4_BUILD_ROOT/src/dolphin}"
-BUILD="$PS4_BUILD_ROOT/build/dolphin"
+# LAB COPY (experiment/split-cpu): builds the experimental Dolphin from src/dolphin-lab into
+# build/dolphin-lab, packaged as the separate app "Dolphin Lab" (DLPH00011). The stable port is
+# J:\DolphinPS4 with src/dolphin and build/dolphin; the two never share a build.
+SRC="${DOLPHIN_SRC:-$PS4_BUILD_ROOT/src/dolphin-lab}"
+BUILD="${DOLPHIN_BUILD:-$PS4_BUILD_ROOT/build/dolphin-lab}"
 ps4_cmake -S "$SRC" -B "$BUILD" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$HERE/../toolchain/ps4-love-modern.cmake" \
     "-DCMAKE_PROJECT_dolphin-emu_INCLUDE=$HERE/../toolchain/ps4-love-style.cmake" \
