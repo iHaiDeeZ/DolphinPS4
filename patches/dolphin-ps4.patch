@@ -9670,10 +9670,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..884ca63
+index 0000000..93eca75
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,4699 @@
+@@ -0,0 +1,4705 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10759,6 +10759,10 @@ index 0000000..884ca63
 +  if (path.empty())
 +  {
 +    rows.push_back({"Places", "", "", true});
++    // The whole console: its root and /mnt first (USB drives, extended storage, discs...), then
++    // the usual places when they exist.
++    rows.push_back({"/", "Console root", "dir:/"});
++    rows.push_back({"/mnt", "Drives", "dir:/mnt"});
 +    std::vector<std::string> places = {"/data", m_data_dir + "/games"};
 +    for (int i = 0; i < 8; i++)
 +      places.push_back("/mnt/usb" + std::to_string(i));
@@ -10806,10 +10810,12 @@ index 0000000..884ca63
 +    std::sort(folders.begin(), folders.end());
 +    rows.push_back({"Use This Folder", std::to_string(games) + (games == 1 ? " game" : " games"),
 +                    "usedir"});
-+    const std::filesystem::path parent = std::filesystem::path(path).parent_path();
-+    const bool top = path == "/data" || (path.rfind("/mnt/", 0) == 0 &&
-+                                             std::count(path.begin(), path.end(), '/') == 2);
-+    rows.push_back({"..", top ? "Places" : "", top ? "dir:" : "dir:" + parent.string()});
++    // ".." climbs up to the console root; from there, back to the places.
++    std::string parent = std::filesystem::path(path).parent_path().string();
++    if (parent.empty())
++      parent = "/";
++    const bool top = path == "/";
++    rows.push_back({"..", top ? "Places" : parent, top ? "dir:" : "dir:" + parent});
 +    if (!readable && ec)
 +    {
 +      rows.push_back({"(this folder can't be opened: " + ec.message() + ")", "", "", true});

@@ -430,3 +430,6 @@ Riivolution 패치
 최신 권장 설정을 지금 GitHub에서 내려받습니다 (Dolphin은 시작할 때마다 이 작업도 합니다).
 # --- Nunchuk shake
 눈차크 흔들기
+# --- Folder browser
+본체 루트
+드라이브

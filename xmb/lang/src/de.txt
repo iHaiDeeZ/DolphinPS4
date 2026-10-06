@@ -430,3 +430,6 @@ Beim Start fragen
 Lädt jetzt die neuesten empfohlenen Einstellungen von GitHub (Dolphin macht das auch bei jedem Start).
 # --- Nunchuk shake
 Nunchuk schütteln
+# --- Folder browser
+Konsolen-Stammordner
+Laufwerke

@@ -430,3 +430,6 @@ Pytaj przy uruchomieniu
 Pobiera teraz najnowsze zalecane ustawienia z GitHuba (Dolphin robi to też przy każdym uruchomieniu).
 # --- Nunchuk shake
 Potrząśnij Nunchukiem
+# --- Folder browser
+Katalog główny konsoli
+Napędy
