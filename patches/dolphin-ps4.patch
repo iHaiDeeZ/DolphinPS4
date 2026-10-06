@@ -5645,7 +5645,7 @@ index 51c3fff..07e988f 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..ad0bdc9 100644
+index 3bf40ea..4372096 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -5693,7 +5693,7 @@ index 3bf40ea..ad0bdc9 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +50,44 @@
+@@ -31,6 +50,45 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -5712,6 +5712,7 @@ index 3bf40ea..ad0bdc9 100644
 +extern "C" int ps4_tex_hash_once;  // VideoCommon/TextureCacheBase.cpp
 +extern "C" int ps4_lazy_lfs;       // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_inline_dispatch;  // Core/PowerPC/Jit64/Jit.cpp
++extern "C" int ps4_shader_dump;          // VideoCommon/ShaderCache.cpp
 +extern "C" int ps4_jit_tlb_inline;  // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_soft_tlb_precise;  // Core/PowerPC/MMU.cpp
 +extern "C" int ps4_lfs_forward;    // Core/PowerPC/Jit64/Jit.cpp
@@ -5738,7 +5739,7 @@ index 3bf40ea..ad0bdc9 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +230,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +231,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -5749,7 +5750,7 @@ index 3bf40ea..ad0bdc9 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +245,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +246,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -5768,7 +5769,7 @@ index 3bf40ea..ad0bdc9 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +277,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +278,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -5779,7 +5780,7 @@ index 3bf40ea..ad0bdc9 100644
  #endif
        });
  
-@@ -270,7 +344,338 @@ int main(const int argc, char* argv[])
+@@ -270,7 +345,340 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -5957,6 +5958,8 @@ index 3bf40ea..ad0bdc9 100644
 +    ps4_lazy_lfs = Platform::GetPS4Option("jit_lazy_lfs", "on") == "on";
 +    // jit_inline_dispatch=off (Dolphin Lab): indirect block exits go through the dispatcher again.
 +    ps4_jit_inline_dispatch = Platform::GetPS4Option("jit_inline_dispatch", "on") == "on";
++    // shader_dump=on (Dolphin Lab): specialized shaders' source to /data/DolphinPS4/shader-dump.
++    ps4_shader_dump = Platform::GetPS4Option("shader_dump", "off") == "on";
 +    // jit_tlb_inline=off: the soft TLB is looked up in C only (Jit64Common/EmuCodeBlock.cpp).
 +    ps4_jit_tlb_inline = Platform::GetPS4Option("jit_tlb_inline", "on") == "on";
 +    // soft_tlb=flush: every tlbie empties the whole soft TLB (MMU.cpp), as before v03.10.
@@ -6118,7 +6121,7 @@ index 3bf40ea..ad0bdc9 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +689,12 @@ int main(const int argc, char* argv[])
+@@ -284,6 +692,12 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -6131,7 +6134,7 @@ index 3bf40ea..ad0bdc9 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,6 +714,28 @@ int main(const int argc, char* argv[])
+@@ -303,6 +717,28 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -24363,7 +24366,7 @@ index 29e215b..9993418 100644
  
  void CustomResourceManager::Shutdown()
 diff --git a/Source/Core/VideoCommon/ShaderCache.cpp b/Source/Core/VideoCommon/ShaderCache.cpp
-index 2627656..efc8177 100644
+index 2627656..99e2ea9 100644
 --- a/Source/Core/VideoCommon/ShaderCache.cpp
 +++ b/Source/Core/VideoCommon/ShaderCache.cpp
 @@ -54,8 +54,16 @@ bool ShaderCache::Initialize()
@@ -24398,7 +24401,57 @@ index 2627656..efc8177 100644
  }
  
  void ShaderCache::Reload()
-@@ -865,6 +875,35 @@ void ShaderCache::LoadPipelineUIDCache()
+@@ -436,10 +446,38 @@ void ShaderCache::CompileMissingPipelines()
+   }
+ }
+ 
++#ifdef __ORBIS__
++// ps4.ini shader_dump=on (Dolphin Lab): every specialized shader compiled is saved to
++// /data/DolphinPS4/shader-dump/ (vs-NNNN.glsl, ps-NNNN.glsl, at most 1000 each) to look for what
++// a driver gets wrong. Shaders loaded from the shader cache aren't compiled: use shader_cache=off.
++}  // namespace VideoCommon
++#include <atomic>
++extern "C" int ps4_shader_dump;
++int ps4_shader_dump = 0;
++namespace VideoCommon
++{
++static void PS4DumpShader(const char* stage, const std::string& source)
++{
++  static std::atomic<int> s_counts[2];
++  const int which = stage[0] == 'p' ? 1 : 0;
++  const int n = s_counts[which]++;
++  if (n >= 1000)
++    return;
++  const std::string dir = "/data/DolphinPS4/shader-dump";
++  if (n == 0)
++    File::CreateDir(dir);
++  File::WriteStringToFile(fmt::format("{}/{}-{:04}.glsl", dir, stage, n), source);
++}
++#endif
++
+ std::unique_ptr<AbstractShader> ShaderCache::CompileVertexShader(const VertexShaderUid& uid) const
+ {
+   const ShaderCode source_code =
+       GenerateVertexShaderCode(m_api_type, m_host_config, uid.GetUidData(), {});
++#ifdef __ORBIS__
++  if (ps4_shader_dump)
++    PS4DumpShader("vs", source_code.GetBuffer());
++#endif
+   return g_gfx->CreateShaderFromSource(ShaderStage::Vertex, source_code.GetBuffer());
+ }
+ 
+@@ -456,6 +494,10 @@ std::unique_ptr<AbstractShader> ShaderCache::CompilePixelShader(const PixelShade
+ {
+   const ShaderCode source_code =
+       GeneratePixelShaderCode(m_api_type, m_host_config, uid.GetUidData(), {});
++#ifdef __ORBIS__
++  if (ps4_shader_dump)
++    PS4DumpShader("ps", source_code.GetBuffer());
++#endif
+   return g_gfx->CreateShaderFromSource(ShaderStage::Pixel, source_code.GetBuffer());
+ }
+ 
+@@ -865,6 +907,35 @@ void ShaderCache::LoadPipelineUIDCache()
    INFO_LOG_FMT(VIDEO, "Read {} pipeline UIDs from {}", m_gx_pipeline_cache.size(), filename);
  }
  
