@@ -71,16 +71,16 @@ You bring your own game backups. Nothing copyrighted is bundled: no games, BIOS 
 **A pause menu on L3 + R3**
 - Eight save state slots, each marked Empty or Other Version when it can't be loaded.
 - All settings, applied immediately.
-- For Wii games, plug the Nunchuk in or out, or turn the Wii Remote sideways, without leaving
-  the game.
+- For Wii games, switch the Wii Remote extension between None, Nunchuk and Classic Controller,
+  or turn the Wii Remote sideways, without leaving the game.
 - Quit straight back to the launcher.
 
 **Make it yours**
 - Twelve colour themes, from *Dolphin Blue* and *GameCube Indigo* to *Wii White* and
   *Midnight*.
 - Drop PNG images in a folder to use them as wallpapers, or WAV files to replace the menu sounds.
-- Remap the GameCube controller and the Wii Remote, with the DualShock 4 buttons shown as
-  icons. The layout you pick is used by every player.
+- Remap the GameCube controller, Wii Remote, Nunchuk and Classic Controller, with the DualShock 4
+  buttons shown as icons. The layout you pick is used by every player.
 
 **Built for the PS4's hardware**
 - Shaders are compiled in the background on spare CPU cores, and the cache is kept for next

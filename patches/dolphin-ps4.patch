@@ -5266,7 +5266,7 @@ new file mode 100755
 index 0000000..dc56381
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Controls.cpp
-@@ -0,0 +1,511 @@
+@@ -0,0 +1,587 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -5342,6 +5342,31 @@ index 0000000..dc56381
 +Nunchuk/Stick/Down = `Left Y+`
 +Nunchuk/Stick/Left = `Left X-`
 +Nunchuk/Stick/Right = `Left X+`
++Classic/Buttons/A = Cross
++Classic/Buttons/B = Circle
++Classic/Buttons/X = Square
++Classic/Buttons/Y = Triangle
++Classic/Buttons/ZL = L1
++Classic/Buttons/ZR = R1
++Classic/Buttons/- = L3
++Classic/Buttons/+ = Options
++Classic/Buttons/Home = Touchpad
++Classic/Left Stick/Up = `Left Y-`
++Classic/Left Stick/Down = `Left Y+`
++Classic/Left Stick/Left = `Left X-`
++Classic/Left Stick/Right = `Left X+`
++Classic/Right Stick/Up = `Right Y-`
++Classic/Right Stick/Down = `Right Y+`
++Classic/Right Stick/Left = `Right X-`
++Classic/Right Stick/Right = `Right X+`
++Classic/Triggers/L = L2
++Classic/Triggers/R = R2
++Classic/Triggers/L-Analog = L2
++Classic/Triggers/R-Analog = R2
++Classic/D-Pad/Up = `Pad N`
++Classic/D-Pad/Down = `Pad S`
++Classic/D-Pad/Left = `Pad W`
++Classic/D-Pad/Right = `Pad E`
 +)";
 +
 +const std::vector<Binding> GC_BINDINGS = {
@@ -5380,6 +5405,22 @@ index 0000000..dc56381
 +    {"Nunchuk/Buttons/C", "Nunchuk C", false},
 +    {"Nunchuk/Buttons/Z", "Nunchuk Z", false},
 +    {"Nunchuk/Stick", "Nunchuk Stick", true},
++    {"Classic/Buttons/A", "Classic A", false},
++    {"Classic/Buttons/B", "Classic B", false},
++    {"Classic/Buttons/X", "Classic X", false},
++    {"Classic/Buttons/Y", "Classic Y", false},
++    {"Classic/Buttons/ZL", "Classic ZL", false},
++    {"Classic/Buttons/ZR", "Classic ZR", false},
++    {"Classic/Buttons/-", "Classic -", false},
++    {"Classic/Buttons/+", "Classic +", false},
++    {"Classic/Buttons/Home", "Classic Home", false},
++    {"Classic/Left Stick", "Classic Left Stick", true},
++    {"Classic/Right Stick", "Classic Right Stick", true},
++    {"Classic/Triggers/L", "Classic L", false},
++    {"Classic/Triggers/R", "Classic R", false},
++    {"Classic/Triggers/L-Analog", "Classic L (analog)", false},
++    {"Classic/Triggers/R-Analog", "Classic R (analog)", false},
++    {"Classic/D-Pad", "Classic D-Pad", true},
 +};
 +
 +std::string s_user_dir = "/data/DolphinPS4/User";
@@ -5495,7 +5536,7 @@ index 0000000..dc56381
 +
 +const char* DeviceName(Device device)
 +{
-+  return device == Device::GameCube ? "GameCube Controller" : "Wii Remote + Nunchuk";
++  return device == Device::GameCube ? "GameCube Controller" : "Wii Remote + Extensions";
 +}
 +
 +void SetUserDirectory(const std::string& user_dir)
@@ -5531,6 +5572,39 @@ index 0000000..dc56381
 +    }
 +    if (changed)
 +      SaveIni(ini, Path(Device::GameCube));
++  }
++  // Older installs predate Classic Controller support. If no Classic mapping exists at all,
++  // seed the defaults once while preserving every existing Wii Remote / Nunchuk binding.
++  {
++    Common::IniFile ini;
++    ini.Load(Path(Device::Wii));
++    Common::IniFile::Section* section = ini.GetOrCreateSection(Section(Device::Wii));
++    std::string classic_a;
++    if (!section->Get("Classic/Buttons/A", &classic_a))
++    {
++      constexpr const char* defaults[][2] = {
++          {"Classic/Buttons/A", "Cross"},       {"Classic/Buttons/B", "Circle"},
++          {"Classic/Buttons/X", "Square"},      {"Classic/Buttons/Y", "Triangle"},
++          {"Classic/Buttons/ZL", "L1"},         {"Classic/Buttons/ZR", "R1"},
++          {"Classic/Buttons/-", "L3"},          {"Classic/Buttons/+", "Options"},
++          {"Classic/Buttons/Home", "Touchpad"},
++          {"Classic/Left Stick/Up", "`Left Y-`"},
++          {"Classic/Left Stick/Down", "`Left Y+`"},
++          {"Classic/Left Stick/Left", "`Left X-`"},
++          {"Classic/Left Stick/Right", "`Left X+`"},
++          {"Classic/Right Stick/Up", "`Right Y-`"},
++          {"Classic/Right Stick/Down", "`Right Y+`"},
++          {"Classic/Right Stick/Left", "`Right X-`"},
++          {"Classic/Right Stick/Right", "`Right X+`"},
++          {"Classic/Triggers/L", "L2"},         {"Classic/Triggers/R", "R2"},
++          {"Classic/Triggers/L-Analog", "L2"},  {"Classic/Triggers/R-Analog", "R2"},
++          {"Classic/D-Pad/Up", "`Pad N`"},   {"Classic/D-Pad/Down", "`Pad S`"},
++          {"Classic/D-Pad/Left", "`Pad W`"}, {"Classic/D-Pad/Right", "`Pad E`"},
++      };
++      for (const auto& [key, value] : defaults)
++        section->Set(key, std::string(value));
++      SaveIni(ini, Path(Device::Wii));
++    }
 +  }
 +  SyncPlayers(Device::GameCube);
 +  SyncPlayers(Device::Wii);
@@ -5699,7 +5773,9 @@ index 0000000..dc56381
 +  Common::IniFile ini;
 +  ini.Load(Path(Device::Wii));
 +  Common::IniFile::Section* section = ini.GetOrCreateSection(Section(Device::Wii));
-+  section->Set("Extension", std::string(extension == "none" ? "None" : "Nunchuk"));
++  const char* attachment =
++      extension == "none" ? "None" : extension == "classic" ? "Classic" : "Nunchuk";
++  section->Set("Extension", std::string(attachment));
 +  section->Set("Options/Sideways Wiimote", std::string(sideways ? "True" : "False"));
 +  SaveIni(ini, Path(Device::Wii));
 +  SyncPlayers(Device::Wii);
@@ -5788,7 +5864,7 @@ index 0000000..5a405de
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
 +// PS4 controller mappings: the DualShock 4 as a GameCube controller (User/Config/GCPadNew.ini)
-+// and as a Wii Remote with a Nunchuk (User/Config/WiimoteNew.ini), in Dolphin's own format.
++// and as a Wii Remote with extensions (User/Config/WiimoteNew.ini), in Dolphin's own format.
 +// The XMB remaps them; the defaults are the port's tuned layout.
 +
 +#pragma once
@@ -5832,7 +5908,7 @@ index 0000000..5a405de
 +// Stick groups: "Left Stick", "Right Stick" or "D-Pad".
 +std::vector<std::string> StickChoices();
 +void ResetToDefault(Device device);
-+// The Wii Remote's extension ("nunchuk" or "none") and sideways orientation.
++// The Wii Remote's extension ("none", "nunchuk" or "classic") and sideways orientation.
 +void SetWiiAttachment(const std::string& extension, bool sideways);
 +
 +// Settings -> System -> Wii Remote / Motion Controls, before a game starts: per player, the
@@ -6465,7 +6541,7 @@ new file mode 100755
 index 0000000..dfea98f
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,1079 @@
+@@ -0,0 +1,1107 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -6706,10 +6782,13 @@ index 0000000..dfea98f
 +        rows.push_back({"Load State", slot});
 +        break;
 +      case MAIN_WII_EXTENSION:
++      {
++        const std::string extension = PS4Settings::Get("wii_extension", s_game_id);
 +        rows.push_back({"Wii Extension",
-+                        PS4Settings::Get("wii_extension", s_game_id) == "none" ? "None" :
-+                                                                                 "Nunchuk"});
++                        extension == "none" ? "None" :
++                        extension == "classic" ? "Classic Controller" : "Nunchuk"});
 +        break;
++      }
 +      case MAIN_WII_SIDEWAYS:
 +        rows.push_back({"Sideways Wii Remote",
 +                        PS4Settings::Get("wii_sideways", s_game_id) == "on" ? "On" : "Off"});
@@ -6958,24 +7037,38 @@ index 0000000..dfea98f
 +    s_settings_selected = row;
 +}
 +
-+// Wii games: the Wii Remote's Nunchuk / sideways orientation, changed in the running game (the
-+// game sees the Nunchuk plugged in or out, as on a Wii) and kept for this game.
-+void ToggleWiiRemote(int item)
++// Wii games: the Wii Remote extension / sideways orientation, changed in the running game (the
++// game sees the attachment change exactly as on a Wii) and kept for this game.
++void ToggleWiiRemote(int item, int direction)
 +{
 +  const bool extension_row = item == MAIN_WII_EXTENSION;
 +  const char* key = extension_row ? "wii_extension" : "wii_sideways";
 +  const std::string current = PS4Settings::Get(key, s_game_id);
-+  const std::string value = extension_row ? (current == "none" ? "nunchuk" : "none") :
-+                                            (current == "on" ? "off" : "on");
++  std::string value;
++  if (extension_row)
++  {
++    constexpr const char* extensions[] = {"none", "nunchuk", "classic"};
++    int index = current == "none" ? 0 : current == "classic" ? 2 : 1;
++    const int step = direction < 0 ? -1 : 1;
++    index = (index + step + 3) % 3;
++    value = extensions[index];
++  }
++  else
++  {
++    value = current == "on" ? "off" : "on";
++  }
 +  PS4Settings::Set(key, value, s_game_id);
-+  const bool nunchuk = PS4Settings::Get("wii_extension", s_game_id) != "none";
++  const std::string extension = PS4Settings::Get("wii_extension", s_game_id);
 +  const bool sideways = PS4Settings::Get("wii_sideways", s_game_id) == "on";
 +  {
 +    const auto lock = ControllerEmu::EmulatedController::GetStateLock();
 +    auto* attachments = static_cast<ControllerEmu::Attachments*>(
 +        Wiimote::GetWiimoteGroup(0, WiimoteEmu::WiimoteGroup::Attachments));
-+    attachments->SetSelectedAttachment(nunchuk ? WiimoteEmu::ExtensionNumber::NUNCHUK :
-+                                                 WiimoteEmu::ExtensionNumber::NONE);
++    const auto attachment =
++        extension == "none" ? WiimoteEmu::ExtensionNumber::NONE :
++        extension == "classic" ? WiimoteEmu::ExtensionNumber::CLASSIC :
++                                  WiimoteEmu::ExtensionNumber::NUNCHUK;
++    attachments->SetSelectedAttachment(attachment);
 +    auto* options = Wiimote::GetWiimoteGroup(0, WiimoteEmu::WiimoteGroup::Options);
 +    for (auto& setting : options->numeric_settings)
 +    {
@@ -6983,8 +7076,19 @@ index 0000000..dfea98f
 +        static_cast<ControllerEmu::NumericSetting<bool>*>(setting.get())->SetValue(sideways);
 +    }
 +  }
-+  Toast(extension_row ? (nunchuk ? "Nunchuk plugged in" : "Nunchuk unplugged") :
-+                        (sideways ? "Wii Remote held sideways" : "Wii Remote held upright"));
++  if (extension_row)
++  {
++    if (value == "classic")
++      Toast("Classic Controller connected");
++    else if (value == "nunchuk")
++      Toast("Nunchuk plugged in");
++    else
++      Toast(current == "classic" ? "Classic Controller disconnected" : "Nunchuk unplugged");
++  }
++  else
++  {
++    Toast(sideways ? "Wii Remote held sideways" : "Wii Remote held upright");
++  }
 +  Log(std::string("wii remote: ") + key + "=" + value + " (" + s_game_id + ")");
 +}
 +
@@ -7013,7 +7117,7 @@ index 0000000..dfea98f
 +  {
 +  case MAIN_WII_EXTENSION:
 +  case MAIN_WII_SIDEWAYS:
-+    ToggleWiiRemote(s_main_items[s_main_selected]);
++    ToggleWiiRemote(s_main_items[s_main_selected], 1);
 +    break;
 +  case MAIN_RESUME:
 +    Close(system);
@@ -7495,7 +7599,7 @@ index 0000000..dfea98f
 +        if (item == MAIN_SAVE || item == MAIN_LOAD)
 +          s_slot = (s_slot - 1 + direction + 8) % 8 + 1;
 +        else if (item == MAIN_WII_EXTENSION || item == MAIN_WII_SIDEWAYS)
-+          ToggleWiiRemote(item);
++          ToggleWiiRemote(item, direction);
 +      }
 +      else
 +      {
@@ -8479,7 +8583,7 @@ new file mode 100755
 index 0000000..1add71f
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,561 @@
+@@ -0,0 +1,563 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -8605,9 +8709,11 @@ index 0000000..1add71f
 +     {{"100", "100"}, {"90", "90"}, {"80", "80"}, {"70", "70"}, {"60", "60"}, {"50", "50"},
 +      {"40", "40"}, {"30", "30"}, {"20", "20"}, {"10", "10"}, {"0", "0"}},
 +     "100", true, "Volume of the games' sound."},
-+    {"wii_extension", "Wii Extension", "System", {{"nunchuk", "Nunchuk"}, {"none", "None"}},
++    {"wii_extension", "Wii Extension", "System",
++     {{"nunchuk", "Nunchuk"}, {"classic", "Classic Controller"}, {"none", "None"}},
 +     "nunchuk", false,
-+     "What is plugged into the Wii Remote. Wii Sports and similar games need None."},
++     "What is plugged into the Wii Remote: Nunchuk, Classic Controller or nothing. "
++     "Wii Sports and similar games need None."},
 +    {"wii_sideways", "Sideways Wii Remote", "System", {{"off", "Off"}, {"on", "On"}}, "off",
 +     false, "For games played with the Wii Remote held sideways (NSMB Wii, Mario Kart Wii)."},
 +    {"motion_controls", "Motion Controls", "System", {{"on", "On"}, {"off", "Off"}}, "on", false,
@@ -9540,7 +9646,7 @@ new file mode 100755
 index 0000000..d6800bf
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,4659 @@
+@@ -0,0 +1,4660 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11437,7 +11543,7 @@ index 0000000..d6800bf
 +  const auto device = static_cast<PS4Controls::Device>(m_controls_device);
 +  const std::string& key = m_panel.rows[m_capture_row].key;
 +  const auto& binding = PS4Controls::Bindings(device)[std::atoi(key.c_str() + 4)];
-+  const bool analog = std::string(binding.key).rfind("Triggers/", 0) == 0;
++  const bool analog = std::string(binding.key).find("Triggers/") != std::string::npos;
 +  const std::string expression = PS4Controls::Capture(data, analog);
 +  if (expression.empty())
 +    return;
@@ -13571,7 +13677,8 @@ index 0000000..d6800bf
 +    else if (key == "tex_hash_once")
 +      continue;
 +    else if (key == "wii_extension")
-+      parts.push_back(value == "none" ? "no Nunchuk" : "Nunchuk");
++      parts.push_back(value == "none" ? "no extension" :
++                      value == "classic" ? "Classic Controller" : "Nunchuk");
 +    else if (key == "wii_sideways")
 +      parts.push_back(value == "on" ? "sideways Wii Remote" : "upright Wii Remote");
 +    else
