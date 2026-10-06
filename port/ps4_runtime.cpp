@@ -14,6 +14,9 @@
 
 #include <pthread.h>
 #include <sched.h>
+#include <errno.h>
+#include <setjmp.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -40,6 +43,10 @@ int32_t sceKernelAllocateDirectMemory(off_t start, off_t end, size_t len, size_t
                                       off_t* physOut);
 int32_t sceKernelMapDirectMemory(void** addr, size_t len, int32_t prot, int32_t flags, off_t phys,
                                  size_t align);
+int32_t sceKernelMprotect(const void* addr, size_t len, int32_t prot);
+int32_t sceKernelJitCreateSharedMemory(const char* name, size_t len, int32_t max_prot, int32_t* fd);
+int32_t sceKernelJitCreateAliasOfSharedMemory(int32_t fd, int32_t max_prot, int32_t* alias_fd);
+int32_t sceKernelClose(int32_t fd);
 
 // dlmalloc mspace API (port/ps4_dlmalloc.c).
 typedef void* mspace;
@@ -583,8 +590,167 @@ int ps4_jit_in_system_pool = 1;           // executable mappings from the system
 unsigned long long ps4_fault_count = 0;   // fastmem faults seen by Dolphin's handler
 
 void* __real_mmap(void* addr, size_t len, int prot, int flags, int fd, off_t offset);
+
+// Executable memory for the JIT. Jailbreaks differ in what they let a homebrew app map as code it
+// writes itself: a plain read/write/execute mmap works on some, others refuse it (seen on PS4 Pro
+// consoles on firmware 11.00) but may allow it another way. ps4_exec_probe() tries each way once
+// at startup (a 6-byte function run under a fault handler); the mmap wrapper then maps every
+// executable request the way that worked.
+int ps4_exec_method = 0;  // 0 mmap, 1 mmap + mprotect, 2 flexible, 3 system flexible, 4 JIT shm
+
+namespace {
+const char* const EXEC_METHOD_NAMES[] = {"mmap", "mmap+mprotect", "flexible memory",
+                                         "system flexible memory", "JIT shared memory"};
+const int32_t PROT_CPU_RWX = 0x7;
+static int g_execError = 0;  // why the last mapExec failed (errno or SCE error)
+
+void* mapExec(int method, size_t len) {
+    g_execError = 0;
+    switch (method) {
+    case 0:
+    case 1: {
+        void* p = __real_mmap(nullptr, len, method == 0 ? PROT_CPU_RWX : PROT_CPU_RW, MAP_ANON | MAP_PRIVATE, -1, 0);
+        if (p == MAP_FAILED) {
+            g_execError = errno;
+            return nullptr;
+        }
+        if (method == 1) {
+            const int32_t ret = sceKernelMprotect(p, len, PROT_CPU_RWX);
+            if (ret != 0) {
+                g_execError = ret;
+                sceKernelMunmap(p, len);
+                return nullptr;
+            }
+        }
+        return p;
+    }
+    case 2:
+    case 3: {
+        void* base = reserveAwayFromKernel(len);
+        if (!base) {
+            g_execError = -1;
+            return nullptr;
+        }
+        const int32_t ret =
+            method == 2 ? sceKernelMapNamedFlexibleMemory(&base, len, PROT_CPU_RWX, MAP_FIXED_FLAG, "dolphin jit")
+                        : sceKernelMapNamedSystemFlexibleMemory(&base, len, PROT_CPU_RWX, MAP_FIXED_FLAG, "dolphin jit");
+        if (ret != 0) {
+            g_execError = ret;
+            sceKernelMunmap(base, len);
+            return nullptr;
+        }
+        return base;
+    }
+    case 4: {
+        int32_t shm = -1;
+        int32_t ret = sceKernelJitCreateSharedMemory(nullptr, len, PROT_CPU_RWX, &shm);
+        if (ret != 0) {
+            g_execError = ret;
+            return nullptr;
+        }
+        void* p = __real_mmap(nullptr, len, PROT_CPU_RWX, MAP_SHARED, shm, 0);
+        if (p == MAP_FAILED)
+            g_execError = errno;
+        sceKernelClose(shm);  // the mapping keeps the memory
+        return p == MAP_FAILED ? nullptr : p;
+    }
+    }
+    return nullptr;
+}
+
+static sigjmp_buf g_execJump;
+void execFault(int) { siglongjmp(g_execJump, 1); }
+
+// Runs `mov eax, 0x1234; ret` at `code`: true if it came back with that value.
+bool runs(void* code) {
+    struct sigaction fault = {}, old_segv = {}, old_bus = {};
+    fault.sa_handler = execFault;
+    sigemptyset(&fault.sa_mask);
+    sigaction(SIGSEGV, &fault, &old_segv);
+    sigaction(SIGBUS, &fault, &old_bus);
+    volatile int result = 0;
+    if (sigsetjmp(g_execJump, 1) == 0)
+        result = reinterpret_cast<int (*)()>(code)();
+    sigaction(SIGSEGV, &old_segv, nullptr);
+    sigaction(SIGBUS, &old_bus, nullptr);
+    return result == 0x1234;
+}
+
+const unsigned char EXEC_TEST_CODE[] = {0xB8, 0x34, 0x12, 0x00, 0x00, 0xC3};
+
+// Only logged: Sony's own way (one read/execute view and a read/write alias of the same memory),
+// which Dolphin's JIT can't use yet - it writes its code where it runs it.
+void probeJitAlias() {
+    int32_t shm = -1, alias = -1;
+    int32_t ret = sceKernelJitCreateSharedMemory(nullptr, PAGE, PROT_CPU_RWX, &shm);
+    if (ret != 0) {
+        heapLog("[dolphin] exec: JIT alias: shared memory refused (%#x)\n", ret);
+        return;
+    }
+    ret = sceKernelJitCreateAliasOfSharedMemory(shm, PROT_CPU_RW, &alias);
+    void* exec = ret == 0 ? __real_mmap(nullptr, PAGE, PROT_READ | PROT_EXEC, MAP_SHARED, shm, 0) : MAP_FAILED;
+    void* write = ret == 0 ? __real_mmap(nullptr, PAGE, PROT_CPU_RW, MAP_SHARED, alias, 0) : MAP_FAILED;
+    if (ret != 0)
+        heapLog("[dolphin] exec: JIT alias: alias refused (%#x)\n", ret);
+    else if (exec == MAP_FAILED || write == MAP_FAILED)
+        heapLog("[dolphin] exec: JIT alias: mapping refused (exec %s, write %s, errno %d)\n",
+                exec == MAP_FAILED ? "no" : "ok", write == MAP_FAILED ? "no" : "ok", errno);
+    else {
+        memcpy(write, EXEC_TEST_CODE, sizeof(EXEC_TEST_CODE));
+        heapLog("[dolphin] exec: JIT alias (separate write and execute views): %s\n",
+                runs(exec) ? "works" : "faults");
+    }
+    if (exec != MAP_FAILED)
+        sceKernelMunmap(exec, PAGE);
+    if (write != MAP_FAILED)
+        sceKernelMunmap(write, PAGE);
+    if (alias >= 0)
+        sceKernelClose(alias);
+    sceKernelClose(shm);
+}
+}  // namespace
+
+// The first way of mapping executable memory that works (also stored in ps4_exec_method), or -1.
+// A plain mmap is tried first and, when it works, nothing else is (the usual case).
+int ps4_exec_probe() {
+    for (int method = 0; method < 5; method++) {
+        void* page = mapExec(method, PAGE);
+        if (!page) {
+            heapLog("[dolphin] exec: %s refused (%#x)\n", EXEC_METHOD_NAMES[method],
+                    static_cast<unsigned>(g_execError));
+            continue;
+        }
+        memcpy(page, EXEC_TEST_CODE, sizeof(EXEC_TEST_CODE));
+        const bool ok = runs(page);
+        sceKernelMunmap(page, PAGE);
+        if (ok) {
+            ps4_exec_method = method;
+            if (method != 0)
+                heapLog("[dolphin] exec: executable memory from %s\n", EXEC_METHOD_NAMES[method]);
+            return method;
+        }
+        heapLog("[dolphin] exec: %s maps, but running code there faults\n", EXEC_METHOD_NAMES[method]);
+    }
+    probeJitAlias();
+    ps4_exec_method = -1;
+    return -1;
+}
+
 void* __wrap_mmap(void* addr, size_t len, int prot, int flags, int fd, off_t offset) {
     const bool anonymous = fd == -1 && (flags & MAP_ANON) && !(flags & MAP_FIXED);
+    if (anonymous && (prot & PROT_EXEC) && ps4_exec_method > 0) {
+        // The way the startup probe found (a plain mmap is refused on this console).
+        void* p = mapExec(ps4_exec_method, (len + PAGE - 1) & ~(PAGE - 1));
+        if (p) {
+            heapLog("[dolphin] mmap: %zu KiB executable from %s at %p\n", len / 1024,
+                    EXEC_METHOD_NAMES[ps4_exec_method], p);
+            return p;
+        }
+        heapLog("[dolphin] mmap: %zu KiB executable from %s failed (%#x)\n", len / 1024,
+                EXEC_METHOD_NAMES[ps4_exec_method], static_cast<unsigned>(g_execError));
+        errno = ENOMEM;
+        return MAP_FAILED;
+    }
     const bool allowed = !(prot & PROT_EXEC) || ps4_jit_in_system_pool;
     if (anonymous && allowed && len >= MB) {
         const size_t size = (len + PAGE - 1) & ~(PAGE - 1);
