@@ -5645,7 +5645,7 @@ index 51c3fff..07e988f 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..715ded4 100644
+index 3bf40ea..ad0bdc9 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -5779,7 +5779,7 @@ index 3bf40ea..715ded4 100644
  #endif
        });
  
-@@ -270,7 +344,330 @@ int main(const int argc, char* argv[])
+@@ -270,7 +344,338 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -5907,6 +5907,14 @@ index 3bf40ea..715ded4 100644
 +                                                   ShaderCompilationMode::AsynchronousSkipRendering);
 +      Config::SetBase(Config::GFX_SHADER_COMPILER_THREADS, threads);
 +      Config::SetBase(Config::GFX_SHADER_PRECOMPILER_THREADS, threads);
++    }
++    else if (video != "opengl" && shader_compile == "uber")
++    {
++      // shader_compile=uber (Dolphin Lab): ubershaders only. They read the TEV setup (swap tables
++      // and all) from constants instead of having it compiled in, which sidesteps driver
++      // miscompilations of specialized shaders; they cost GPU time.
++      Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE,
++                      ShaderCompilationMode::SynchronousUberShaders);
 +    }
 +    else
 +    {
@@ -6110,7 +6118,7 @@ index 3bf40ea..715ded4 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +681,12 @@ int main(const int argc, char* argv[])
+@@ -284,6 +689,12 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -6123,7 +6131,7 @@ index 3bf40ea..715ded4 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,6 +706,28 @@ int main(const int argc, char* argv[])
+@@ -303,6 +714,28 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -9699,10 +9707,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..1add71f
+index 0000000..de0f82f
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,561 @@
+@@ -0,0 +1,564 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -9785,7 +9793,10 @@ index 0000000..1add71f
 +     {{"off", "Off"}, {"on", "On"}}, "off", false,
 +     "Decodes game textures on the GPU instead of the video thread (helps draw-heavy scenes)."},
 +    {"shader_compile", "Shader Compilation", "Graphics",
-+     {{"async", "Asynchronous"}, {"hybrid", "Hybrid Ubershaders"}, {"sync", "Synchronous"}},
++     {{"async", "Asynchronous"},
++      {"hybrid", "Hybrid Ubershaders"},
++      {"sync", "Synchronous"},
++      {"uber", "Exclusive Ubershaders"}},
 +     "async", false,
 +     "Asynchronous: no stutter, objects may appear a moment late. Hybrid Ubershaders: no stutter "
 +     "and nothing missing, costs GPU time. Synchronous: waits for each new shader."},
