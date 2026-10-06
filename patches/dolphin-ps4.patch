@@ -3988,6 +3988,68 @@ index 7594d0e..b25f9f9 100644
    }
  
    // There is no point in calling the dispatcher in the fast lookup table
+diff --git a/Source/Core/Core/PowerPC/Jit64/Jit_FloatingPoint.cpp b/Source/Core/Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
+index 86f9e49..08f5e7d 100644
+--- a/Source/Core/Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
++++ b/Source/Core/Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
+@@ -7,6 +7,7 @@
+ #include <limits>
+ #include <optional>
+ 
++#include "Common/FloatUtils.h"
+ #include "Common/Assert.h"
+ #include "Common/CPUDetect.h"
+ #include "Common/CommonTypes.h"
+@@ -1170,7 +1171,49 @@ void Jit64::frsqrtex(UGeckoInstruction inst)
+   RegCache::Realize(scratch_guard, Rb, Rd);
+ 
+   MOVAPD(XMM0, Rb);
++#ifdef __ORBIS__
++  // Dolphin Lab (PS4): the common case inline (a positive, normal number - the routine's own fast
++  // path, the same table lookup); zero, negative, denormal, infinite and NaN inputs still call the
++  // routine, which handles them and the FPSCR flags. Clobbers the three RSCRATCHes like the call.
++  {
++    MOVQ_xmm(R(RSCRATCH), XMM0);
++    MOV(64, R(RSCRATCH_EXTRA), R(RSCRATCH));
++    SHR(64, R(RSCRATCH_EXTRA), Imm8(52));
++    LEA(32, RSCRATCH2, MDisp(RSCRATCH_EXTRA, -1));
++    CMP(32, R(RSCRATCH2), Imm32(0x7FE));
++    FixupBranch complex = J_CC(CC_AE, Jump::Near);
++
++    SUB(32, R(RSCRATCH_EXTRA), Imm32(0x3FD));
++    SAR(32, R(RSCRATCH_EXTRA), Imm8(1));
++    MOV(32, R(RSCRATCH2), Imm32(0x3FF));
++    SUB(32, R(RSCRATCH2), R(RSCRATCH_EXTRA));
++    SHL(64, R(RSCRATCH2), Imm8(52));
++
++    MOV(64, R(RSCRATCH_EXTRA), R(RSCRATCH));
++    SHR(64, R(RSCRATCH_EXTRA), Imm8(48));
++    AND(32, R(RSCRATCH_EXTRA), Imm8(0x1F));
++
++    PUSH(RSCRATCH2);
++    MOV(64, R(RSCRATCH2), ImmPtr(asm_routines.GetFrsqrteTable()));
++    SHR(64, R(RSCRATCH), Imm8(37));
++    AND(32, R(RSCRATCH), Imm32(0x7FF));
++    IMUL(32, RSCRATCH,
++         MComplex(RSCRATCH2, RSCRATCH_EXTRA, SCALE_8, offsetof(Common::BaseAndDec, m_dec)));
++    ADD(32, R(RSCRATCH),
++        MComplex(RSCRATCH2, RSCRATCH_EXTRA, SCALE_8, offsetof(Common::BaseAndDec, m_base)));
++    SHL(64, R(RSCRATCH), Imm8(26));
++    POP(RSCRATCH2);
++    OR(64, R(RSCRATCH2), R(RSCRATCH));
++    MOVQ_xmm(XMM0, R(RSCRATCH2));
++    FixupBranch done = J(Jump::Near);
++
++    SetJumpTarget(complex);
++    CALL(asm_routines.frsqrte);
++    SetJumpTarget(done);
++  }
++#else
+   CALL(asm_routines.frsqrte);
++#endif
+   FinalizeDoubleResult(Rd, R(XMM0));
+ }
+ 
 diff --git a/Source/Core/Core/PowerPC/Jit64/Jit_LoadStoreFloating.cpp b/Source/Core/Core/PowerPC/Jit64/Jit_LoadStoreFloating.cpp
 index 4d64010..8dbbcbe 100644
 --- a/Source/Core/Core/PowerPC/Jit64/Jit_LoadStoreFloating.cpp
@@ -4085,6 +4147,25 @@ index 4d64010..8dbbcbe 100644
      }
    }
    else
+diff --git a/Source/Core/Core/PowerPC/Jit64/Jit_LoadStorePaired.cpp b/Source/Core/Core/PowerPC/Jit64/Jit_LoadStorePaired.cpp
+index 8dfee92..f1add57 100644
+--- a/Source/Core/Core/PowerPC/Jit64/Jit_LoadStorePaired.cpp
++++ b/Source/Core/Core/PowerPC/Jit64/Jit_LoadStorePaired.cpp
+@@ -61,7 +61,14 @@ void Jit64::psq_stXX(UGeckoInstruction inst)
+ 
+     // Paired stores (other than w/type zero) don't yield any real change in
+     // performance right now, but if we can improve fastmem support this might change
++#ifdef __ORBIS__
++    // Dolphin Lab (PS4): every format inline. The shared routines must take the checked slow
++    // path (SAFE_LOADSTORE_NO_FASTMEM); inline, integer stores use fastmem like float ones, and
++    // the call goes away (Spider-Man 2: QuantizedStore_4 ~0.6% of the CPU thread).
++    if (true)
++#else
+     if (gqrValue == 0)
++#endif
+     {
+       if (w)
+         GenQuantizedStore(true, static_cast<EQuantizeType>(type), (gqrValue & 0x3F00) >> 8);
 diff --git a/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.cpp b/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 index 1019aa7..15ab9f1 100644
 --- a/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
@@ -4338,6 +4419,36 @@ index 08cfe3f..04ee875 100644
  constexpr size_t FARCODE_SIZE_MMU = 1024 * 1024 * 128;
  
  // A place to throw blocks of code we don't want polluting the cache, e.g. rarely taken
+diff --git a/Source/Core/Core/PowerPC/Jit64Common/Jit64AsmCommon.cpp b/Source/Core/Core/PowerPC/Jit64Common/Jit64AsmCommon.cpp
+index 4e7e6fe..cd986b2 100644
+--- a/Source/Core/Core/PowerPC/Jit64Common/Jit64AsmCommon.cpp
++++ b/Source/Core/Core/PowerPC/Jit64Common/Jit64AsmCommon.cpp
+@@ -140,6 +140,9 @@ void CommonAsmRoutines::GenFrsqrte()
+   AND(32, R(RSCRATCH_EXTRA), Imm8(0x1F));
+ 
+   PUSH(RSCRATCH2);
++#ifdef __ORBIS__
++  m_frsqrte_table = GetConstantFromPool(Common::frsqrte_expected);
++#endif
+   MOV(64, R(RSCRATCH2), ImmPtr(GetConstantFromPool(Common::frsqrte_expected)));
+   static_assert(sizeof(Common::BaseAndDec) == 8, "Unable to use SCALE_8; incorrect size");
+ 
+diff --git a/Source/Core/Core/PowerPC/Jit64Common/Jit64AsmCommon.h b/Source/Core/Core/PowerPC/Jit64Common/Jit64AsmCommon.h
+index 8d60b00..c0e1ca7 100644
+--- a/Source/Core/Core/PowerPC/Jit64Common/Jit64AsmCommon.h
++++ b/Source/Core/Core/PowerPC/Jit64Common/Jit64AsmCommon.h
+@@ -28,6 +28,11 @@ class CommonAsmRoutines : public CommonAsmRoutinesBase, public QuantizedMemoryRo
+ public:
+   explicit CommonAsmRoutines(Jit64& jit) : QuantizedMemoryRoutines(jit) {}
+   void GenFrsqrte();
++#ifdef __ORBIS__
++  // Dolphin Lab: the frsqrte table as the routine uses it (inline fast path in Jit64::frsqrtex).
++  const void* GetFrsqrteTable() const { return m_frsqrte_table; }
++  const void* m_frsqrte_table = nullptr;
++#endif
+   void GenFres();
+   void GenMfcr();
+ 
 diff --git a/Source/Core/Core/PowerPC/Jit64Common/Jit64Constants.h b/Source/Core/Core/PowerPC/Jit64Common/Jit64Constants.h
 index 39e16c7..bba4032 100644
 --- a/Source/Core/Core/PowerPC/Jit64Common/Jit64Constants.h
