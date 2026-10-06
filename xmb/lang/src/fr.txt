@@ -428,3 +428,5 @@ Utilisés
 Non utilisés
 Demander au lancement
 Télécharge maintenant les derniers réglages recommandés depuis GitHub (Dolphin le fait aussi à chaque démarrage).
+# --- Nunchuk shake
+Secouer le Nunchuk

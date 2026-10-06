@@ -429,3 +429,5 @@ Usadas
 Não usadas
 Perguntar ao iniciar
 Baixa agora as configurações recomendadas mais recentes do GitHub (o Dolphin também faz isso a cada início).
+# --- Nunchuk shake
+Sacudir Nunchuk

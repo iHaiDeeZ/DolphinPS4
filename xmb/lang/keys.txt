@@ -430,3 +430,5 @@ Used
 Not used
 Ask at start
 Downloads the latest recommended settings from GitHub now (Dolphin also does it at every start).
+# --- Nunchuk shake
+Nunchuk Shake

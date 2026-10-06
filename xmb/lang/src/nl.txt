@@ -428,3 +428,5 @@ Gebruikt
 Niet gebruikt
 Vragen bij starten
 Downloadt nu de nieuwste aanbevolen instellingen van GitHub (Dolphin doet dat ook bij elke start).
+# --- Nunchuk shake
+Nunchuk schudden
