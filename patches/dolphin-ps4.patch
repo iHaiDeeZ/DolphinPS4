@@ -3542,10 +3542,10 @@ index 0000000..01c97dd
 +void OnMemory(u32 address, u32 size, bool write);
 +}  // namespace ParallelismOracle
 diff --git a/Source/Core/Core/PowerPC/Jit64/Jit.cpp b/Source/Core/Core/PowerPC/Jit64/Jit.cpp
-index 1248b1a..f2082f8 100644
+index 1248b1a..f7eaaf6 100644
 --- a/Source/Core/Core/PowerPC/Jit64/Jit.cpp
 +++ b/Source/Core/Core/PowerPC/Jit64/Jit.cpp
-@@ -49,6 +49,20 @@
+@@ -49,6 +49,23 @@
  #include "Core/System.h"
  
  using namespace Gen;
@@ -3558,6 +3558,9 @@ index 1248b1a..f2082f8 100644
 +int ps4_gp_fuse = 1;
 +extern "C" int ps4_lazy_lfs;    // ps4.ini jit_lazy_lfs (DolphinNoGUI)
 +int ps4_lazy_lfs = 1;
++// ps4.ini jit_inline_dispatch (Dolphin Lab): indirect block exits look their target up themselves.
++extern "C" int ps4_jit_inline_dispatch;
++int ps4_jit_inline_dispatch = 1;
 +extern "C" int ps4_jit_tlb_inline;  // ps4.ini jit_tlb_inline (DolphinNoGUI): EmuCodeBlock.cpp
 +int ps4_jit_tlb_inline = 1;
 +extern "C" int ps4_lfs_forward;  // ps4.ini jit_lfs_forward (DolphinNoGUI)
@@ -3566,7 +3569,7 @@ index 1248b1a..f2082f8 100644
  using namespace PowerPC;
  
  // Dolphin's PowerPC->x86_64 JIT dynamic recompiler
-@@ -259,6 +273,17 @@ void Jit64::Init()
+@@ -259,6 +276,17 @@ void Jit64::Init()
  
    RefreshConfig();
  
@@ -3584,7 +3587,7 @@ index 1248b1a..f2082f8 100644
    EnableBlockLink();
  
    jo.optimizeGatherPipe = true;
-@@ -430,6 +455,21 @@ void Jit64::DoNothing(UGeckoInstruction _inst)
+@@ -430,6 +458,21 @@ void Jit64::DoNothing(UGeckoInstruction _inst)
    // Yup, just don't do anything.
  }
  
@@ -3606,7 +3609,7 @@ index 1248b1a..f2082f8 100644
  void Jit64::ImHere(Jit64& jit)
  {
    auto& ppc_state = jit.m_ppc_state;
-@@ -453,15 +493,211 @@ void Jit64::ImHere(Jit64& jit)
+@@ -453,15 +496,211 @@ void Jit64::ImHere(Jit64& jit)
    been_here[ppc_state.pc] = 1;
  }
  
@@ -3818,7 +3821,59 @@ index 1248b1a..f2082f8 100644
      FixupBranch exit = J_CC(CC_L);
      ABI_PushRegistersAndAdjustStack({}, 0);
      ABI_CallFunctionP(GPFifo::UpdateGatherPipe, &m_system.GetGPFifo());
-@@ -992,10 +1228,21 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+@@ -647,6 +886,51 @@ void Jit64::WriteExitDestInRSCRATCH(bool bl, u32 after)
+   }
+ 
+   SUB(32, PPCSTATE(downcount), Imm32(js.downcountAmount));
++#ifdef __ORBIS__
++  // Dolphin Lab (PS4): indirect exits (bctr, bctrl, blr without a predicted return) look their
++  // target up here - the dispatcher's own one-read lookup, inline - and jump through their own
++  // indirect branch: one shared jmp in the dispatcher for every computed target was mispredicted
++  // by the CPU most of the time. Out of cycles: the dispatcher (the flags of the SUB above);
++  // not found: the dispatcher's lookup, which compiles the block.
++  if (ps4_jit_inline_dispatch && !GetBlockCache()->GetEntryPoints() && !IsDebuggingEnabled())
++  {
++    FixupBranch out_of_cycles = J_CC(CC_LE, Jump::Near);
++    // Cleanup() may have used RSCRATCH: the target PC again (MOV keeps the flags).
++    MOV(32, R(RSCRATCH), PPCSTATE(pc));
++    MOV(32, R(RSCRATCH2), R(RSCRATCH));
++    AND(32, R(RSCRATCH2), Imm32(JitBaseBlockCache::FAST_BLOCK_MAP_FALLBACK_MASK << 2));
++    SHL(64, R(RSCRATCH), Imm8(32));
++    if (m_ppc_state.feature_flags != 0)
++      OR(64, R(RSCRATCH), Imm32(static_cast<u32>(m_ppc_state.feature_flags)));
++    MOV(64, R(RSCRATCH_EXTRA), ImmPtr(GetBlockCache()->GetDispatchTable()));
++    LEA(64, RSCRATCH2, MComplex(RSCRATCH_EXTRA, RSCRATCH2, SCALE_4, 0));
++    CMP(64, R(RSCRATCH), MatR(RSCRATCH2));
++    FixupBranch not_found = J_CC(CC_NE, Jump::Near);
++    if (bl)
++    {
++      CALLptr(MDisp(RSCRATCH2, 8));
++      FixupBranch returned = J(Jump::Near);
++      SetJumpTarget(out_of_cycles);
++      CALL(asm_routines.dispatcher);
++      FixupBranch returned2 = J(Jump::Near);
++      SetJumpTarget(not_found);
++      CALL(asm_routines.dispatcher_no_timing_check);
++      SetJumpTarget(returned);
++      SetJumpTarget(returned2);
++      POP(RSCRATCH);
++      JustWriteExit(after, false, 0);
++    }
++    else
++    {
++      JMPptr(MDisp(RSCRATCH2, 8));
++      SetJumpTarget(out_of_cycles);
++      JMP(asm_routines.dispatcher, true);
++      SetJumpTarget(not_found);
++      JMP(asm_routines.dispatcher_no_timing_check, true);
++    }
++    return;
++  }
++#endif
+   if (bl)
+   {
+     CALL(asm_routines.dispatcher);
+@@ -992,10 +1276,21 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
      IntializeSpeculativeConstants();
    }
  
@@ -3840,7 +3895,7 @@ index 1248b1a..f2082f8 100644
  
      js.compilerPC = op.address;
      js.op = &op;
-@@ -1018,16 +1265,32 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+@@ -1018,16 +1313,32 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
        bool gatherPipeIntCheck = js.fifoWriteAddresses.contains(prev_address);
  
        // Gather pipe writes using an immediate address are explicitly tracked.
@@ -3875,7 +3930,7 @@ index 1248b1a..f2082f8 100644
        }
  
        // Gather pipe writes can generate an exception; add an exception check.
-@@ -1155,7 +1418,12 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+@@ -1155,7 +1466,12 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
              // prioritize the more important registers.
              gpr.PreloadRegisters(op.regsIn & (op.gprWillBeRead | op.gprWillBeWritten) &
                                   ~op.gprDiscardable);
@@ -5590,7 +5645,7 @@ index 51c3fff..07e988f 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..6fb0545 100644
+index 3bf40ea..715ded4 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -5638,7 +5693,7 @@ index 3bf40ea..6fb0545 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +50,43 @@
+@@ -31,6 +50,44 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -5656,6 +5711,7 @@ index 3bf40ea..6fb0545 100644
 +extern "C" int ps4_gp_fuse;     // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_tex_hash_once;  // VideoCommon/TextureCacheBase.cpp
 +extern "C" int ps4_lazy_lfs;       // Core/PowerPC/Jit64/Jit.cpp
++extern "C" int ps4_jit_inline_dispatch;  // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_tlb_inline;  // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_soft_tlb_precise;  // Core/PowerPC/MMU.cpp
 +extern "C" int ps4_lfs_forward;    // Core/PowerPC/Jit64/Jit.cpp
@@ -5682,7 +5738,7 @@ index 3bf40ea..6fb0545 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +229,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +230,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -5693,7 +5749,7 @@ index 3bf40ea..6fb0545 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +244,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +245,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -5712,7 +5768,7 @@ index 3bf40ea..6fb0545 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +276,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +277,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -5723,7 +5779,7 @@ index 3bf40ea..6fb0545 100644
  #endif
        });
  
-@@ -270,7 +343,328 @@ int main(const int argc, char* argv[])
+@@ -270,7 +344,330 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -5891,6 +5947,8 @@ index 3bf40ea..6fb0545 100644
 +    ps4_tex_hash_once = Platform::GetPS4Option("tex_hash_once", "on") == "on";
 +    // jit_lazy_lfs=off: every lfs converts its value again (Jit64 PS4AnalyzeRawSingles).
 +    ps4_lazy_lfs = Platform::GetPS4Option("jit_lazy_lfs", "on") == "on";
++    // jit_inline_dispatch=off (Dolphin Lab): indirect block exits go through the dispatcher again.
++    ps4_jit_inline_dispatch = Platform::GetPS4Option("jit_inline_dispatch", "on") == "on";
 +    // jit_tlb_inline=off: the soft TLB is looked up in C only (Jit64Common/EmuCodeBlock.cpp).
 +    ps4_jit_tlb_inline = Platform::GetPS4Option("jit_tlb_inline", "on") == "on";
 +    // soft_tlb=flush: every tlbie empties the whole soft TLB (MMU.cpp), as before v03.10.
@@ -6052,7 +6110,7 @@ index 3bf40ea..6fb0545 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +678,12 @@ int main(const int argc, char* argv[])
+@@ -284,6 +681,12 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -6065,7 +6123,7 @@ index 3bf40ea..6fb0545 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,6 +703,28 @@ int main(const int argc, char* argv[])
+@@ -303,6 +706,28 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
