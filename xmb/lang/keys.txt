@@ -1,0 +1,432 @@
+# English texts of the PS4 menus, one per line, in the order of every translation file in
+# xmb/lang/src/<code>.txt (scripts/make-lang.py joins them into xmb/lang/<code>.ini).
+# {} stands for a number or a name; a translation repeats it as {} (in order) or {1}..{9}.
+# --- In-game menu
+Resume Game
+Save State
+Load State
+Wii Extension
+Nunchuk
+None
+Sideways Wii Remote
+On
+Off
+Settings
+Cheats
+Quit Game
+PAUSED
+Select
+Slot
+Resume
+Change
+Enable All
+Disable All
+Gecko Codes
+Action Replay Codes
+No cheats for this game
+CHEATS
+On/Off
+Move
+Back
+Apply To
+This Game
+All Games
+Reset This Game
+Reset to Defaults
+SETTINGS - THIS GAME
+SETTINGS - ALL GAMES
+All cheats on
+All cheats off
+{}: on
+{}: off
+Settings for this game only
+This game follows the global settings
+This game uses the global settings again
+Settings reset to defaults
+{}: next time a game starts
+Nunchuk plugged in
+Nunchuk unplugged
+Wii Remote held sideways
+Wii Remote held upright
+Still saving, please wait...
+Saving to slot {}...
+Saved to slot {}
+Slot {} is empty
+Slot {} belongs to another game
+Slot {} was saved by {} and can't be loaded by this version
+Slot {} was saved by an older Dolphin for PS4 and can't be loaded
+Slot {} was saved by another Dolphin version and can't be loaded
+Slot {} is damaged and can't be loaded
+Slot {} couldn't be loaded - back to the game list
+Loaded slot {}
+Slot {} (Empty)
+Slot {} (Other Version)
+Slot {} (Damaged)
+Slot {}
+Menu
+# --- Setting categories
+Video
+Graphics
+Performance
+System
+Diagnostics
+# --- Settings
+Aspect Ratio
+Auto
+Stretch
+The game's picture shape on the TV.
+Letterbox Zoom
+Fills a 16:9 TV with games that letterbox a 16:9 picture (Resident Evil 4).
+Widescreen Hack
+Renders a wider view in 4:3 games (may show glitches at the edges).
+Crop to Aspect Ratio
+Crops the picture to the chosen aspect ratio instead of adding black bars.
+Internal Resolution
+Native (480p)
+Sharper pictures at higher settings; costs GPU time.
+Frame Rate Limit
+Unlimited
+Auto (60/30)
+Caps the frames shown per second. Auto: 60 while the game keeps up, an even 30 when it can't (steadier than a frame rate that bounces around).
+V-Sync
+Waits for the TV's refresh (no tearing).
+FPS Counter
+Frames and emulation speed in the corner.
+Texture Filtering
+Default
+Smooth (linear)
+Sharp (nearest)
+How textures are smoothed.
+Anisotropic Filtering
+Sharper textures at an angle; costs GPU time.
+Anti-Aliasing
+Smoother edges; costs GPU time.
+Disable Fog
+Removes distance fog (some games use fog for effects).
+Copy Filter
+The game's own blur/deflicker filter on copies; Off is sharper.
+EFB Copies
+To Texture (fast)
+To RAM (accurate)
+Some effects need RAM copies; Texture is faster.
+CPU Access to EFB
+Needed by some games (lens flares, cursors); Off is faster.
+Manual Texture Sampling
+Exact texture sampling (fixes some videos, e.g. FIFA Street 2); slower.
+GPU Texture Decoding
+Decodes game textures on the GPU instead of the video thread (helps draw-heavy scenes).
+Shader Compilation
+Asynchronous
+Hybrid Ubershaders
+Synchronous
+Asynchronous: no stutter, objects may appear a moment late. Hybrid Ubershaders: no stutter and nothing missing, costs GPU time. Synchronous: waits for each new shader.
+Emulated CPU Clock
+Auto lowers the clock only when the CPU is the limit.
+Speed Features
+Fast
+Compatible
+Compatible turns off the port's command-stream shortcuts if a game glitches or freezes.
+Dual Core
+Forced
+Emulates the GPU on its own thread.
+Vulkan Thread
+Records graphics commands on a separate core.
+Fast Disc Speed
+Shorter loading pauses (rarely breaks a game).
+Performance Graphs
+Frame time and speed graphs on screen.
+Language
+The menus' language, and the games' own language where the GameCube or Wii has it. The menu restarts to change it.
+Game Volume
+Volume of the games' sound.
+What is plugged into the Wii Remote. Wii Sports and similar games need None.
+For games played with the Wii Remote held sideways (NSMB Wii, Mario Kart Wii).
+Audio Buffer
+Larger is smoother when a game runs below full speed; smaller has less delay.
+All Diagnostics
+Every switch below at once. Off: nothing is recorded while you play.
+Performance Log
+Speed, FPS and hitches every 2 seconds (boot-trace.log).
+Freeze Reports
+Where the emulator was stuck when a game freezes, stalls or starts slowly.
+Emulator Log
+Dolphin's own messages (dolphin.log).
+Profiler
+Records where the time goes (samples.log). Costs speed - only for diagnosing slow games.
+{} (Next game start.)
+# --- Launcher: categories, tabs, items
+Games
+Memory Cards
+Themes
+Library
+A-Z
+Recently Played
+Platform
+Picture, resolution, frame rate
+Filtering, anti-aliasing, effects
+CPU clock, speed features, profiler
+Game volume, audio
+Logs, freeze reports, profiler - on or off
+Sound Effects
+Volume
+Menu Style
+Clock
+Controls
+Remap the GameCube and Wii buttons
+Game Folder
+Download Covers
+Box art from GameTDB for your games
+Check for Updates
+Installed: v{}
+Automatic Updates
+Reset All Settings
+Every setting back to the defaults
+About
+{} discs
+No games found
+Copy games to {}, then press Square
+{} save
+{} saves
+{} blocks
+{} block
+In Slot A
+An empty card for new saves
+New Memory Card
+In use
+Color theme
+Wallpaper
+Dolphin Blue
+GameCube Indigo
+Wii White
+Ocean
+Emerald
+Lime
+Gold
+Sunset
+Crimson
+Rose
+Graphite
+Midnight
+# --- Launcher: panels
+Library: your covers in a row,
+tabs switched with L1 / R1.
+XMB: the PSP-style columns.
+Looks for a new version on GitHub
+when the app opens, and asks
+before installing it.
+Cancel
+Reset everything
+All games, global and per game,
+go back to the default settings.
+Dolphin for PS4
+GameCube and Wii emulator
+Ported to PS4 by ShiroKlein
+Version {} (installed package {})
+Version {}
+Games: {}
+Wallpapers (PNG): {}
+Sounds (WAV): {}
+Dolphin is free software (GPLv2+).
+Font: Nunito (SIL Open Font License).
+Game Settings
+Reset to Default
+No cheats for this game.
+Dolphin's cheat database has none for {}.
+Places
+Use This Folder
+{} game
+{} games
+(this folder can't be opened)
+Connecting to GameTDB...
+Finishing...
+Downloading {} of {}: {}
+Circle closes this; the download goes on.
+Downloaded: {}
+Already there: {}
+Not on GameTDB: {}
+Failed: {}
+Your own pictures: {}
+Information
+Platform: {}
+Wii (WiiWare / Virtual Console / channel)
+Wii
+GameCube
+Game ID: {}
+Discs: {}
+File: {}
+Game
+Start
+Put in Slot A
+{} Save
+{} Saves
+No saves on this card yet
+Press the DualShock 4 button for {}...  (5 s: cancel)
+Cross: press a new button for it. Sticks: Left/Right to choose.
+Back to the default layout.
+Cross: open this folder.
+Cross: look for games in this folder.
+Cross: games use this card from their next start. Your other cards stay as they are.
+Games save to this card. Pick another card and put it in Slot A to switch.
+saved {}
+Applies the next time the game starts, or now from the in-game menu (L3+R3).
+All Games: this game follows the global settings. This Game: its own.
+Refresh
+Options
+Play
+Not played yet
+Played today
+Played yesterday
+Played {} days ago
+Played {}
+# --- Library style
+Your games
+No games yet
+Copy your games to {}
+then press Square to look again (or pick a folder in Settings).
+Slot A: {}
+SLOT A
+A new, empty memory card.
+Put it in Slot A to start fresh saves - for a second
+playthrough, or to share the console with someone.
+Your other cards and their saves stay as they are,
+and you can switch back at any time.
+Press Cross to create it.
+Saves on {}
+No saves yet. Put the card in Slot A and save in a game.
++ {} more - press Cross to see them all
+Colours and wallpapers (PNG in {})
+Emulation, controls, updates and more
+Browse
+Create
+Open
+Sort
+# --- Updates
+Updates
+Looking for a new version on GitHub...
+You have the latest version.
+Update Available
+Dolphin v{} is available.
+You have v{}.
+Download it ({})?
+Yes
+No
+Downloading Update
+Keep the app open until it's done.
+Update Installed
+Dolphin v{} is ready.
+It starts when Dolphin restarts.
+Games, saves and settings are kept.
+Restart Now
+Later
+Update Ready
+Dolphin v{} is downloaded and checked.
+To install it, close Dolphin, then open
+Debug Settings > Game > Package Installer
+(or GoldHEN's) and pick Dolphin v{}.
+Saved as {}
+Close Dolphin
+Update
+The update didn't work:
+Couldn't check for updates:
+OK
+# --- Controls
+GameCube Controller
+Wii Remote + Nunchuk
+Main Stick
+Control Stick
+C-Stick
+D-Pad Up
+D-Pad Down
+D-Pad Left
+D-Pad Right
+L (click)
+R (click)
+L (analog)
+R (analog)
+Left Stick
+Right Stick
+Left Stick Up
+Left Stick Down
+Left Stick Left
+Left Stick Right
+Right Stick Up
+Right Stick Down
+Right Stick Left
+Right Stick Right
+L2 (analog)
+R2 (analog)
+Shake
+Shake (spin)
+Pointer
+Nunchuk Stick
+Custom
+# --- Homebrew
+Homebrew (GameCube)
+Homebrew (Wii)
+# --- Default game
+Set as Default ISO
+Remove Default ISO
+No game starts by itself anymore.
+starts when Dolphin opens.
+Hold L1 while Dolphin starts
+to open the menu instead.
+Starts when Dolphin opens
+# --- JIT
+This console doesn't allow Dolphin's fast CPU mode (JIT): games run slowly.
+# --- SD card
+Wii SD Card
+Inserted
+Removed
+A virtual SD card for Wii games and channels (saves, photos, music, homebrew).
+SD Card Folder
+The card holds the files in /data/DolphinPS4/User/Load/WiiSDSync (copy them there over FTP); what games write goes back there when they end.
+SD Card Writes
+Lets games save to the SD card. Off: it is read-only.
+SD Card Size
+Auto makes the card just big enough for the folder's files.
+# --- Motion
+Motion Controls
+The DualShock 4's motion sensors move the Wii Remote: tilt, swing and shake it.
+Wii Remote Controller
+Auto: a PS Move that is on when the game starts becomes the Wii Remote (buttons, motion and pointer), the DualShock 4 the Nunchuk.
+# --- Wii input
+Controller in Wii Games
+Both
+Wii Remote
+What a Wii game sees: a Wii Remote, a GameCube controller (Mario Kart Wii, Super Smash Bros. Brawl and others support one), or both.
+# --- Restart
+Restart Game
+# --- Riivolution
+Riivolution Patches
+No Riivolution mods for this game.
+Copy the mod's SD card files
+(its riivolution folder and the rest) to
+Applies the next time the game starts.
+# --- Cheat download
+Download Codes
+Downloading...
+{} found, {} new
+None online
+Failed (HTTP {})
+Failed (no connection)
+Gets this game's Gecko codes from the internet (codes.rc24.xyz). New ones are added switched off.
+# --- Settings center
+Game Settings Center
+Recommended settings per game, from GitHub
+Source
+Last Update
+Games Covered
+Update Now
+Updating...
+Updated
+Up to date
+Failed (not a settings file)
+Your Games
+None of your games yet
+Copy in the app
+Recommended Settings
+Use them for this game?
+Used
+Not used
+Ask at start
+Downloads the latest recommended settings from GitHub now (Dolphin also does it at every start).

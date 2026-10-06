@@ -1,0 +1,431 @@
+# Português (Brasil)
+# --- In-game menu
+Continuar jogo
+Salvar estado
+Carregar estado
+Extensão do Wii Remote
+Nunchuk
+Nenhum
+Wii Remote na horizontal
+Ligado
+Desligado
+Configurações
+Trapaças
+Sair do jogo
+PAUSADO
+Selecionar
+Slot
+Continuar
+Alterar
+Ativar todas
+Desativar todas
+Códigos Gecko
+Códigos Action Replay
+Nenhuma trapaça para este jogo
+TRAPAÇAS
+Ativar/Desativar
+Mover
+Voltar
+Aplicar a
+Este jogo
+Todos os jogos
+Redefinir este jogo
+Restaurar padrões
+CONFIGURAÇÕES - ESTE JOGO
+CONFIGURAÇÕES - TODOS OS JOGOS
+Todas as trapaças ativadas
+Todas as trapaças desativadas
+{}: ligado
+{}: desligado
+Configurações só para este jogo
+Este jogo segue as configurações gerais
+Este jogo voltou a seguir as configurações gerais
+Configurações restauradas
+{}: na próxima vez que um jogo iniciar
+Nunchuk conectado
+Nunchuk desconectado
+Wii Remote na horizontal
+Wii Remote na vertical
+Ainda salvando, aguarde...
+Salvando no slot {}...
+Salvo no slot {}
+O slot {} está vazio
+O slot {} é de outro jogo
+O slot {} foi salvo por {} e esta versão não consegue carregá-lo
+O slot {} foi salvo por uma versão mais antiga do Dolphin para PS4 e não pode ser carregado
+O slot {} foi salvo por outra versão do Dolphin e não pode ser carregado
+O slot {} está danificado e não pode ser carregado
+Não foi possível carregar o slot {} - voltando à lista de jogos
+Slot {} carregado
+Slot {} (vazio)
+Slot {} (outra versão)
+Slot {} (danificado)
+Slot {}
+Menu
+# --- Setting categories
+Vídeo
+Gráficos
+Desempenho
+Sistema
+Diagnóstico
+# --- Settings
+Proporção da tela
+Automático
+Esticar
+O formato da imagem do jogo na TV.
+Zoom letterbox
+Preenche uma TV 16:9 com jogos que mostram uma imagem 16:9 com faixas (Resident Evil 4).
+Hack widescreen
+Mostra uma visão mais larga em jogos 4:3 (podem aparecer falhas nas bordas).
+Cortar na proporção
+Corta a imagem na proporção escolhida em vez de adicionar faixas pretas.
+Resolução interna
+Nativa (480p)
+Imagem mais nítida em valores altos; usa a GPU.
+Limite de FPS
+Ilimitado
+Automático (60/30)
+Limita os quadros exibidos por segundo. Automático: 60 enquanto o jogo aguenta, 30 estáveis quando não (mais estável que uma taxa que oscila).
+V-Sync
+Sincroniza com a atualização da TV para evitar tearing.
+Contador de FPS
+Quadros e velocidade de emulação no canto.
+Filtragem de texturas
+Padrão
+Suave (linear)
+Nítida (vizinho mais próximo)
+Como as texturas são suavizadas.
+Filtragem anisotrópica
+Texturas mais nítidas em ângulo; usa a GPU.
+Anti-aliasing
+Bordas mais suaves; usa a GPU.
+Desativar neblina
+Remove a neblina de distância (alguns jogos a usam para efeitos).
+Filtro de cópia
+O filtro de desfoque/anticintilação do próprio jogo nas cópias; Desligado é mais nítido.
+Cópias EFB
+Para textura (rápido)
+Para RAM (preciso)
+Alguns efeitos precisam de cópias em RAM; Textura é mais rápido.
+Acesso da CPU ao EFB
+Necessário em alguns jogos (reflexos de lente, cursores); Desligado é mais rápido.
+Amostragem manual de texturas
+Amostragem exata de texturas (corrige alguns vídeos, ex.: FIFA Street 2); mais lento.
+Decodificação de texturas na GPU
+Decodifica as texturas do jogo na GPU em vez da thread de vídeo (ajuda em cenas pesadas).
+Compilação de shaders
+Assíncrona
+Ubershaders híbridos
+Síncrona
+Assíncrona: sem travadas, objetos podem aparecer um instante depois. Ubershaders híbridos: sem travadas e nada faltando, usa a GPU. Síncrona: espera cada shader novo.
+Frequência da CPU emulada
+Automático reduz a frequência somente quando a CPU é o gargalo.
+Recursos de velocidade
+Rápido
+Compatível
+O modo Compatível desativa os atalhos do porte no fluxo de comandos se um jogo apresentar falhas ou travar.
+Dual Core
+Forçado
+Emula a GPU em uma thread própria.
+Thread do Vulkan
+Grava os comandos gráficos em outro núcleo.
+Disco rápido
+Pausas de carregamento menores (raramente quebra um jogo).
+Gráficos de desempenho
+Gráficos de tempo de quadro e velocidade na tela.
+Idioma
+Define o idioma dos menus e, quando disponível, também dos jogos de GameCube e Wii. O menu reinicia ao trocar.
+Volume do jogo
+Volume do som dos jogos.
+O que está conectado ao Wii Remote. Wii Sports e jogos parecidos precisam de Nenhum.
+Para jogos jogados com o Wii Remote na horizontal (NSMB Wii, Mario Kart Wii).
+Buffer de áudio
+Um buffer maior deixa o áudio mais suave quando o jogo roda abaixo da velocidade total; um menor reduz o atraso.
+Todos os diagnósticos
+Ativa ou desativa todas as opções abaixo de uma só vez. Desligado: nada é registrado durante o jogo.
+Registro de desempenho
+Velocidade, FPS e travadas a cada 2 segundos (boot-trace.log).
+Relatórios de travamento
+Onde o emulador estava quando um jogo trava, para ou demora a iniciar.
+Registro do emulador
+As mensagens do próprio Dolphin (dolphin.log).
+Profiler
+Registra onde o tempo é gasto (samples.log). Custa velocidade - só para analisar jogos lentos.
+{} (na próxima vez que o jogo iniciar.)
+# --- Launcher: categories, tabs, items
+Jogos
+Cartões de memória
+Temas
+Biblioteca
+A-Z
+Jogados recentemente
+Plataforma
+Imagem, resolução e taxa de quadros
+Filtragem, anti-aliasing, efeitos
+Frequência da CPU, recursos de velocidade, profiler
+Volume do jogo, áudio
+Registros, relatórios de travamento, profiler - ligado ou desligado
+Efeitos sonoros
+Volume
+Estilo do menu
+Relógio
+Controles
+Remapeie os botões de GameCube e Wii
+Pasta de jogos
+Baixar capas
+Capas do GameTDB para seus jogos
+Procurar atualizações
+Versão instalada: v{}
+Atualizações automáticas
+Restaurar todas as configurações
+Todas as configurações de volta ao padrão
+Sobre
+{} discos
+Nenhum jogo encontrado
+Copie jogos para {} e aperte Quadrado
+{} salvamento
+{} salvamentos
+{} blocos
+{} bloco
+No Slot A
+Um cartão vazio para novos salvamentos
+Novo cartão de memória
+Em uso
+Tema de cores
+Papel de parede
+Azul Dolphin
+Índigo GameCube
+Branco Wii
+Oceano
+Esmeralda
+Lima
+Ouro
+Pôr do sol
+Carmesim
+Rosa
+Grafite
+Meia-noite
+# --- Launcher: panels
+Biblioteca: suas capas em fileira,
+abas alternadas com L1 / R1.
+XMB: as colunas no estilo do PSP.
+Procura uma nova versão no GitHub
+quando o aplicativo abre e pede confirmação
+antes de instalar.
+Cancelar
+Restaurar tudo
+Configurações gerais e de cada jogo,
+voltam aos valores padrão.
+Dolphin para PS4
+Emulador de GameCube e Wii
+Portado para o PS4 por ShiroKlein
+Versão {} (pacote instalado {})
+Versão {}
+Jogos: {}
+Papéis de parede (PNG): {}
+Sons (WAV): {}
+O Dolphin é software livre (GPLv2+).
+Fonte: Nunito (SIL Open Font License).
+Configurações do jogo
+Restaurar padrão
+Nenhuma trapaça para este jogo.
+O banco de trapaças do Dolphin não tem nenhuma para {}.
+Locais
+Usar esta pasta
+{} jogo
+{} jogos
+(não foi possível abrir esta pasta)
+Conectando ao GameTDB...
+Finalizando...
+Baixando {} de {}: {}
+Círculo fecha esta tela; o download continua.
+Baixadas: {}
+Já existentes: {}
+Não encontradas no GameTDB: {}
+Falharam: {}
+Suas próprias imagens: {}
+Informações
+Plataforma: {}
+Wii (WiiWare / Virtual Console / canal)
+Wii
+GameCube
+ID do jogo: {}
+Discos: {}
+Arquivo: {}
+Jogo
+Iniciar
+Colocar no Slot A
+{} salvamento
+{} salvamentos
+Ainda não há salvamentos neste cartão
+Aperte o botão do DualShock 4 para {}...  (5 s: cancelar)
+X: pressione um novo botão. Analógicos: Esquerda/Direita para escolher.
+Restaura o layout padrão.
+X: abrir esta pasta.
+X: procurar jogos nesta pasta.
+X: os jogos usam este cartão a partir do próximo início. Seus outros cartões continuam iguais.
+Os jogos salvam neste cartão. Escolha outro e coloque no Slot A para trocar.
+salvo {}
+É aplicado na próxima vez que o jogo iniciar ou agora pelo menu do jogo (L3+R3).
+Todos os jogos: usa as configurações gerais. Este jogo: usa configurações próprias.
+Atualizar
+Opções
+Jogar
+Ainda não jogado
+Jogado hoje
+Jogado ontem
+Jogado há {} dias
+Jogado em {}
+# --- Library style
+Seus jogos
+Ainda não há jogos
+Copie seus jogos para {}
+e aperte Quadrado para procurar de novo (ou escolha uma pasta em Configurações).
+Slot A: {}
+SLOT A
+Um novo cartão de memória vazio.
+Coloque-o no Slot A para começar novos salvamentos - para uma segunda
+jogada ou para dividir o console com alguém.
+Seus outros cartões e salvamentos continuam iguais,
+e você pode voltar a qualquer momento.
+Aperte X para criá-lo.
+Salvamentos em {}
+Ainda não há salvamentos. Coloque o cartão no Slot A e salve em um jogo.
++ {} a mais - aperte X para ver todos
+Cores e papéis de parede (PNG em {})
+Emulação, controles, atualizações e mais
+Navegar
+Criar
+Abrir
+Ordenar
+# --- Updates
+Atualizações
+Procurando uma versão nova no GitHub...
+Você tem a versão mais recente.
+Atualização disponível
+Dolphin v{} está disponível.
+Você tem a v{}.
+Baixar ({})?
+Sim
+Não
+Baixando atualização
+Mantenha o aplicativo aberto até terminar.
+Atualização instalada
+Dolphin v{} está pronta.
+Ela inicia quando o Dolphin reiniciar.
+Jogos, salvamentos e configurações são mantidos.
+Reiniciar agora
+Depois
+Atualização pronta
+Dolphin v{} foi baixada e verificada.
+Para instalar, feche o Dolphin e abra
+Configurações de depuração > Jogo > Instalador de pacotes
+(ou o do GoldHEN) e escolha Dolphin v{}.
+Salvo como {}
+Fechar o Dolphin
+Atualização
+A atualização não funcionou:
+Não foi possível procurar atualizações:
+OK
+# --- Controls
+Controle de GameCube
+Wii Remote + Nunchuk
+Analógico principal
+Analógico de controle
+Analógico C
+Direcional para cima
+Direcional para baixo
+Direcional para a esquerda
+Direcional para a direita
+L (clique)
+R (clique)
+L (analógico)
+R (analógico)
+Analógico esquerdo
+Analógico direito
+Analógico esquerdo para cima
+Analógico esquerdo para baixo
+Analógico esquerdo para a esquerda
+Analógico esquerdo para a direita
+Analógico direito para cima
+Analógico direito para baixo
+Analógico direito para a esquerda
+Analógico direito para a direita
+L2 (analógico)
+R2 (analógico)
+Sacudir
+Sacudir (giro)
+Ponteiro
+Analógico do Nunchuk
+Personalizado
+# --- Homebrew
+Homebrew (GameCube)
+Homebrew (Wii)
+# --- Default game
+Definir como ISO padrão
+Remover ISO padrão
+Nenhum jogo inicia sozinho agora.
+inicia ao abrir o Dolphin.
+Segure L1 enquanto o Dolphin inicia
+para abrir o menu no lugar.
+Inicia ao abrir o Dolphin
+# --- JIT
+Este console não permite o modo rápido de CPU do Dolphin (JIT): os jogos ficam lentos.
+# --- SD card
+Cartão SD do Wii
+Inserido
+Removido
+Um cartão SD virtual para jogos e canais do Wii (salvamentos, fotos, músicas, homebrew).
+Pasta do cartão SD
+O cartão contém os arquivos de /data/DolphinPS4/User/Load/WiiSDSync (copie-os para lá por FTP); o que os jogos gravam volta para lá ao terminar.
+Gravação no cartão SD
+Permite que os jogos salvem no cartão SD. Desligado: só leitura.
+Tamanho do cartão SD
+Automático deixa o cartão do tamanho exato dos arquivos da pasta.
+# --- Motion
+Controles de movimento
+Os sensores de movimento do DualShock 4 movem o Wii Remote: incline, balance e sacuda.
+Controle como Wii Remote
+Automático: um PS Move conectado ao iniciar o jogo se torna o Wii Remote (botões, movimento e ponteiro), e o DualShock 4 se torna o Nunchuk.
+# --- Wii input
+Controle em jogos de Wii
+Ambos
+Wii Remote
+Define o que o jogo de Wii detecta: um Wii Remote, um controle de GameCube (Mario Kart Wii, Super Smash Bros. Brawl e outros aceitam) ou ambos.
+
+# --- Restart
+Reiniciar jogo
+# --- Riivolution
+Patches do Riivolution
+Nenhum mod do Riivolution para este jogo.
+Copie os arquivos do cartão SD do mod
+(a pasta riivolution e os demais arquivos) para
+Será aplicado na próxima vez que o jogo iniciar.
+# --- Cheat download
+Baixar códigos
+Baixando...
+{} encontrados, {} novos
+Nenhum online
+Falha (HTTP {})
+Falha (sem conexão)
+Baixa os códigos Gecko deste jogo da internet (codes.rc24.xyz). Os novos são adicionados desativados.
+# --- Settings center
+Central de configurações de jogos
+Configurações recomendadas por jogo, do GitHub
+Origem
+Última atualização
+Jogos cobertos
+Atualizar agora
+Atualizando...
+Atualizado
+Em dia
+Falha (não é um arquivo de configurações)
+Seus jogos
+Nenhum dos seus jogos ainda
+Cópia do app
+Configurações recomendadas
+Usar neste jogo?
+Usadas
+Não usadas
+Perguntar ao iniciar
+Baixa agora as configurações recomendadas mais recentes do GitHub (o Dolphin também faz isso a cada início).

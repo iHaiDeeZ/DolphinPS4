@@ -6,13 +6,15 @@
   <a href="https://github.com/iHaiDeeZ/DolphinPS4/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/iHaiDeeZ/DolphinPS4?label=release&color=5bb8ff"></a>
   <img alt="PS4 homebrew" src="https://img.shields.io/badge/PS4-homebrew-1f5fd6">
   <img alt="GameCube and Wii" src="https://img.shields.io/badge/GameCube%20%2B%20Wii-Dolphin-5cd3ff">
+  <a href="https://discord.gg/QwtU8ZaCth"><img alt="Discord" src="https://img.shields.io/badge/Discord-join%20the%20testers-5865F2?logo=discord&logoColor=white"></a>
   <a href="LICENSE"><img alt="GPL-2.0-or-later" src="https://img.shields.io/badge/license-GPL--2.0--or--later-ff9ccf"></a>
 </p>
 
 <h3 align="center">Your GameCube and Wii library, on the PS4.</h3>
 
 <p align="center">
-  <a href="https://github.com/iHaiDeeZ/DolphinPS4/releases/latest"><b>⬇ Get v02.99</b></a> ·
+  <a href="https://github.com/iHaiDeeZ/DolphinPS4/releases/latest"><b>⬇ Get the latest version</b></a> ·
+  <a href="https://discord.gg/QwtU8ZaCth">Discord</a> ·
   <a href="#getting-started">Getting started</a> ·
   <a href="#controls">Controls</a> ·
   <a href="#faq">FAQ</a> ·
@@ -24,8 +26,8 @@
 ## Overview
 
 Dolphin for PS4 brings the [Dolphin](https://dolphin-emu.org) emulator to jailbroken PS4 consoles
-as an app you launch from the home screen like any other. You browse your games in a menu
-inspired by the PSP's XMB, press **Cross**, and play with a DualShock 4. Pressing **L3 + R3**
+as an app you launch from the home screen like any other. You browse your box art in a
+cover-flow library (or a PSP-style XMB, if you prefer), press **Cross**, and play with a DualShock 4. Pressing **L3 + R3**
 during a game pauses it and opens a menu for save states, settings and cheats.
 
 Under the hood, Dolphin's JIT recompiler runs on the PS4's CPU, and rendering goes through
@@ -36,8 +38,11 @@ You bring your own game backups. Nothing copyrighted is bundled: no games, BIOS 
 ## Highlights
 
 **A launcher made for the couch**
-- Three columns, Settings, Games and Themes, navigated with the D-pad or left stick.
-- Purple badges mark GameCube games and white badges mark Wii games.
+- Your games as a row of covers, with the selected one up front, its title, platform and when you
+  last played it. Tabs for Library, Memory Cards, Settings and Themes switch with **L1 / R1**.
+- **OPTIONS** sorts the games A-Z, by Recently Played or by Platform; **Square** looks for new games.
+- Prefer the PSP look? **Settings → Menu Style → XMB** brings back the columns, with purple badges
+  for GameCube games and white ones for Wii games.
 - Box art is fetched from GameTDB on its own each time the app starts, only for the games that
   are still missing a cover. GameCube discs without art show their built-in banner.
 - It remembers the last game you played and starts there. A short animated intro plays at
@@ -53,13 +58,18 @@ You bring your own game backups. Nothing copyrighted is bundled: no games, BIOS 
   pause menu. Each code shows a green ON or red OFF tag, and *Enable All* / *Disable All* flip
   them in one go.
 
+**Memory cards you can see**
+- Every GameCube save shows up with its own icon, title, size and date, in both menu styles.
+- Make a new, empty memory card for a fresh playthrough or a second player, and choose which card
+  sits in Slot A. Your other cards keep their saves.
+
 **Play together**
 - Up to four players, each on their own DualShock 4. Turn on another controller, pick a PS4 user
   for it, and it becomes the next player, even in the middle of a game.
 - Games only see the controllers that are really there, so nobody gets an empty extra port.
 
 **A pause menu on L3 + R3**
-- Eight save state slots, with a message while a state is being written.
+- Eight save state slots, each marked Empty or Other Version when it can't be loaded.
 - All settings, applied immediately.
 - For Wii games, plug the Nunchuk in or out, or turn the Wii Remote sideways, without leaving
   the game.
@@ -88,10 +98,11 @@ You bring your own game backups. Nothing copyrighted is bundled: no games, BIOS 
 **You need:** a jailbroken PS4 that runs homebrew packages (developed on a launch-model "fat"
 PS4), an FTP connection to it, and backups of games you own.
 
-1. Grab **`DolphinPS4-v02.99.pkg`** from the [releases page](https://github.com/iHaiDeeZ/DolphinPS4/releases/latest)
+1. Grab **`DolphinPS4-v03.33.pkg`** from the [releases page](https://github.com/iHaiDeeZ/DolphinPS4/releases/latest)
    and install it with your package installer.
 2. Put your games in **`/data/DolphinPS4/games/`**. Accepted formats are `.rvz`, `.iso`,
-   `.nkit.iso`, `.gcm`, `.gcz`, `.ciso`, `.wia` and `.wbfs`. Multi-disc games just need
+   `.nkit.iso`, `.gcm`, `.gcz`, `.ciso`, `.wia`, `.wbfs` and `.tgc` (discs), `.wad` (WiiWare,
+   Virtual Console, channels), and `.dol` / `.elf` (homebrew). Multi-disc games just need
    `(Disc 1)` / `(Disc 2)` in their names.
 3. Launch **Dolphin** from the home screen.
 
@@ -100,6 +111,9 @@ PS4), an FTP connection to it, and backups of games you own.
 
 **Updating:** install the newer package on top of the old one. Everything you've set up lives in
 `/data/DolphinPS4/` and survives updates. **Settings → About** shows which version you're on.
+Dolphin also checks GitHub for new versions: say *Yes* and it downloads the package, checks it and
+puts it in `/data/pkg`; then close Dolphin and install it from **Debug Settings → Game → Package
+Installer** (or GoldHEN's).
 
 ## Controls
 
@@ -153,11 +167,32 @@ the same layout on their own controller. The pause menu belongs to player 1.
 | Video | Internal resolution up to 3x, aspect ratio, widescreen hack, letterbox zoom, frame-rate limit, V-Sync, FPS counter |
 | Graphics | Texture filtering, anisotropic filtering, anti-aliasing, fog, EFB options, shader compilation mode |
 | Performance | Emulated CPU clock (Auto or fixed), Fast / Compatible speed features, dual core, Vulkan thread, fast disc |
-| System | Game volume, Wii Nunchuk, sideways Wii Remote, audio buffer |
+| System | Game volume, Wii Nunchuk, sideways Wii Remote, controller in Wii games (Wii Remote, GameCube controller or both), motion controls, PS Move, Wii SD card, audio buffer |
 | Diagnostics | One switch for everything, or performance log, freeze reports, emulator log and profiler separately |
 
 The launcher also has switches for its sounds and clock, a cover downloader, the controls editor,
 **Reset All Settings** and **About**.
+
+### Game settings center
+
+The best settings found for each game live in
+[`xmb/game-settings.ini`](xmb/game-settings.ini). Dolphin downloads it from GitHub every time it
+starts online, so a game's fix or speed-up reaches everyone without a new release. Your own
+settings (the menu, `ps4.ini`) always win over it.
+
+Before a covered game's first start, Dolphin asks whether to use its recommended settings
+(Yes / No). *Settings → Game Settings Center* shows the source, the last update, **Update Now**,
+and your games with recommended settings, each switchable between *Used* and *Not used* (also at
+the top of the game's own Game Settings).
+
+### Cheats
+
+Triangle on a game → **Cheats** (or L3 + R3 → Cheats while playing).
+
+- **Download Codes** fetches the game's Gecko codes from the internet. New codes arrive switched off.
+- **Your own codes:** add them to `/data/DolphinPS4/User/GameSettings/<GAME ID>.ini` (for example
+  `GMSE01.ini`, not a `.txt`), under a `[Gecko]` or `[ActionReplay]` line, each code starting
+  with a `$Name` line. They then appear in the list to switch on.
 
 ## Your files
 
@@ -171,6 +206,7 @@ Everything the app creates sits in **`/data/DolphinPS4/`**:
 - `settings.ini`: your settings, global and per game
 - `xmb.ini`: launcher preferences (theme, wallpaper, sounds, last game)
 - `ps4.ini`: optional advanced switches, layered on top of the built-in defaults
+- `game-settings.ini`: the game settings center's latest copy (downloaded; don't edit)
 - `*.log` and `*-stacks*.txt`: logs and freeze reports for bug reports
 
 ## Game compatibility
@@ -198,8 +234,31 @@ Measured on a launch-model PS4, average frames per second while playing:
 | Wii Sports Resort | Wii | ~37 |
 | Bully: Scholarship Edition | Wii | 15–30 (its normal rate is 30) |
 
-A range means the frame rate depends on what's on screen. Tested a game that isn't listed? Let
-us know how it runs in an [issue](https://github.com/iHaiDeeZ/DolphinPS4/issues).
+A range means the frame rate depends on what's on screen.
+
+**Reported by testers** on the [Discord](https://discord.gg/QwtU8ZaCth):
+
+| Game | System | Console | Resolution | Result |
+|---|---|---|---|---|
+| Super Smash Bros. Melee (Akaneia / ACE mod) | GameCube | PS4 Slim, 11.00 | 1080p | 60 FPS, very stable, no stutters or crashes |
+| Dragon Ball Z: Budokai | GameCube | PS4 Slim, 12.52 | 1080p | 60 FPS, stable, no stutters or crashes |
+| The Legend of Zelda: Four Swords Adventures | GameCube | PS4 Slim, 11.02 | 1080p | Steady 60 FPS most of the time |
+| The Legend of Zelda: Twilight Princess | GameCube | PS4 Slim, 12.52 | 1080p | 28 FPS, stable, no stutters or freezes |
+| Spider-Man 2 | GameCube | PS4 Slim, 12.52 | 1080p | ~25 FPS, dips to 80% speed, some stutters, no crashes |
+| Dead to Rights | GameCube | PS4 Slim, 12.52 | 720p | 45–50 FPS, speed dips, some stutters, no crashes |
+| Mario Kart: Double Dash!! | GameCube | PS4 Pro, 9.60 | 1080p | 60 FPS, very smooth, no stutters or crashes |
+| Pokémon Colosseum | GameCube | PS4, 13.52 | – | 30 FPS in gameplay and cutscenes (60 in menus), 100% speed |
+| Pokémon XD: Gale of Darkness | GameCube | PS4, 13.52 | – | 25–30 FPS, heavier scenes ~20, playable |
+| Super Paper Mario | Wii | – | 1080p | 50–60 FPS, stable, playable |
+| "Pokémon Stadium" (name as reported) | – | – | 1080p | 30 FPS, a small drop at the start of battles, saves work |
+| Super Smash Bros. Brawl | Wii | PS4 Slim, 11.00 | 1080p | 60 FPS, stutters on some stages, no crashes |
+| Mario Kart Wii | Wii | PS4 Slim, 11.00 | 1080p | 40–50 FPS, sometimes full speed, some stutters, no crashes |
+| PokéPark 2: Wonders Beyond | Wii | PS4, 13.52 | – | 30 FPS, 100% speed; turn on *Sideways Wii Remote* for the D-pad |
+| Crash of the Titans | Wii | PS4 Pro, 13.52 | 1080p | Doesn't start: loops at the beginning |
+
+Tested a game that isn't listed? Tell us on the [Discord](https://discord.gg/QwtU8ZaCth) or in an
+[issue](https://github.com/iHaiDeeZ/DolphinPS4/issues): the game, your console and firmware, the
+resolution and how it ran.
 
 ## FAQ
 
@@ -216,6 +275,11 @@ Its shader is being compiled. It's saved to the cache, so it won't happen there 
 Open its Game Settings and set *Speed Features* to *Compatible*. If it still happens, please
 report it.
 
+**Tilting the controller does nothing in Wii games.**
+Motion controls need an official DualShock 4. Many third-party controllers have no motion
+sensors: the PS4 then reports a controller that never moves. Also check *Settings → System →
+Motion Controls* is On.
+
 **A Wii game tells me to disconnect the Nunchuk.**
 Press L3 + R3 and set *Wii Extension* to *None*. The game remembers it.
 
@@ -229,10 +293,17 @@ Turn on *Settings → Diagnostics → All Diagnostics*, play until the problem s
 `dolphin.log` from `/data/DolphinPS4/`, plus `crash.log` or any `*-stacks*.txt` file if there is
 one, and mention the game, its region and the app version.
 
+## Testing and feedback
+
+Want to help test new versions, report a game that misbehaves or share frame rates? Join the
+**[Dolphin for PS4 Discord](https://discord.gg/QwtU8ZaCth)**. When you report a problem, say which
+game and version (**Settings → About**) you used, and attach `/data/DolphinPS4/dolphin.log` if you can.
+
 ## Good to know
 
 - Games built around Wii Remote pointing or motion are hard to play on a DualShock 4.
-- Save states belong to the version that made them, so an update may not load older ones.
+- Save states carry over to new versions unless a release says otherwise. A state an update can't load is
+  marked "Other Version" in the menu and is never loaded halfway, but in-game saves are the safe place for progress.
   In-game saves are never affected.
 - Netplay, achievements and texture packs aren't supported on the PS4.
 - Only the original PS4 has been tested so far. PS4 Pro reports are welcome.

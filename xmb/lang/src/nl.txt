@@ -1,0 +1,430 @@
+# Nederlands
+# --- In-game menu
+Spel hervatten
+Status opslaan
+Status laden
+Wii Remote-uitbreiding
+Nunchuk
+Geen
+Wii Remote dwars
+Aan
+Uit
+Instellingen
+Cheats
+Spel afsluiten
+GEPAUZEERD
+Kiezen
+Plek
+Hervatten
+Wijzigen
+Alles aan
+Alles uit
+Gecko-codes
+Action Replay-codes
+Geen cheats voor dit spel
+CHEATS
+Aan/Uit
+Verplaatsen
+Terug
+Toepassen op
+Dit spel
+Alle spellen
+Dit spel herstellen
+Standaardwaarden
+INSTELLINGEN - DIT SPEL
+INSTELLINGEN - ALLE SPELLEN
+Alle cheats aan
+Alle cheats uit
+{}: aan
+{}: uit
+Eigen instellingen voor dit spel
+Dit spel volgt de algemene instellingen
+Dit spel volgt weer de algemene instellingen
+Instellingen hersteld
+{}: bij de volgende spelstart
+Nunchuk aangesloten
+Nunchuk losgekoppeld
+Wii Remote dwars gehouden
+Wii Remote rechtop gehouden
+Nog aan het opslaan, even geduld...
+Opslaan op plek {}...
+Opgeslagen op plek {}
+Plek {} is leeg
+Plek {} hoort bij een ander spel
+Plek {} is opgeslagen met {} en kan niet door deze versie worden geladen
+Plek {} is opgeslagen met een oudere Dolphin voor PS4 en kan niet worden geladen
+Plek {} is opgeslagen met een andere Dolphin-versie en kan niet worden geladen
+Plek {} is beschadigd en kan niet worden geladen
+Plek {} kon niet worden geladen - terug naar de spellenlijst
+Plek {} geladen
+Plek {} (leeg)
+Plek {} (andere versie)
+Plek {} (beschadigd)
+Plek {}
+Menu
+# --- Setting categories
+Video
+Graphics
+Prestaties
+Systeem
+Diagnose
+# --- Settings
+Beeldverhouding
+Automatisch
+Uitrekken
+De beeldvorm van het spel op de tv.
+Letterbox-zoom
+Vult een 16:9-tv bij spellen die een 16:9-beeld met balken tonen (Resident Evil 4).
+Breedbeeldhack
+Toont een breder beeld in 4:3-spellen (fouten aan de randen mogelijk).
+Bijsnijden naar beeldverhouding
+Snijdt het beeld bij tot de gekozen verhouding in plaats van zwarte balken toe te voegen.
+Interne resolutie
+Origineel (480p)
+Scherper beeld bij hogere waarden; kost GPU-tijd.
+Beeldsnelheidslimiet
+Onbeperkt
+Automatisch (60/30)
+Beperkt de getoonde beelden per seconde. Automatisch: 60 zolang het spel het bijhoudt, anders een gelijkmatige 30 (rustiger dan een schommelende beeldsnelheid).
+V-Sync
+Wacht op de verversing van de tv (geen tearing).
+FPS-teller
+Beelden en emulatiesnelheid in de hoek.
+Textuurfiltering
+Standaard
+Zacht (lineair)
+Scherp (dichtstbijzijnde)
+Hoe texturen worden afgevlakt.
+Anisotrope filtering
+Scherpere texturen onder een hoek; kost GPU-tijd.
+Anti-aliasing
+Gladdere randen; kost GPU-tijd.
+Mist uitschakelen
+Verwijdert afstandsmist (sommige spellen gebruiken mist voor effecten).
+Kopieerfilter
+Het eigen vervagings-/antiflikkerfilter van het spel op kopieën; Uit is scherper.
+EFB-kopieën
+Naar textuur (snel)
+Naar RAM (nauwkeurig)
+Sommige effecten hebben RAM-kopieën nodig; Textuur is sneller.
+CPU-toegang tot EFB
+Nodig voor sommige spellen (lensflares, cursors); Uit is sneller.
+Handmatige textuurbemonstering
+Exacte textuurbemonstering (verhelpt sommige video's, bv. FIFA Street 2); trager.
+Textuurdecodering op de GPU
+Decodeert speltexturen op de GPU in plaats van de videothread (helpt bij drukke scènes).
+Shadercompilatie
+Asynchroon
+Hybride ubershaders
+Synchroon
+Asynchroon: geen haperingen, objecten kunnen een moment later verschijnen. Hybride ubershaders: geen haperingen en niets ontbreekt, kost GPU-tijd. Synchroon: wacht op elke nieuwe shader.
+Geëmuleerde CPU-klok
+Automatisch verlaagt de klok alleen als de CPU de grens is.
+Snelheidsfuncties
+Snel
+Compatibel
+Compatibel schakelt de snelkoppelingen van de port in de opdrachtstroom uit als een spel fouten toont of vastloopt.
+Dual Core
+Geforceerd
+Emuleert de GPU in een eigen thread.
+Vulkan-thread
+Neemt grafische opdrachten op een aparte kern op.
+Snelle disc
+Kortere laadpauzes (breekt zelden een spel).
+Prestatiegrafieken
+Grafieken van beeldtijd en snelheid op het scherm.
+Taal
+De taal van de menu's en, waar GameCube of Wii die hebben, die van de spellen. Het menu start opnieuw om te wisselen.
+Spelvolume
+Volume van het geluid van de spellen.
+Wat er op de Wii Remote is aangesloten. Wii Sports en vergelijkbare spellen hebben Geen nodig.
+Voor spellen die met de Wii Remote dwars worden gespeeld (NSMB Wii, Mario Kart Wii).
+Audiobuffer
+Groter klinkt vloeiender als een spel onder volle snelheid draait; kleiner heeft minder vertraging.
+Alle diagnose
+Alle schakelaars hieronder tegelijk. Uit: er wordt niets vastgelegd tijdens het spelen.
+Prestatielog
+Snelheid, FPS en haperingen elke 2 seconden (boot-trace.log).
+Vastloopverslagen
+Waar de emulator was als een spel vastloopt, hapert of traag start.
+Emulatorlog
+Dolphins eigen berichten (dolphin.log).
+Profiler
+Legt vast waar de tijd heen gaat (samples.log). Kost snelheid - alleen om trage spellen te onderzoeken.
+{} (Bij de volgende spelstart.)
+# --- Launcher: categories, tabs, items
+Spellen
+Memory Cards
+Thema's
+Bibliotheek
+A-Z
+Recent gespeeld
+Platform
+Beeld, resolutie, beeldsnelheid
+Filtering, anti-aliasing, effecten
+CPU-klok, snelheidsfuncties, profiler
+Spelvolume, audio
+Logs, vastloopverslagen, profiler - aan of uit
+Geluidseffecten
+Volume
+Menustijl
+Klok
+Besturing
+GameCube- en Wii-knoppen opnieuw toewijzen
+Spellenmap
+Hoesjes downloaden
+Hoesjes van GameTDB voor je spellen
+Zoeken naar updates
+Geïnstalleerd: v{}
+Automatische updates
+Alle instellingen herstellen
+Alle instellingen terug naar standaard
+Over
+{} discs
+Geen spellen gevonden
+Kopieer spellen naar {} en druk op Vierkant
+{} save
+{} saves
+{} blokken
+{} blok
+In slot A
+Een lege kaart voor nieuwe saves
+Nieuwe Memory Card
+In gebruik
+Kleurthema
+Achtergrond
+Dolphin-blauw
+GameCube-indigo
+Wii-wit
+Oceaan
+Smaragd
+Limoen
+Goud
+Zonsondergang
+Karmozijn
+Roze
+Grafiet
+Middernacht
+# --- Launcher: panels
+Bibliotheek: je hoesjes op een rij,
+tabbladen met L1 / R1.
+XMB: de kolommen in PSP-stijl.
+Zoekt bij het openen van de app
+naar een nieuwe versie op GitHub
+en vraagt voor het installeren.
+Annuleren
+Alles herstellen
+Alle spellen, algemeen en per spel,
+krijgen weer de standaardinstellingen.
+Dolphin voor PS4
+GameCube- en Wii-emulator
+Naar PS4 gebracht door ShiroKlein
+Versie {} (geïnstalleerd pakket {})
+Versie {}
+Spellen: {}
+Achtergronden (PNG): {}
+Geluiden (WAV): {}
+Dolphin is vrije software (GPLv2+).
+Lettertype: Nunito (SIL Open Font License).
+Spelinstellingen
+Standaard herstellen
+Geen cheats voor dit spel.
+Dolphins cheatdatabase heeft er geen voor {}.
+Locaties
+Deze map gebruiken
+{} spel
+{} spellen
+(deze map kan niet worden geopend)
+Verbinden met GameTDB...
+Afronden...
+Downloaden {} van {}: {}
+Cirkel sluit dit; de download gaat door.
+Gedownload: {}
+Al aanwezig: {}
+Niet op GameTDB: {}
+Mislukt: {}
+Je eigen afbeeldingen: {}
+Informatie
+Platform: {}
+Wii (WiiWare / Virtual Console / kanaal)
+Wii
+GameCube
+Spel-ID: {}
+Discs: {}
+Bestand: {}
+Spel
+Starten
+In slot A steken
+{} save
+{} saves
+Nog geen saves op deze kaart
+Druk op de DualShock 4-knop voor {}...  (5 s: annuleren)
+Kruis: druk op een nieuwe knop. Sticks: Links/Rechts om te kiezen.
+Terug naar de standaardindeling.
+Kruis: deze map openen.
+Kruis: in deze map naar spellen zoeken.
+Kruis: spellen gebruiken deze kaart vanaf hun volgende start. Je andere kaarten blijven zoals ze zijn.
+Spellen slaan op deze kaart op. Kies een andere en steek die in slot A om te wisselen.
+opgeslagen {}
+Geldt bij de volgende spelstart, of direct via het spelmenu (L3+R3).
+Alle spellen: dit spel volgt de algemene instellingen. Dit spel: zijn eigen.
+Vernieuwen
+Opties
+Spelen
+Nog niet gespeeld
+Vandaag gespeeld
+Gisteren gespeeld
+{} dagen geleden gespeeld
+Gespeeld op {}
+# --- Library style
+Je spellen
+Nog geen spellen
+Kopieer je spellen naar {}
+en druk op Vierkant om opnieuw te zoeken (of kies een map in Instellingen).
+Slot A: {}
+SLOT A
+Een nieuwe, lege Memory Card.
+Steek hem in slot A om opnieuw te beginnen - voor een tweede
+speelbeurt of om de console met iemand te delen.
+Je andere kaarten en hun saves blijven zoals ze zijn,
+en je kunt altijd terugwisselen.
+Druk op Kruis om hem aan te maken.
+Saves op {}
+Nog geen saves. Steek de kaart in slot A en sla op in een spel.
++ nog {} - druk op Kruis om alles te zien
+Kleuren en achtergronden (PNG in {})
+Emulatie, besturing, updates en meer
+Bladeren
+Maken
+Openen
+Sorteren
+# --- Updates
+Updates
+Zoeken naar een nieuwe versie op GitHub...
+Je hebt de nieuwste versie.
+Update beschikbaar
+Dolphin v{} is beschikbaar.
+Je hebt v{}.
+Downloaden ({})?
+Ja
+Nee
+Update downloaden
+Houd de app open tot het klaar is.
+Update geïnstalleerd
+Dolphin v{} is klaar.
+Hij start als Dolphin opnieuw start.
+Spellen, saves en instellingen blijven bewaard.
+Nu opnieuw starten
+Later
+Update klaar
+Dolphin v{} is gedownload en gecontroleerd.
+Sluit Dolphin om te installeren en open
+Debug-instellingen > Spel > Pakketinstallatie
+(of die van GoldHEN) en kies Dolphin v{}.
+Opgeslagen als {}
+Dolphin sluiten
+Update
+De update werkte niet:
+Kon niet naar updates zoeken:
+OK
+# --- Controls
+GameCube-controller
+Wii Remote + Nunchuk
+Hoofdstick
+Bedieningsstick
+C-stick
+Richtingstoets omhoog
+Richtingstoets omlaag
+Richtingstoets links
+Richtingstoets rechts
+L (klik)
+R (klik)
+L (analoog)
+R (analoog)
+Linkerstick
+Rechterstick
+Linkerstick omhoog
+Linkerstick omlaag
+Linkerstick links
+Linkerstick rechts
+Rechterstick omhoog
+Rechterstick omlaag
+Rechterstick links
+Rechterstick rechts
+L2 (analoog)
+R2 (analoog)
+Schudden
+Schudden (draaien)
+Aanwijzer
+Nunchuk-stick
+Aangepast
+# --- Homebrew
+Homebrew (GameCube)
+Homebrew (Wii)
+# --- Default game
+Instellen als standaard-ISO
+Standaard-ISO verwijderen
+Er start geen spel meer vanzelf.
+start bij het openen van Dolphin.
+Houd L1 ingedrukt tijdens het starten
+om in plaats daarvan het menu te openen.
+Start bij het openen van Dolphin
+# --- JIT
+Deze console staat de snelle CPU-modus van Dolphin (JIT) niet toe: spellen draaien traag.
+# --- SD card
+Wii-SD-kaart
+Geplaatst
+Verwijderd
+Een virtuele SD-kaart voor Wii-spellen en -kanalen (saves, foto's, muziek, homebrew).
+SD-kaartmap
+De kaart bevat de bestanden in /data/DolphinPS4/User/Load/WiiSDSync (kopieer ze daarheen via FTP); wat spellen schrijven komt daar terug als ze stoppen.
+Schrijven naar SD-kaart
+Laat spellen opslaan op de SD-kaart. Uit: alleen lezen.
+SD-kaartgrootte
+Automatisch maakt de kaart precies groot genoeg voor de bestanden in de map.
+# --- Motion
+Bewegingsbesturing
+De bewegingssensoren van de DualShock 4 bewegen de Wii Remote: kantelen, zwaaien en schudden.
+Controller als Wii Remote
+Automatisch: een PS Move die aan staat bij het starten van het spel wordt de Wii Remote (knoppen, beweging en aanwijzer), de DualShock 4 de Nunchuk.
+# --- Wii input
+Controller in Wii-games
+Beide
+Wii Remote
+Wat een Wii-game ziet: een Wii Remote, een GameCube-controller (Mario Kart Wii, Super Smash Bros. Brawl en andere ondersteunen die) of beide.
+# --- Restart
+Spel herstarten
+# --- Riivolution
+Riivolution-patches
+Geen Riivolution-mods voor deze game.
+Kopieer de SD-kaartbestanden van de mod
+(de riivolution-map en de rest) naar
+Geldt vanaf de volgende keer dat de game start.
+# --- Cheat download
+Codes downloaden
+Bezig met downloaden...
+{} gevonden, {} nieuw
+Geen online
+Mislukt (HTTP {})
+Mislukt (geen verbinding)
+Haalt de Gecko-codes van deze game van internet (codes.rc24.xyz). Nieuwe worden uitgeschakeld toegevoegd.
+# --- Settings center
+Spelinstellingencentrum
+Aanbevolen instellingen per game, van GitHub
+Bron
+Laatste update
+Games met instellingen
+Nu bijwerken
+Bijwerken...
+Bijgewerkt
+Actueel
+Mislukt (geen instellingenbestand)
+Jouw games
+Nog geen van je games
+Kopie in de app
+Aanbevolen instellingen
+Gebruiken voor deze game?
+Gebruikt
+Niet gebruikt
+Vragen bij starten
+Downloadt nu de nieuwste aanbevolen instellingen van GitHub (Dolphin doet dat ook bij elke start).

@@ -219,9 +219,52 @@ inline mspace getHeap() {
     return g_heap;
 }
 
+// Overflow heap: direct memory, mapped the first time the main heap can't serve a request.
+// Spider-Man 2 fills most of the 512 MiB main heap; a save state then needed one 99 MiB block
+// (148 MiB in Mario Kart: Double Dash!!), the allocation failed and the app crashed. Direct
+// memory is a separate 4.5 GiB pool (the GPU's); with FOOTERS, free and realloc find this heap
+// from the chunk itself.
+mspace g_overflow = nullptr;
+uintptr_t g_overflowBase = 0;
+size_t g_overflowSize = 0;
+bool g_overflowTried = false;
+
+mspace overflowHeap() {
+    if (mspace msp = __atomic_load_n(&g_overflow, __ATOMIC_ACQUIRE))
+        return msp;
+    if (__atomic_exchange_n(&g_overflowTried, true, __ATOMIC_ACQ_REL))
+        return __atomic_load_n(&g_overflow, __ATOMIC_ACQUIRE);  // another thread is (or was) at it
+    const size_t sizes[] = {512 * MB, 384 * MB, 256 * MB, 128 * MB};
+    for (size_t size : sizes) {
+        off_t phys = 0;
+        if (sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), size, 2 * MB, 0, &phys) != 0)
+            continue;
+        // A hint well above 0x200000000, where the kernel library puts its own objects.
+        void* base = reinterpret_cast<void*>(0x1800000000ull);
+        const int32_t ret = sceKernelMapDirectMemory(&base, size, PROT_CPU_RW, 0, phys, 2 * MB);
+        if (ret != 0 || reinterpret_cast<uintptr_t>(base) < 0x400000000ull) {
+            heapLog("[dolphin] heap: overflow heap: mapping %zu MiB of direct memory failed (0x%x, %p)\n",
+                    size / MB, ret, base);
+            continue;
+        }
+        mspace msp = create_mspace_with_base(base, size, 1);
+        if (!msp)
+            continue;
+        g_overflowBase = reinterpret_cast<uintptr_t>(base);
+        g_overflowSize = size;
+        __atomic_store_n(&g_overflow, msp, __ATOMIC_RELEASE);
+        heapLog("[dolphin] heap: main heap full: overflow heap of %zu MiB of direct memory at %p\n", size / MB,
+                base);
+        return msp;
+    }
+    heapLog("[dolphin] heap: main heap full and no direct memory for an overflow heap\n");
+    return nullptr;
+}
+
 bool ownsPointer(const void* p) {
     const uintptr_t address = reinterpret_cast<uintptr_t>(p);
-    return address >= g_heapBase && address < g_heapBase + g_heapSize;
+    return (address >= g_heapBase && address < g_heapBase + g_heapSize) ||
+           (address >= g_overflowBase && address < g_overflowBase + g_overflowSize);
 }
 
 // The operation in progress, for error reports (thread-local: allocations happen on any thread).
@@ -339,6 +382,9 @@ void* __wrap_malloc(size_t size) {
     if (!p)
         p = mspace_malloc(getHeap(), size);
     if (!p)
+        if (mspace overflow = overflowHeap())
+            p = mspace_malloc(overflow, size);
+    if (!p)
         reportFailure("malloc", size);
     return p;
 }
@@ -368,6 +414,9 @@ void* __wrap_calloc(size_t nelem, size_t size) {
     if (!p)
         p = mspace_calloc(getHeap(), nelem, size);
     if (!p)
+        if (mspace overflow = overflowHeap())
+            p = mspace_calloc(overflow, nelem, size);
+    if (!p)
         reportFailure("calloc", nelem * size);
     return p;
 }
@@ -393,6 +442,9 @@ void* __wrap_realloc(void* ptr, size_t size) {
         p = t_arena ? mspace_malloc(t_arena, size) : nullptr;
         if (!p)
             p = mspace_malloc(getHeap(), size);
+        if (!p)
+            if (mspace overflow = overflowHeap())
+                p = mspace_malloc(overflow, size);
         if (p && ptr) {
             const size_t old_size = mspace_usable_size(ptr);
             memcpy(p, ptr, old_size < size ? old_size : size);
@@ -411,6 +463,9 @@ void* __wrap_memalign(size_t alignment, size_t size) {
     void* p = t_arena ? mspace_memalign(t_arena, alignment, size) : nullptr;
     if (!p)
         p = mspace_memalign(getHeap(), alignment, size);
+    if (!p)
+        if (mspace overflow = overflowHeap())
+            p = mspace_memalign(overflow, alignment, size);
     if (!p)
         reportFailure("memalign", size);
     return p;

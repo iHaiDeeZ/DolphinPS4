@@ -1,0 +1,430 @@
+# Polski
+# --- In-game menu
+Wznów grę
+Zapisz stan
+Wczytaj stan
+Rozszerzenie Wii Remote
+Nunchuk
+Brak
+Wii Remote poziomo
+Wł.
+Wył.
+Ustawienia
+Kody
+Wyjdź z gry
+PAUZA
+Wybierz
+Slot
+Wznów
+Zmień
+Włącz wszystkie
+Wyłącz wszystkie
+Kody Gecko
+Kody Action Replay
+Brak kodów dla tej gry
+KODY
+Wł./Wył.
+Przesuń
+Wstecz
+Zastosuj do
+Ta gra
+Wszystkie gry
+Przywróć tę grę
+Przywróć domyślne
+USTAWIENIA - TA GRA
+USTAWIENIA - WSZYSTKIE GRY
+Wszystkie kody włączone
+Wszystkie kody wyłączone
+{}: wł.
+{}: wył.
+Osobne ustawienia dla tej gry
+Ta gra używa ustawień ogólnych
+Ta gra znów używa ustawień ogólnych
+Przywrócono ustawienia domyślne
+{}: przy następnym uruchomieniu gry
+Nunchuk podłączony
+Nunchuk odłączony
+Wii Remote trzymany poziomo
+Wii Remote trzymany pionowo
+Trwa zapisywanie, proszę czekać...
+Zapisywanie w slocie {}...
+Zapisano w slocie {}
+Slot {} jest pusty
+Slot {} należy do innej gry
+Slot {} zapisano w {} i ta wersja nie może go wczytać
+Slot {} zapisano w starszym Dolphin dla PS4 i nie można go wczytać
+Slot {} zapisano w innej wersji Dolphin i nie można go wczytać
+Slot {} jest uszkodzony i nie można go wczytać
+Nie udało się wczytać slotu {} - powrót do listy gier
+Wczytano slot {}
+Slot {} (pusty)
+Slot {} (inna wersja)
+Slot {} (uszkodzony)
+Slot {}
+Menu
+# --- Setting categories
+Obraz
+Grafika
+Wydajność
+System
+Diagnostyka
+# --- Settings
+Proporcje obrazu
+Automatycznie
+Rozciągnij
+Kształt obrazu gry na telewizorze.
+Powiększenie letterbox
+Wypełnia telewizor 16:9 w grach z obrazem 16:9 w pasach (Resident Evil 4).
+Hack szerokiego ekranu
+Pokazuje szerszy widok w grach 4:3 (możliwe błędy przy krawędziach).
+Przytnij do proporcji
+Przycina obraz do wybranych proporcji zamiast dodawać czarne pasy.
+Rozdzielczość wewnętrzna
+Natywna (480p)
+Ostrzejszy obraz przy wyższych wartościach; obciąża GPU.
+Limit klatek
+Bez limitu
+Automatycznie (60/30)
+Ogranicza liczbę klatek na sekundę. Automatycznie: 60, gdy gra nadąża, inaczej równe 30 (stabilniej niż skacząca liczba klatek).
+V-Sync
+Czeka na odświeżenie telewizora (bez rozrywania obrazu).
+Licznik FPS
+Klatki i szybkość emulacji w rogu ekranu.
+Filtrowanie tekstur
+Domyślne
+Gładkie (liniowe)
+Ostre (najbliższe)
+Jak wygładzane są tekstury.
+Filtrowanie anizotropowe
+Ostrzejsze tekstury pod kątem; obciąża GPU.
+Antyaliasing
+Gładsze krawędzie; obciąża GPU.
+Wyłącz mgłę
+Usuwa mgłę w oddali (niektóre gry używają jej do efektów).
+Filtr kopii
+Własny filtr rozmycia/migotania gry na kopiach; Wył. jest ostrzejsze.
+Kopie EFB
+Do tekstury (szybko)
+Do RAM (dokładnie)
+Niektóre efekty wymagają kopii w RAM; Tekstura jest szybsza.
+Dostęp CPU do EFB
+Potrzebny w niektórych grach (bliki, kursory); Wył. jest szybsze.
+Ręczne próbkowanie tekstur
+Dokładne próbkowanie tekstur (naprawia niektóre filmy, np. FIFA Street 2); wolniejsze.
+Dekodowanie tekstur na GPU
+Dekoduje tekstury gry na GPU zamiast w wątku wideo (pomaga w ciężkich scenach).
+Kompilacja shaderów
+Asynchroniczna
+Hybrydowe ubershadery
+Synchroniczna
+Asynchroniczna: bez przycięć, obiekty mogą pojawić się chwilę później. Hybrydowe ubershadery: bez przycięć i niczego nie brakuje, obciąża GPU. Synchroniczna: czeka na każdy nowy shader.
+Zegar emulowanego CPU
+Automatycznie obniża zegar tylko wtedy, gdy ograniczeniem jest CPU.
+Funkcje szybkości
+Szybkie
+Zgodne
+Zgodne wyłącza skróty portu w strumieniu poleceń, jeśli gra ma błędy lub się zawiesza.
+Dwa rdzenie
+Wymuszone
+Emuluje GPU we własnym wątku.
+Wątek Vulkan
+Nagrywa polecenia grafiki na osobnym rdzeniu.
+Szybki dysk
+Krótsze przerwy na wczytywanie (rzadko psuje grę).
+Wykresy wydajności
+Wykresy czasu klatki i szybkości na ekranie.
+Język
+Język menu oraz, jeśli GameCube lub Wii go mają, język gier. Menu uruchamia się ponownie, aby go zmienić.
+Głośność gry
+Głośność dźwięku gier.
+Co jest podłączone do Wii Remote. Wii Sports i podobne gry wymagają opcji Brak.
+Do gier, w które gra się z Wii Remote trzymanym poziomo (NSMB Wii, Mario Kart Wii).
+Bufor dźwięku
+Większy brzmi płynniej, gdy gra działa poniżej pełnej prędkości; mniejszy ma mniejsze opóźnienie.
+Cała diagnostyka
+Wszystkie przełączniki poniżej naraz. Wył.: podczas gry nic nie jest zapisywane.
+Dziennik wydajności
+Szybkość, FPS i przycięcia co 2 sekundy (boot-trace.log).
+Raporty zawieszeń
+Gdzie był emulator, gdy gra się zawiesza, przycina lub wolno startuje.
+Dziennik emulatora
+Własne komunikaty Dolphin (dolphin.log).
+Profiler
+Zapisuje, na co idzie czas (samples.log). Spowalnia - tylko do badania wolnych gier.
+{} (Przy następnym uruchomieniu gry.)
+# --- Launcher: categories, tabs, items
+Gry
+Karty pamięci
+Motywy
+Biblioteka
+A-Z
+Ostatnio grane
+Platforma
+Obraz, rozdzielczość, liczba klatek
+Filtrowanie, antyaliasing, efekty
+Zegar CPU, funkcje szybkości, profiler
+Głośność gry, dźwięk
+Dzienniki, raporty zawieszeń, profiler - wł. lub wył.
+Efekty dźwiękowe
+Głośność
+Styl menu
+Zegar
+Sterowanie
+Zmień przypisanie przycisków GameCube i Wii
+Folder gier
+Pobierz okładki
+Okładki z GameTDB dla twoich gier
+Sprawdź aktualizacje
+Zainstalowana: v{}
+Automatyczne aktualizacje
+Przywróć wszystkie ustawienia
+Wszystkie ustawienia domyślne
+O aplikacji
+Dyski: {}
+Nie znaleziono gier
+Skopiuj gry do {}, potem naciśnij Kwadrat
+Zapisy: {}
+Zapisy: {}
+Bloki: {}
+Bloki: {}
+W slocie A
+Pusta karta na nowe zapisy
+Nowa karta pamięci
+W użyciu
+Motyw kolorów
+Tapeta
+Błękit Dolphin
+Indygo GameCube
+Biel Wii
+Ocean
+Szmaragd
+Limonka
+Złoto
+Zachód słońca
+Karmazyn
+Róż
+Grafit
+Północ
+# --- Launcher: panels
+Biblioteka: twoje okładki w rzędzie,
+karty przełączane L1 / R1.
+XMB: kolumny w stylu PSP.
+Szuka nowej wersji na GitHubie
+przy otwieraniu aplikacji i pyta
+przed instalacją.
+Anuluj
+Przywróć wszystko
+Wszystkie gry, ogólnie i dla każdej gry,
+wracają do ustawień domyślnych.
+Dolphin dla PS4
+Emulator GameCube i Wii
+Przeniesiony na PS4 przez ShiroKlein
+Wersja {} (zainstalowany pakiet {})
+Wersja {}
+Gry: {}
+Tapety (PNG): {}
+Dźwięki (WAV): {}
+Dolphin to wolne oprogramowanie (GPLv2+).
+Czcionka: Nunito (SIL Open Font License).
+Ustawienia gry
+Przywróć domyślne
+Brak kodów dla tej gry.
+Baza kodów Dolphin nie ma żadnych dla {}.
+Miejsca
+Użyj tego folderu
+Gry: {}
+Gry: {}
+(nie można otworzyć tego folderu)
+Łączenie z GameTDB...
+Kończenie...
+Pobieranie {} z {}: {}
+Kółko zamyka to okno; pobieranie trwa dalej.
+Pobrane: {}
+Już były: {}
+Brak w GameTDB: {}
+Nieudane: {}
+Własne obrazy: {}
+Informacje
+Platforma: {}
+Wii (WiiWare / Virtual Console / kanał)
+Wii
+GameCube
+ID gry: {}
+Dyski: {}
+Plik: {}
+Gra
+Uruchom
+Włóż do slotu A
+Zapisy: {}
+Zapisy: {}
+Na tej karcie nie ma jeszcze zapisów
+Naciśnij przycisk DualShock 4 dla: {}...  (5 s: anuluj)
+Krzyżyk: naciśnij nowy przycisk. Gałki: Lewo/Prawo, aby wybrać.
+Powrót do domyślnego układu.
+Krzyżyk: otwórz ten folder.
+Krzyżyk: szukaj gier w tym folderze.
+Krzyżyk: gry używają tej karty od następnego uruchomienia. Inne karty pozostają bez zmian.
+Gry zapisują na tej karcie. Wybierz inną i włóż ją do slotu A, aby zmienić.
+zapisano {}
+Działa przy następnym uruchomieniu gry albo od razu z menu w grze (L3+R3).
+Wszystkie gry: ta gra używa ustawień ogólnych. Ta gra: własnych.
+Odśwież
+Opcje
+Graj
+Jeszcze nie grano
+Grano dziś
+Grano wczoraj
+Grano {} dni temu
+Grano {}
+# --- Library style
+Twoje gry
+Jeszcze brak gier
+Skopiuj swoje gry do {}
+i naciśnij Kwadrat, aby wyszukać ponownie (lub wybierz folder w Ustawieniach).
+Slot A: {}
+SLOT A
+Nowa, pusta karta pamięci.
+Włóż ją do slotu A, aby zacząć nowe zapisy - na drugie
+przejście lub aby dzielić konsolę z kimś innym.
+Twoje inne karty i ich zapisy pozostają bez zmian,
+a w każdej chwili możesz wrócić.
+Naciśnij Krzyżyk, aby ją utworzyć.
+Zapisy na {}
+Jeszcze brak zapisów. Włóż kartę do slotu A i zapisz w grze.
++ {} więcej - naciśnij Krzyżyk, aby zobaczyć wszystkie
+Kolory i tapety (PNG w {})
+Emulacja, sterowanie, aktualizacje i więcej
+Przeglądaj
+Utwórz
+Otwórz
+Sortuj
+# --- Updates
+Aktualizacje
+Szukanie nowej wersji na GitHubie...
+Masz najnowszą wersję.
+Dostępna aktualizacja
+Dolphin v{} jest dostępny.
+Masz v{}.
+Pobrać ({})?
+Tak
+Nie
+Pobieranie aktualizacji
+Nie zamykaj aplikacji do końca.
+Aktualizacja zainstalowana
+Dolphin v{} jest gotowy.
+Uruchomi się po ponownym uruchomieniu Dolphin.
+Gry, zapisy i ustawienia zostają zachowane.
+Uruchom ponownie teraz
+Później
+Aktualizacja gotowa
+Dolphin v{} został pobrany i sprawdzony.
+Aby zainstalować, zamknij Dolphin i otwórz
+Ustawienia debugowania > Gra > Instalator pakietów
+(lub ten z GoldHEN) i wybierz Dolphin v{}.
+Zapisano jako {}
+Zamknij Dolphin
+Aktualizacja
+Aktualizacja się nie udała:
+Nie udało się sprawdzić aktualizacji:
+OK
+# --- Controls
+Kontroler GameCube
+Wii Remote + Nunchuk
+Gałka główna
+Gałka sterująca
+Gałka C
+Krzyżak w górę
+Krzyżak w dół
+Krzyżak w lewo
+Krzyżak w prawo
+L (kliknięcie)
+R (kliknięcie)
+L (analogowo)
+R (analogowo)
+Lewa gałka
+Prawa gałka
+Lewa gałka w górę
+Lewa gałka w dół
+Lewa gałka w lewo
+Lewa gałka w prawo
+Prawa gałka w górę
+Prawa gałka w dół
+Prawa gałka w lewo
+Prawa gałka w prawo
+L2 (analogowo)
+R2 (analogowo)
+Potrząśnij
+Potrząśnij (obrót)
+Wskaźnik
+Gałka Nunchuka
+Własne
+# --- Homebrew
+Homebrew (GameCube)
+Homebrew (Wii)
+# --- Default game
+Ustaw jako domyślne ISO
+Usuń domyślne ISO
+Żadna gra nie uruchamia się już sama.
+uruchamia się po otwarciu Dolphin.
+Przytrzymaj L1 podczas uruchamiania Dolphin,
+aby zamiast tego otworzyć menu.
+Uruchamia się po otwarciu Dolphin
+# --- JIT
+Ta konsola nie pozwala na szybki tryb CPU Dolphin (JIT): gry działają wolno.
+# --- SD card
+Karta SD Wii
+Włożona
+Wyjęta
+Wirtualna karta SD dla gier i kanałów Wii (zapisy, zdjęcia, muzyka, homebrew).
+Folder karty SD
+Karta zawiera pliki z /data/DolphinPS4/User/Load/WiiSDSync (skopiuj je tam przez FTP); to, co zapiszą gry, wraca tam po ich zakończeniu.
+Zapis na karcie SD
+Pozwala grom zapisywać na karcie SD. Wył.: tylko odczyt.
+Rozmiar karty SD
+Automatycznie tworzy kartę dokładnie na pliki z folderu.
+# --- Motion
+Sterowanie ruchem
+Czujniki ruchu DualShock 4 poruszają Wii Remote: przechylaj, machaj i potrząsaj.
+Kontroler jako Wii Remote
+Automatycznie: PS Move włączony przy starcie gry staje się Wii Remote (przyciski, ruch i wskaźnik), a DualShock 4 Nunchukiem.
+# --- Wii input
+Kontroler w grach Wii
+Oba
+Wii Remote
+Co widzi gra Wii: Wii Remote, kontroler GameCube (obsługują go m.in. Mario Kart Wii i Super Smash Bros. Brawl) lub oba.
+# --- Restart
+Uruchom grę ponownie
+# --- Riivolution
+Łatki Riivolution
+Brak modów Riivolution dla tej gry.
+Skopiuj pliki z karty SD moda
+(folder riivolution i resztę) do
+Zadziała przy następnym uruchomieniu gry.
+# --- Cheat download
+Pobierz kody
+Pobieranie...
+znaleziono {}, nowych {}
+Brak online
+Błąd (HTTP {})
+Błąd (brak połączenia)
+Pobiera kody Gecko tej gry z internetu (codes.rc24.xyz). Nowe są dodawane jako wyłączone.
+# --- Settings center
+Centrum ustawień gier
+Zalecane ustawienia dla każdej gry, z GitHuba
+Źródło
+Ostatnia aktualizacja
+Obsługiwane gry
+Aktualizuj teraz
+Aktualizowanie...
+Zaktualizowano
+Aktualne
+Błąd (to nie plik ustawień)
+Twoje gry
+Jeszcze żadna z twoich gier
+Kopia w aplikacji
+Zalecane ustawienia
+Użyć ich w tej grze?
+Używane
+Nieużywane
+Pytaj przy uruchomieniu
+Pobiera teraz najnowsze zalecane ustawienia z GitHuba (Dolphin robi to też przy każdym uruchomieniu).

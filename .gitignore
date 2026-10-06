@@ -5,3 +5,4 @@ modules/*.sprx
 *.oelf
 eboot.bin
 screenshots/
+__pycache__/

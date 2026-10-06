@@ -1,0 +1,430 @@
+# Türkçe
+# --- In-game menu
+Oyuna devam et
+Durumu kaydet
+Durumu yükle
+Wii Remote eklentisi
+Nunchuk
+Yok
+Yatay Wii Remote
+Açık
+Kapalı
+Ayarlar
+Hileler
+Oyundan çık
+DURAKLATILDI
+Seç
+Yuva
+Devam
+Değiştir
+Tümünü aç
+Tümünü kapat
+Gecko kodları
+Action Replay kodları
+Bu oyun için hile yok
+HİLELER
+Aç/Kapat
+Taşı
+Geri
+Uygula
+Bu oyun
+Tüm oyunlar
+Bu oyunu sıfırla
+Varsayılana dön
+AYARLAR - BU OYUN
+AYARLAR - TÜM OYUNLAR
+Tüm hileler açık
+Tüm hileler kapalı
+{}: açık
+{}: kapalı
+Bu oyuna özel ayarlar
+Bu oyun genel ayarları kullanıyor
+Bu oyun yeniden genel ayarları kullanıyor
+Ayarlar varsayılana döndü
+{}: bir sonraki oyun başlangıcında
+Nunchuk takıldı
+Nunchuk çıkarıldı
+Wii Remote yatay tutuluyor
+Wii Remote dik tutuluyor
+Hâlâ kaydediliyor, lütfen bekleyin...
+{}. yuvaya kaydediliyor...
+{}. yuvaya kaydedildi
+{}. yuva boş
+{}. yuva başka bir oyuna ait
+{}. yuva {} ile kaydedilmiş ve bu sürüm onu yükleyemiyor
+{}. yuva eski bir PS4 için Dolphin ile kaydedilmiş ve yüklenemiyor
+{}. yuva başka bir Dolphin sürümüyle kaydedilmiş ve yüklenemiyor
+{}. yuva bozuk ve yüklenemiyor
+{}. yuva yüklenemedi - oyun listesine dönülüyor
+{}. yuva yüklendi
+Yuva {} (boş)
+Yuva {} (başka sürüm)
+Yuva {} (bozuk)
+Yuva {}
+Menü
+# --- Setting categories
+Görüntü
+Grafik
+Performans
+Sistem
+Tanılama
+# --- Settings
+En boy oranı
+Otomatik
+Uzat
+Oyunun TV'deki görüntü şekli.
+Letterbox yakınlaştırma
+16:9 görüntüyü bantlarla gösteren oyunlarda 16:9 TV'yi doldurur (Resident Evil 4).
+Geniş ekran hilesi
+4:3 oyunlarda daha geniş bir görüş verir (kenarlarda hatalar olabilir).
+En boy oranına kırp
+Siyah bant eklemek yerine görüntüyü seçilen orana kırpar.
+Dahili çözünürlük
+Yerel (480p)
+Yüksek ayarlarda daha keskin görüntü; GPU kullanır.
+Kare hızı sınırı
+Sınırsız
+Otomatik (60/30)
+Saniyede gösterilen kareyi sınırlar. Otomatik: oyun yetiştikçe 60, yetişemezse sabit 30 (dalgalanan kare hızından daha düzgün).
+V-Sync
+TV'nin yenilenmesini bekler (yırtılma yok).
+FPS sayacı
+Köşede kare sayısı ve emülasyon hızı.
+Doku filtreleme
+Varsayılan
+Yumuşak (doğrusal)
+Keskin (en yakın)
+Dokuların nasıl yumuşatılacağı.
+Anizotropik filtreleme
+Açılı dokular daha keskin; GPU kullanır.
+Kenar yumuşatma
+Daha yumuşak kenarlar; GPU kullanır.
+Sisi kapat
+Uzaktaki sisi kaldırır (bazı oyunlar sisi efekt için kullanır).
+Kopya filtresi
+Oyunun kopyalardaki kendi bulanıklık/titreme filtresi; Kapalı daha keskindir.
+EFB kopyaları
+Dokuya (hızlı)
+RAM'e (doğru)
+Bazı efektler RAM kopyası gerektirir; Doku daha hızlıdır.
+CPU'nun EFB erişimi
+Bazı oyunlarda gerekir (lens parlamaları, imleçler); Kapalı daha hızlıdır.
+Elle doku örnekleme
+Tam doku örnekleme (bazı videoları düzeltir, ör. FIFA Street 2); daha yavaş.
+Dokuları GPU'da çöz
+Oyun dokularını video iş parçacığı yerine GPU'da çözer (yoğun sahnelerde yardımcı olur).
+Gölgelendirici derleme
+Eşzamansız
+Hibrit ubershader
+Eşzamanlı
+Eşzamansız: takılma yok, nesneler bir an geç görünebilir. Hibrit ubershader: takılma yok ve eksik yok, GPU kullanır. Eşzamanlı: her yeni gölgelendiriciyi bekler.
+Emüle edilen CPU saati
+Otomatik, saati yalnızca sınır CPU olduğunda düşürür.
+Hız özellikleri
+Hızlı
+Uyumlu
+Uyumlu, bir oyun hata verirse veya donarsa portun komut akışı kısayollarını kapatır.
+Çift çekirdek
+Zorunlu
+GPU'yu kendi iş parçacığında emüle eder.
+Vulkan iş parçacığı
+Grafik komutlarını ayrı bir çekirdekte kaydeder.
+Hızlı disk
+Daha kısa yükleme duraklamaları (nadiren oyunu bozar).
+Performans grafikleri
+Ekranda kare süresi ve hız grafikleri.
+Dil
+Menülerin dili ve GameCube ya da Wii destekliyorsa oyunların dili. Değiştirmek için menü yeniden başlar.
+Oyun sesi
+Oyunların ses düzeyi.
+Wii Remote'a ne takılı olduğu. Wii Sports ve benzeri oyunlar Yok ister.
+Wii Remote yatay tutularak oynanan oyunlar için (NSMB Wii, Mario Kart Wii).
+Ses arabelleği
+Büyük olan, oyun tam hızın altında çalışırken daha akıcıdır; küçük olanın gecikmesi azdır.
+Tüm tanılama
+Aşağıdaki tüm anahtarlar birden. Kapalı: oynarken hiçbir şey kaydedilmez.
+Performans günlüğü
+Her 2 saniyede hız, FPS ve takılmalar (boot-trace.log).
+Donma raporları
+Bir oyun donduğunda, takıldığında veya yavaş açıldığında emülatörün nerede olduğu.
+Emülatör günlüğü
+Dolphin'in kendi mesajları (dolphin.log).
+Profil oluşturucu
+Zamanın nereye gittiğini kaydeder (samples.log). Hız kaybettirir - yalnızca yavaş oyunları incelemek için.
+{} (Bir sonraki oyun başlangıcında.)
+# --- Launcher: categories, tabs, items
+Oyunlar
+Hafıza kartları
+Temalar
+Kitaplık
+A-Z
+Son oynananlar
+Platform
+Görüntü, çözünürlük, kare hızı
+Filtreleme, kenar yumuşatma, efektler
+CPU saati, hız özellikleri, profil oluşturucu
+Oyun sesi, ses
+Günlükler, donma raporları, profil oluşturucu - açık veya kapalı
+Ses efektleri
+Ses düzeyi
+Menü stili
+Saat
+Kontroller
+GameCube ve Wii tuşlarını yeniden ata
+Oyun klasörü
+Kapakları indir
+Oyunların için GameTDB kapakları
+Güncellemeleri denetle
+Yüklü: v{}
+Otomatik güncellemeler
+Tüm ayarları sıfırla
+Tüm ayarlar varsayılana
+Hakkında
+{} disk
+Oyun bulunamadı
+Oyunları {} klasörüne kopyalayıp Kare'ye bas
+{} kayıt
+{} kayıt
+{} blok
+{} blok
+A yuvasında
+Yeni kayıtlar için boş bir kart
+Yeni hafıza kartı
+Kullanımda
+Renk teması
+Duvar kâğıdı
+Dolphin mavisi
+GameCube çividi
+Wii beyazı
+Okyanus
+Zümrüt
+Limon yeşili
+Altın
+Gün batımı
+Kızıl
+Gül
+Grafit
+Gece yarısı
+# --- Launcher: panels
+Kitaplık: kapakların yan yana,
+sekmeler L1 / R1 ile.
+XMB: PSP tarzı sütunlar.
+Uygulama açılırken GitHub'da
+yeni sürüm arar ve yüklemeden
+önce sorar.
+İptal
+Her şeyi sıfırla
+Tüm oyunlar, genel ve oyuna özel,
+varsayılan ayarlara döner.
+PS4 için Dolphin
+GameCube ve Wii emülatörü
+PS4'e ShiroKlein tarafından aktarıldı
+Sürüm {} (yüklü paket {})
+Sürüm {}
+Oyunlar: {}
+Duvar kâğıtları (PNG): {}
+Sesler (WAV): {}
+Dolphin özgür yazılımdır (GPLv2+).
+Yazı tipi: Nunito (SIL Open Font License).
+Oyun ayarları
+Varsayılana dön
+Bu oyun için hile yok.
+Dolphin'in hile veritabanında {} için hile yok.
+Konumlar
+Bu klasörü kullan
+{} oyun
+{} oyun
+(bu klasör açılamıyor)
+GameTDB'ye bağlanılıyor...
+Bitiriliyor...
+İndiriliyor {} / {}: {}
+Daire bunu kapatır; indirme devam eder.
+İndirilen: {}
+Zaten var: {}
+GameTDB'de yok: {}
+Başarısız: {}
+Kendi resimlerin: {}
+Bilgi
+Platform: {}
+Wii (WiiWare / Virtual Console / kanal)
+Wii
+GameCube
+Oyun kimliği: {}
+Diskler: {}
+Dosya: {}
+Oyun
+Başlat
+A yuvasına tak
+{} kayıt
+{} kayıt
+Bu kartta henüz kayıt yok
+{} için DualShock 4 tuşuna bas...  (5 sn: iptal)
+Çarpı: yeni bir tuşa bas. Çubuklar: seçmek için Sol/Sağ.
+Varsayılan düzene döner.
+Çarpı: bu klasörü aç.
+Çarpı: bu klasörde oyun ara.
+Çarpı: oyunlar bir sonraki açılışlarından itibaren bu kartı kullanır. Diğer kartların aynı kalır.
+Oyunlar bu karta kaydeder. Değiştirmek için başka bir kart seçip A yuvasına tak.
+kaydedildi {}
+Oyunun bir sonraki açılışında ya da hemen oyun içi menüden (L3+R3) uygulanır.
+Tüm oyunlar: bu oyun genel ayarları kullanır. Bu oyun: kendi ayarlarını.
+Yenile
+Seçenekler
+Oyna
+Henüz oynanmadı
+Bugün oynandı
+Dün oynandı
+{} gün önce oynandı
+Oynandı: {}
+# --- Library style
+Oyunların
+Henüz oyun yok
+Oyunlarını {} klasörüne kopyala
+sonra yeniden aramak için Kare'ye bas (ya da Ayarlar'dan bir klasör seç).
+A yuvası: {}
+A YUVASI
+Yeni, boş bir hafıza kartı.
+Yeni kayıtlara başlamak için A yuvasına tak - ikinci bir
+oynanış için ya da konsolu biriyle paylaşmak için.
+Diğer kartların ve kayıtları aynı kalır,
+istediğin zaman geri dönebilirsin.
+Oluşturmak için Çarpı'ya bas.
+{} üzerindeki kayıtlar
+Henüz kayıt yok. Kartı A yuvasına tak ve bir oyunda kaydet.
++ {} tane daha - hepsini görmek için Çarpı'ya bas
+Renkler ve duvar kâğıtları ({} içinde PNG)
+Emülasyon, kontroller, güncellemeler ve daha fazlası
+Gezin
+Oluştur
+Aç
+Sırala
+# --- Updates
+Güncellemeler
+GitHub'da yeni sürüm aranıyor...
+En son sürüme sahipsin.
+Güncelleme var
+Dolphin v{} çıktı.
+Sende v{} var.
+İndirilsin mi ({})?
+Evet
+Hayır
+Güncelleme indiriliyor
+Bitene kadar uygulamayı açık tut.
+Güncelleme yüklendi
+Dolphin v{} hazır.
+Dolphin yeniden başlayınca açılır.
+Oyunlar, kayıtlar ve ayarlar korunur.
+Şimdi yeniden başlat
+Sonra
+Güncelleme hazır
+Dolphin v{} indirildi ve denetlendi.
+Yüklemek için Dolphin'i kapat, sonra
+Hata Ayıklama Ayarları > Oyun > Paket Yükleyici
+(ya da GoldHEN'inkini) aç ve Dolphin v{} seç.
+Şu adla kaydedildi: {}
+Dolphin'i kapat
+Güncelleme
+Güncelleme çalışmadı:
+Güncellemeler denetlenemedi:
+Tamam
+# --- Controls
+GameCube kontrolcüsü
+Wii Remote + Nunchuk
+Ana çubuk
+Kontrol çubuğu
+C çubuğu
+Yön tuşu yukarı
+Yön tuşu aşağı
+Yön tuşu sol
+Yön tuşu sağ
+L (tık)
+R (tık)
+L (analog)
+R (analog)
+Sol çubuk
+Sağ çubuk
+Sol çubuk yukarı
+Sol çubuk aşağı
+Sol çubuk sol
+Sol çubuk sağ
+Sağ çubuk yukarı
+Sağ çubuk aşağı
+Sağ çubuk sol
+Sağ çubuk sağ
+L2 (analog)
+R2 (analog)
+Salla
+Salla (döndür)
+İşaretçi
+Nunchuk çubuğu
+Özel
+# --- Homebrew
+Homebrew (GameCube)
+Homebrew (Wii)
+# --- Default game
+Varsayılan ISO yap
+Varsayılan ISO'yu kaldır
+Artık hiçbir oyun kendiliğinden başlamaz.
+Dolphin açılınca başlar.
+Bunun yerine menüyü açmak için
+Dolphin açılırken L1'i basılı tut.
+Dolphin açılınca başlar
+# --- JIT
+Bu konsol Dolphin'in hızlı CPU modunu (JIT) desteklemiyor: oyunlar yavaş çalışır.
+# --- SD card
+Wii SD kartı
+Takılı
+Çıkarıldı
+Wii oyunları ve kanalları için sanal bir SD kart (kayıtlar, fotoğraflar, müzik, homebrew).
+SD kart klasörü
+Kart /data/DolphinPS4/User/Load/WiiSDSync içindeki dosyaları içerir (FTP ile oraya kopyala); oyunların yazdıkları bitince oraya geri döner.
+SD karta yazma
+Oyunların SD karta kaydetmesine izin verir. Kapalı: salt okunur.
+SD kart boyutu
+Otomatik, kartı klasördeki dosyalar kadar büyük yapar.
+# --- Motion
+Hareket kontrolleri
+DualShock 4'ün hareket sensörleri Wii Remote'u hareket ettirir: eğ, savur ve salla.
+Wii Remote olarak kontrolcü
+Otomatik: oyun başlarken açık olan bir PS Move Wii Remote olur (tuşlar, hareket ve işaretçi), DualShock 4 Nunchuk olur.
+# --- Wii input
+Wii oyunlarında kontrolcü
+İkisi de
+Wii Remote
+Bir Wii oyununun gördüğü: Wii Remote, GameCube kontrolcüsü (Mario Kart Wii, Super Smash Bros. Brawl ve diğerleri destekler) ya da ikisi birden.
+# --- Restart
+Oyunu yeniden başlat
+# --- Riivolution
+Riivolution yamaları
+Bu oyun için Riivolution modu yok.
+Modun SD kart dosyalarını
+(riivolution klasörünü ve diğerlerini) şuraya kopyalayın:
+Oyun bir sonraki açılışta uygulanır.
+# --- Cheat download
+Kodları indir
+İndiriliyor...
+{} bulundu, {} yeni
+Çevrimiçi yok
+Başarısız (HTTP {})
+Başarısız (bağlantı yok)
+Bu oyunun Gecko kodlarını internetten alır (codes.rc24.xyz). Yeni olanlar kapalı olarak eklenir.
+# --- Settings center
+Oyun ayarları merkezi
+Oyun başına önerilen ayarlar, GitHub'dan
+Kaynak
+Son güncelleme
+Kapsanan oyunlar
+Şimdi güncelle
+Güncelleniyor...
+Güncellendi
+Güncel
+Başarısız (ayar dosyası değil)
+Oyunların
+Henüz oyunlarından hiçbiri
+Uygulamadaki kopya
+Önerilen ayarlar
+Bu oyunda kullanılsın mı?
+Kullanılıyor
+Kullanılmıyor
+Başlarken sor
+En yeni önerilen ayarları şimdi GitHub'dan indirir (Dolphin bunu her açılışta da yapar).

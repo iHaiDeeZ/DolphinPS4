@@ -1,0 +1,430 @@
+# Español
+# --- In-game menu
+Continuar partida
+Guardar estado
+Cargar estado
+Extensión del Wii Remote
+Nunchuk
+Ninguna
+Wii Remote en horizontal
+Sí
+No
+Ajustes
+Trucos
+Salir del juego
+EN PAUSA
+Elegir
+Ranura
+Continuar
+Cambiar
+Activar todos
+Desactivar todos
+Códigos Gecko
+Códigos Action Replay
+No hay trucos para este juego
+TRUCOS
+Sí/No
+Mover
+Atrás
+Aplicar a
+Este juego
+Todos los juegos
+Restablecer este juego
+Restablecer valores
+AJUSTES - ESTE JUEGO
+AJUSTES - TODOS LOS JUEGOS
+Todos los trucos activados
+Todos los trucos desactivados
+{}: sí
+{}: no
+Ajustes solo para este juego
+Este juego usa los ajustes generales
+Este juego vuelve a usar los ajustes generales
+Ajustes restablecidos
+{}: al iniciar el próximo juego
+Nunchuk conectado
+Nunchuk desconectado
+Wii Remote en horizontal
+Wii Remote en vertical
+Guardando, espera un momento...
+Guardando en la ranura {}...
+Guardado en la ranura {}
+La ranura {} está vacía
+La ranura {} es de otro juego
+La ranura {} se guardó con {} y esta versión no puede cargarla
+La ranura {} se guardó con un Dolphin para PS4 anterior y no se puede cargar
+La ranura {} se guardó con otra versión de Dolphin y no se puede cargar
+La ranura {} está dañada y no se puede cargar
+No se pudo cargar la ranura {}: volviendo a la lista de juegos
+Ranura {} cargada
+Ranura {} (vacía)
+Ranura {} (otra versión)
+Ranura {} (dañada)
+Ranura {}
+Menú
+# --- Setting categories
+Vídeo
+Gráficos
+Rendimiento
+Sistema
+Diagnóstico
+# --- Settings
+Relación de aspecto
+Automático
+Estirar
+La forma de la imagen del juego en la TV.
+Zoom panorámico
+Llena una TV 16:9 con juegos que muestran una imagen 16:9 con bandas (Resident Evil 4).
+Hack de pantalla ancha
+Muestra una vista más amplia en juegos 4:3 (puede haber fallos en los bordes).
+Recortar a la relación de aspecto
+Recorta la imagen a la relación elegida en lugar de añadir bandas negras.
+Resolución interna
+Nativa (480p)
+Imagen más nítida con valores altos; consume GPU.
+Límite de fotogramas
+Sin límite
+Automático (60/30)
+Limita los fotogramas por segundo. Automático: 60 mientras el juego aguanta, 30 estables cuando no (más fluido que una tasa que sube y baja).
+V-Sync
+Espera al refresco de la TV (sin cortes en la imagen).
+Contador de FPS
+Fotogramas y velocidad de emulación en la esquina.
+Filtrado de texturas
+Predeterminado
+Suave (lineal)
+Nítido (más cercano)
+Cómo se suavizan las texturas.
+Filtrado anisotrópico
+Texturas más nítidas en ángulo; consume GPU.
+Antialiasing
+Bordes más suaves; consume GPU.
+Desactivar niebla
+Quita la niebla de distancia (algunos juegos la usan para efectos).
+Filtro de copia
+El filtro de desenfoque/parpadeo del propio juego en las copias; No es más nítido.
+Copias EFB
+A textura (rápido)
+A RAM (preciso)
+Algunos efectos necesitan copias en RAM; Textura es más rápido.
+Acceso de la CPU al EFB
+Necesario en algunos juegos (destellos, cursores); No es más rápido.
+Muestreo manual de texturas
+Muestreo exacto de texturas (arregla algunos vídeos, p. ej. FIFA Street 2); más lento.
+Decodificar texturas en la GPU
+Decodifica las texturas del juego en la GPU en lugar del hilo de vídeo (ayuda en escenas con muchos dibujos).
+Compilación de shaders
+Asíncrona
+Ubershaders híbridos
+Síncrona
+Asíncrona: sin tirones, los objetos pueden aparecer con un momento de retraso. Ubershaders híbridos: sin tirones y sin nada ausente, consume GPU. Síncrona: espera a cada shader nuevo.
+Reloj de CPU emulado
+Automático baja el reloj solo cuando la CPU es el límite.
+Funciones de velocidad
+Rápido
+Compatible
+Compatible desactiva los atajos del port en el flujo de comandos si un juego falla o se congela.
+Doble núcleo
+Forzado
+Emula la GPU en su propio hilo.
+Hilo de Vulkan
+Graba los comandos gráficos en otro núcleo.
+Disco rápido
+Pausas de carga más cortas (rara vez afecta a un juego).
+Gráficas de rendimiento
+Gráficas de tiempo de fotograma y velocidad en pantalla.
+Idioma
+El idioma de los menús y, si la GameCube o la Wii lo tienen, el de los juegos. El menú se reinicia para cambiarlo.
+Volumen del juego
+Volumen del sonido de los juegos.
+Lo que hay conectado al Wii Remote. Wii Sports y juegos parecidos necesitan Ninguna.
+Para juegos que se juegan con el Wii Remote en horizontal (NSMB Wii, Mario Kart Wii).
+Búfer de audio
+Más grande suena más fluido si el juego va por debajo de la velocidad completa; más pequeño tiene menos retraso.
+Todo el diagnóstico
+Todos los interruptores de abajo a la vez. No: no se registra nada mientras juegas.
+Registro de rendimiento
+Velocidad, FPS y tirones cada 2 segundos (boot-trace.log).
+Informes de bloqueo
+Dónde estaba el emulador cuando un juego se congela, se atasca o tarda en arrancar.
+Registro del emulador
+Los mensajes del propio Dolphin (dolphin.log).
+Perfilador
+Registra en qué se va el tiempo (samples.log). Cuesta velocidad: solo para diagnosticar juegos lentos.
+{} (Al iniciar el próximo juego.)
+# --- Launcher: categories, tabs, items
+Juegos
+Tarjetas de memoria
+Temas
+Biblioteca
+A-Z
+Jugados recientemente
+Plataforma
+Imagen, resolución, fotogramas
+Filtrado, antialiasing, efectos
+Reloj de CPU, funciones de velocidad, perfilador
+Volumen del juego, audio
+Registros, informes de bloqueo, perfilador: sí o no
+Efectos de sonido
+Volumen
+Estilo del menú
+Reloj
+Controles
+Reasigna los botones de GameCube y Wii
+Carpeta de juegos
+Descargar carátulas
+Carátulas de GameTDB para tus juegos
+Buscar actualizaciones
+Instalada: v{}
+Actualizaciones automáticas
+Restablecer todos los ajustes
+Todos los ajustes a sus valores por defecto
+Acerca de
+{} discos
+No se encontraron juegos
+Copia juegos en {} y pulsa Cuadrado
+{} partida
+{} partidas
+{} bloques
+{} bloque
+En la ranura A
+Una tarjeta vacía para partidas nuevas
+Nueva tarjeta de memoria
+En uso
+Tema de color
+Fondo de pantalla
+Azul Dolphin
+Índigo GameCube
+Blanco Wii
+Océano
+Esmeralda
+Lima
+Oro
+Atardecer
+Carmesí
+Rosa
+Grafito
+Medianoche
+# --- Launcher: panels
+Biblioteca: tus carátulas en fila,
+pestañas con L1 / R1.
+XMB: las columnas al estilo de la PSP.
+Busca una versión nueva en GitHub
+al abrir la aplicación y pregunta
+antes de instalarla.
+Cancelar
+Restablecer todo
+Todos los juegos, generales y por juego,
+vuelven a los ajustes por defecto.
+Dolphin para PS4
+Emulador de GameCube y Wii
+Adaptado a PS4 por ShiroKlein
+Versión {} (paquete instalado {})
+Versión {}
+Juegos: {}
+Fondos (PNG): {}
+Sonidos (WAV): {}
+Dolphin es software libre (GPLv2+).
+Fuente: Nunito (SIL Open Font License).
+Ajustes del juego
+Valores por defecto
+No hay trucos para este juego.
+La base de datos de trucos de Dolphin no tiene ninguno para {}.
+Ubicaciones
+Usar esta carpeta
+{} juego
+{} juegos
+(no se puede abrir esta carpeta)
+Conectando con GameTDB...
+Terminando...
+Descargando {} de {}: {}
+Círculo cierra esto; la descarga continúa.
+Descargadas: {}
+Ya estaban: {}
+No están en GameTDB: {}
+Fallidas: {}
+Tus propias imágenes: {}
+Información
+Plataforma: {}
+Wii (WiiWare / Consola Virtual / canal)
+Wii
+GameCube
+ID del juego: {}
+Discos: {}
+Archivo: {}
+Juego
+Iniciar
+Poner en la ranura A
+{} partida
+{} partidas
+Esta tarjeta aún no tiene partidas
+Pulsa el botón del DualShock 4 para {}...  (5 s: cancelar)
+Cruz: pulsa un botón nuevo. Sticks: Izquierda/Derecha para elegir.
+Vuelve a la distribución por defecto.
+Cruz: abrir esta carpeta.
+Cruz: buscar juegos en esta carpeta.
+Cruz: los juegos usan esta tarjeta desde su próximo inicio. Tus otras tarjetas no cambian.
+Los juegos guardan en esta tarjeta. Elige otra y ponla en la ranura A para cambiar.
+guardada {}
+Se aplica al iniciar el juego la próxima vez, o ya desde el menú del juego (L3+R3).
+Todos los juegos: este juego usa los ajustes generales. Este juego: los suyos propios.
+Actualizar
+Opciones
+Jugar
+Aún no jugado
+Jugado hoy
+Jugado ayer
+Jugado hace {} días
+Jugado el {}
+# --- Library style
+Tus juegos
+Aún no hay juegos
+Copia tus juegos en {}
+y pulsa Cuadrado para buscarlos (o elige una carpeta en Ajustes).
+Ranura A: {}
+RANURA A
+Una tarjeta de memoria nueva y vacía.
+Ponla en la ranura A para empezar partidas nuevas, para una segunda
+partida o para compartir la consola con alguien.
+Tus otras tarjetas y sus partidas no cambian,
+y puedes volver a ellas cuando quieras.
+Pulsa Cruz para crearla.
+Partidas en {}
+Aún no hay partidas. Pon la tarjeta en la ranura A y guarda en un juego.
++ {} más: pulsa Cruz para verlas todas
+Colores y fondos (PNG en {})
+Emulación, controles, actualizaciones y más
+Navegar
+Crear
+Abrir
+Ordenar
+# --- Updates
+Actualizaciones
+Buscando una versión nueva en GitHub...
+Tienes la última versión.
+Actualización disponible
+Dolphin v{} está disponible.
+Tienes la v{}.
+¿Descargarla ({})?
+Sí
+No
+Descargando actualización
+Mantén la aplicación abierta hasta que termine.
+Actualización instalada
+Dolphin v{} está lista.
+Se inicia cuando Dolphin se reinicie.
+Juegos, partidas y ajustes se conservan.
+Reiniciar ahora
+Más tarde
+Actualización lista
+Dolphin v{} se descargó y comprobó.
+Para instalarla, cierra Dolphin y abre
+Ajustes de depuración > Juego > Instalador de paquetes
+(o el de GoldHEN) y elige Dolphin v{}.
+Guardada como {}
+Cerrar Dolphin
+Actualización
+La actualización no funcionó:
+No se pudo buscar actualizaciones:
+Aceptar
+# --- Controls
+Mando de GameCube
+Wii Remote + Nunchuk
+Stick principal
+Stick de control
+Stick C
+Cruceta arriba
+Cruceta abajo
+Cruceta izquierda
+Cruceta derecha
+L (pulsado)
+R (pulsado)
+L (analógico)
+R (analógico)
+Stick izquierdo
+Stick derecho
+Stick izquierdo arriba
+Stick izquierdo abajo
+Stick izquierdo izquierda
+Stick izquierdo derecha
+Stick derecho arriba
+Stick derecho abajo
+Stick derecho izquierda
+Stick derecho derecha
+L2 (analógico)
+R2 (analógico)
+Agitar
+Agitar (giro)
+Puntero
+Stick del Nunchuk
+Personalizado
+# --- Homebrew
+Homebrew (GameCube)
+Homebrew (Wii)
+# --- Default game
+Establecer como ISO predeterminada
+Quitar ISO predeterminada
+Ya no se inicia ningún juego automáticamente.
+se inicia al abrir Dolphin.
+Mantén L1 mientras Dolphin arranca
+para abrir el menú en su lugar.
+Se inicia al abrir Dolphin
+# --- JIT
+Esta consola no permite el modo rápido de CPU de Dolphin (JIT): los juegos van lentos.
+# --- SD card
+Tarjeta SD de Wii
+Insertada
+Quitada
+Una tarjeta SD virtual para juegos y canales de Wii (partidas, fotos, música, homebrew).
+Carpeta de la tarjeta SD
+La tarjeta contiene los archivos de /data/DolphinPS4/User/Load/WiiSDSync (cópialos ahí por FTP); lo que escriben los juegos vuelve ahí al terminar.
+Escritura en la tarjeta SD
+Permite que los juegos guarden en la tarjeta SD. No: es de solo lectura.
+Tamaño de la tarjeta SD
+Automático hace la tarjeta justo del tamaño de los archivos de la carpeta.
+# --- Motion
+Controles de movimiento
+Los sensores de movimiento del DualShock 4 mueven el Wii Remote: inclínalo, agítalo y muévelo.
+Mando como Wii Remote
+Automático: un PS Move encendido al iniciar el juego hace de Wii Remote (botones, movimiento y puntero) y el DualShock 4 de Nunchuk.
+# --- Wii input
+Mando en juegos de Wii
+Ambos
+Wii Remote
+Lo que ve un juego de Wii: un Wii Remote, un mando de GameCube (Mario Kart Wii, Super Smash Bros. Brawl y otros lo admiten) o ambos.
+# --- Restart
+Reiniciar juego
+# --- Riivolution
+Parches Riivolution
+No hay mods de Riivolution para este juego.
+Copia los archivos de la SD del mod
+(su carpeta riivolution y lo demás) a
+Se aplica la próxima vez que empiece el juego.
+# --- Cheat download
+Descargar códigos
+Descargando...
+{} encontrados, {} nuevos
+Ninguno en línea
+Error (HTTP {})
+Error (sin conexión)
+Obtiene los códigos Gecko de este juego de internet (codes.rc24.xyz). Los nuevos se añaden desactivados.
+# --- Settings center
+Centro de ajustes de juegos
+Ajustes recomendados por juego, desde GitHub
+Origen
+Última actualización
+Juegos incluidos
+Actualizar ahora
+Actualizando...
+Actualizado
+Al día
+Error (no es un archivo de ajustes)
+Tus juegos
+Ninguno de tus juegos todavía
+Copia de la app
+Ajustes recomendados
+¿Usarlos para este juego?
+Usados
+No usados
+Preguntar al iniciar
+Descarga ahora los ajustes recomendados más recientes de GitHub (Dolphin también lo hace en cada inicio).
