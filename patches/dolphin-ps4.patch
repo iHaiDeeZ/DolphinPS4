@@ -3947,6 +3947,47 @@ index be5458b..a507294 100644
  }};
  
  constexpr std::array<Jit64OpTemplate, 9> s_table59{{
+diff --git a/Source/Core/Core/PowerPC/Jit64/JitAsm.cpp b/Source/Core/Core/PowerPC/Jit64/JitAsm.cpp
+index 7594d0e..b25f9f9 100644
+--- a/Source/Core/Core/PowerPC/Jit64/JitAsm.cpp
++++ b/Source/Core/Core/PowerPC/Jit64/JitAsm.cpp
+@@ -110,6 +110,28 @@ void Jit64AsmRoutineManager::Generate()
+   const bool assembly_dispatcher = true;
+   if (assembly_dispatcher)
+   {
++#ifdef __ORBIS__
++    if (!m_jit.GetBlockCache()->GetEntryPoints())
++    {
++      // Dolphin Lab (PS4): one 16-byte slot = {feature flags, address} + entry point.
++      // index * 16 = (PC & (mask << 2)) * 4.
++      MOV(32, R(RSCRATCH), PPCSTATE(pc));
++      MOV(32, R(RSCRATCH_EXTRA), R(RSCRATCH));
++      AND(32, R(RSCRATCH), Imm32(JitBaseBlockCache::FAST_BLOCK_MAP_FALLBACK_MASK << 2));
++      MOV(32, R(RSCRATCH2), PPCSTATE(feature_flags));
++      SHL(64, R(RSCRATCH_EXTRA), Imm8(32));
++      OR(64, R(RSCRATCH_EXTRA), R(RSCRATCH2));
++      MOV(64, R(RSCRATCH2), Imm64(reinterpret_cast<u64>(m_jit.GetBlockCache()->GetDispatchTable())));
++      LEA(64, RSCRATCH, MComplex(RSCRATCH2, RSCRATCH, SCALE_4, 0));
++      CMP(64, R(RSCRATCH_EXTRA), MatR(RSCRATCH));
++      FixupBranch miss = J_CC(CC_NE);
++      JMPptr(MDisp(RSCRATCH, 8));
++      SetJumpTarget(miss);
++      // Failure: the C++ dispatcher below (it also compiles new blocks).
++    }
++    else
++#endif
++    {
+     if (m_jit.GetBlockCache()->GetEntryPoints())
+     {
+       MOV(32, R(RSCRATCH2), PPCSTATE(feature_flags));
+@@ -181,6 +203,7 @@ void Jit64AsmRoutineManager::Generate()
+     }
+ 
+     // Failure, fallback to the C++ dispatcher for calling the JIT.
++    }
+   }
+ 
+   // There is no point in calling the dispatcher in the fast lookup table
 diff --git a/Source/Core/Core/PowerPC/Jit64/Jit_LoadStoreFloating.cpp b/Source/Core/Core/PowerPC/Jit64/Jit_LoadStoreFloating.cpp
 index 4d64010..8dbbcbe 100644
 --- a/Source/Core/Core/PowerPC/Jit64/Jit_LoadStoreFloating.cpp
@@ -4327,8 +4368,85 @@ index 612161b..fbee84f 100644
  
      PPCAnalyst::BlockStats st;
      PPCAnalyst::BlockRegStats gpa;
+diff --git a/Source/Core/Core/PowerPC/JitCommon/JitCache.cpp b/Source/Core/Core/PowerPC/JitCommon/JitCache.cpp
+index 4eecedc..3ad49d1 100644
+--- a/Source/Core/Core/PowerPC/JitCommon/JitCache.cpp
++++ b/Source/Core/Core/PowerPC/JitCommon/JitCache.cpp
+@@ -52,8 +52,32 @@ JitBaseBlockCache::JitBaseBlockCache(JitBase& jit) : m_jit{jit}
+ 
+ JitBaseBlockCache::~JitBaseBlockCache() = default;
+ 
++#ifdef __ORBIS__
++// An empty slot never matches: guest addresses are 4-byte aligned, 0xFFFFFFFF isn't.
++void JitBaseBlockCache::SetDispatch(size_t index, const JitBlock* block)
++{
++  DispatchEntry& slot = m_dispatch[index];
++  if (block)
++  {
++    slot.feature_flags = static_cast<u32>(block->feature_flags);
++    slot.address = block->effectiveAddress;
++    slot.entry = block->normalEntry;
++  }
++  else
++  {
++    slot.feature_flags = 0;
++    slot.address = 0xFFFFFFFF;
++    slot.entry = nullptr;
++  }
++}
++#endif
++
+ void JitBaseBlockCache::Init()
+ {
++#ifdef __ORBIS__
++  for (size_t i = 0; i < m_dispatch.size(); i++)
++    SetDispatch(i, nullptr);
++#endif
+   Common::JitRegister::Init(Config::Get(Config::MAIN_PERF_MAP_DIR));
+ 
+   m_entry_points_ptr = nullptr;
+@@ -154,6 +178,9 @@ void JitBaseBlockCache::FinalizeBlock(JitBlock& block, bool block_link,
+   else
+   {
+     m_fast_block_map_fallback[index] = &block;
++#ifdef __ORBIS__
++    SetDispatch(index, &block);
++#endif
+   }
+   block.fast_block_map_index = index;
+ 
+@@ -509,6 +536,9 @@ void JitBaseBlockCache::DestroyBlock(JitBlock& block)
+     if (m_fast_block_map_fallback[block.fast_block_map_index] == &block)
+     {
+       m_fast_block_map_fallback[block.fast_block_map_index] = nullptr;
++#ifdef __ORBIS__
++      SetDispatch(block.fast_block_map_index, nullptr);
++#endif
+     }
+   }
+ 
+@@ -549,6 +579,9 @@ JitBlock* JitBaseBlockCache::MoveBlockIntoFastCache(u32 addr, CPUEmuFeatureFlags
+     if (m_fast_block_map_fallback[block->fast_block_map_index] == block)
+     {
+       m_fast_block_map_fallback[block->fast_block_map_index] = nullptr;
++#ifdef __ORBIS__
++      SetDispatch(block->fast_block_map_index, nullptr);
++#endif
+     }
+   }
+ 
+@@ -562,6 +595,9 @@ JitBlock* JitBaseBlockCache::MoveBlockIntoFastCache(u32 addr, CPUEmuFeatureFlags
+   else
+   {
+     m_fast_block_map_fallback[index] = block;
++#ifdef __ORBIS__
++    SetDispatch(index, block);
++#endif
+   }
+   block->fast_block_map_index = index;
+ 
 diff --git a/Source/Core/Core/PowerPC/JitCommon/JitCache.h b/Source/Core/Core/PowerPC/JitCommon/JitCache.h
-index 8860a42..72090fb 100644
+index 8860a42..f9ced98 100644
 --- a/Source/Core/Core/PowerPC/JitCommon/JitCache.h
 +++ b/Source/Core/Core/PowerPC/JitCommon/JitCache.h
 @@ -148,7 +148,15 @@ public:
@@ -4347,6 +4465,36 @@ index 8860a42..72090fb 100644
    static constexpr u32 FAST_BLOCK_MAP_FALLBACK_MASK = FAST_BLOCK_MAP_FALLBACK_ELEMENTS - 1;
  
    explicit JitBaseBlockCache(JitBase& jit);
+@@ -162,6 +170,21 @@ public:
+   // Code Cache
+   u8** GetEntryPoints();
+   JitBlock** GetFastBlockMapFallback();
++#ifdef __ORBIS__
++  // Dolphin Lab (PS4): the dispatcher's own table, in step with m_fast_block_map_fallback. Each
++  // slot holds what the dispatcher needs - the block's feature flags and address (compared as one
++  // 64-bit value, the order of JitBlockData) and its entry point - so a lookup is one memory read
++  // instead of the slot and then the block's record (two dependent cache misses).
++  struct DispatchEntry
++  {
++    u32 feature_flags;
++    u32 address;
++    const u8* entry;
++  };
++  static_assert(sizeof(DispatchEntry) == 16);
++  DispatchEntry* GetDispatchTable() { return m_dispatch.data(); }
++  void SetDispatch(size_t index, const JitBlock* block);
++#endif
+   void RunOnBlocks(const Core::CPUThreadGuard& guard,
+                    const std::function<void(const JitBlock&)>& f) const;
+   void WipeBlockProfilingData(const Core::CPUThreadGuard& guard);
+@@ -237,4 +260,7 @@ private:
+   // in case the shm memory region couldn't be allocated.
+   std::array<JitBlock*, FAST_BLOCK_MAP_FALLBACK_ELEMENTS>
+       m_fast_block_map_fallback{};  // start_addr & mask -> number
++#ifdef __ORBIS__
++  alignas(64) std::array<DispatchEntry, FAST_BLOCK_MAP_FALLBACK_ELEMENTS> m_dispatch{};
++#endif
+ };
 diff --git a/Source/Core/Core/PowerPC/MMU.cpp b/Source/Core/Core/PowerPC/MMU.cpp
 index 940e93c..37ac000 100644
 --- a/Source/Core/Core/PowerPC/MMU.cpp
@@ -9829,10 +9977,10 @@ index 0000000..41d2bb2
 +}  // namespace PS4Settings
 diff --git a/Source/Core/DolphinNoGUI/PS4Updater.cpp b/Source/Core/DolphinNoGUI/PS4Updater.cpp
 new file mode 100755
-index 0000000..941e3ef
+index 0000000..56e00cd
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Updater.cpp
-@@ -0,0 +1,340 @@
+@@ -0,0 +1,366 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -9857,8 +10005,10 @@ index 0000000..941e3ef
 +{
 +namespace
 +{
++// Dolphin Lab: the experimental channel. The newest release tagged "lab-v<version>" (published as
++// pre-releases, never "latest"), not the stable app's v03.xx releases.
 +constexpr const char* LATEST_RELEASE =
-+    "https://api.github.com/repos/iHaiDeeZ/DolphinPS4/releases/latest";
++    "https://api.github.com/repos/iHaiDeeZ/DolphinPS4/releases?per_page=40";
 +
 +void Log(const std::string& text)
 +{
@@ -9916,21 +10066,45 @@ index 0000000..941e3ef
 +
 +  picojson::value json;
 +  const std::string parse_error = picojson::parse(json, body);
-+  if (!parse_error.empty() || !json.is<picojson::object>())
++  if (!parse_error.empty() || !json.is<picojson::array>())
 +  {
 +    release.error = "unexpected answer from GitHub";
 +    Log("check failed: " + release.error + " " + parse_error);
 +    return release;
 +  }
-+  const picojson::object& root = json.get<picojson::object>();
++  // The list (newest first): the first Lab release.
++  const picojson::object* found = nullptr;
++  if (json.is<picojson::array>())
++  {
++    for (const picojson::value& item : json.get<picojson::array>())
++    {
++      if (!item.is<picojson::object>())
++        continue;
++      const auto& object = item.get<picojson::object>();
++      const auto tag_it = object.find("tag_name");
++      if (tag_it != object.end() && tag_it->second.is<std::string>() &&
++          tag_it->second.get<std::string>().rfind("lab-v", 0) == 0)
++      {
++        found = &object;
++        break;
++      }
++    }
++  }
++  if (!found)
++  {
++    release.error = "no Dolphin Lab release on GitHub yet";
++    Log("check failed: " + release.error);
++    return release;
++  }
++  const picojson::object& root = *found;
 +  auto text = [](const picojson::object& object, const char* key) {
 +    const auto it = object.find(key);
 +    return it != object.end() && it->second.is<std::string>() ? it->second.get<std::string>() :
 +                                                                 std::string();
 +  };
 +  std::string tag = text(root, "tag_name");
-+  if (!tag.empty() && (tag[0] == 'v' || tag[0] == 'V'))
-+    tag.erase(0, 1);
++  if (tag.rfind("lab-v", 0) == 0)
++    tag.erase(0, 5);
 +  release.version = tag;
 +  release.title = text(root, "name");
 +
@@ -10239,10 +10413,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..d6800bf
+index 0000000..ad98a61
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,4659 @@
+@@ -0,0 +1,4660 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -14453,7 +14627,7 @@ index 0000000..d6800bf
 +      archive.url = release.update_url;
 +      archive.size = release.update_size;
 +      archive.sha256 = release.update_sha256;
-+      const std::string tar = dir + "/DolphinPS4-v" + release.version + "-update.tar";
++      const std::string tar = dir + "/DolphinLab-v" + release.version + "-update.tar";
 +      const std::string unpacked = m_data_dir + "/app.new", target = m_data_dir + "/app";
 +      std::string error;
 +      std::error_code ec;
@@ -14520,7 +14694,7 @@ index 0000000..d6800bf
 +      m_update_state = UpdateState::Finished;
 +      return;
 +    }
-+    const std::string path = dir + "/DolphinPS4-v" + release.version + ".pkg";
++    const std::string path = dir + "/DolphinLab-v" + release.version + ".pkg";
 +    std::string error;
 +    const bool downloaded =
 +        PS4Updater::Download(release, path, m_assets_dir + "/xmb/cacert.pem", progress, &error);
@@ -14534,7 +14708,7 @@ index 0000000..d6800bf
 +    // The app can't install over itself (see PS4Updater.h): the checked package goes where the
 +    // PS4's package installers look, and the user installs it with Dolphin closed.
 +    mkdir("/data/pkg", 0777);
-+    const std::string ready = "/data/pkg/DolphinPS4-v" + release.version + ".pkg";
++    const std::string ready = "/data/pkg/DolphinLab-v" + release.version + ".pkg";
 +    const bool moved = std::rename(path.c_str(), ready.c_str()) == 0;
 +    Log("update: " + (moved ? ready : path) + " ready for the package installer");
 +    std::lock_guard lock(m_update_mutex);
@@ -14705,11 +14879,12 @@ index 0000000..d6800bf
 +      Log("update: removed " + name);
 +    }
 +  }
-+  // Packages the updater left in /data/pkg (DolphinPS4-v<version>.pkg), once installed.
++  // Packages the updater left in /data/pkg (DolphinLab-v<version>.pkg: the Lab app's own, never the
++  // stable app's DolphinPS4-v*.pkg), once installed.
 +  for (const auto& entry : std::filesystem::directory_iterator("/data/pkg", ec))
 +  {
 +    const std::string name = entry.path().filename().string();
-+    if (name.compare(0, 12, "DolphinPS4-v") != 0 || name.size() < 17 ||
++    if (name.compare(0, 12, "DolphinLab-v") != 0 || name.size() < 17 ||
 +        name.compare(name.size() - 4, 4, ".pkg") != 0)
 +    {
 +      continue;
@@ -15608,10 +15783,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..68266a3
+index 0000000..4115da9
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1786 @@
+@@ -0,0 +1,1788 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -16872,7 +17047,8 @@ index 0000000..68266a3
 +extern "C" int ps4_jit_unavailable;
 +int ps4_jit_unavailable = 0;
 +extern "C" int ps4_move_connected(int32_t user_id);  // InputCommon/.../PS4Pad/PS4Pad.cpp
-+extern "C" int ps4_move_enabled;                     // InputCommon/.../PS4Pad/PS4Pad.cpp
++extern "C" int ps4_move_enabled;  // InputCommon/.../PS4Pad/PS4Pad.cpp
++extern "C" char ps4_profile_tag[32];  // port/ps4_sampler.cpp: profile file names
 +
 +// PS4XMB.cpp, at its first frame, and before a game starts: a downloaded update works.
 +extern "C" void ps4_update_started_ok()
@@ -17258,6 +17434,7 @@ index 0000000..68266a3
 +      if (std::filesystem::path(entry.path) != std::filesystem::path(game) ||
 +          entry.game_id.size() < 3)
 +        continue;
++      snprintf(ps4_profile_tag, sizeof(ps4_profile_tag), "%s", entry.game_id.c_str());
 +      // The game settings center's recommended settings (unless the player said No), then
 +      // ps4.ini's per-game sections.
 +      const bool center_used = CenterUsed(entry.game_id);

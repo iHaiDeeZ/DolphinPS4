@@ -13,6 +13,7 @@
 // Started by ps4_sampler_start() (DolphinNoGUI, ps4.ini profile=on); threads register
 // themselves with ps4_sampler_register_thread().
 
+#include <string>
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
@@ -24,6 +25,15 @@
 
 #include <algorithm>
 #include <atomic>
+
+// Dolphin Lab: the profile files carry the game ID (samples-RB7E54.log, jitcode-RB7E54.bin,
+// mem1-RB7E54.bin), set by PlatformPS4 before the sampler starts, so one game's run never
+// replaces another's.
+extern "C" char ps4_profile_tag[32];
+char ps4_profile_tag[32] = "";
+static std::string profilePath(const char* name, const char* extension) {
+    return std::string("/data/DolphinPS4/") + name + (ps4_profile_tag[0] ? "-" : "") + ps4_profile_tag + "." + extension;
+}
 
 extern "C" char __text_start[];  // defined by the OpenOrbis link.x at the start of .text
 extern "C" int pthread_getthreadid_np(void);  // libkernel (FreeBSD libthr)
@@ -238,7 +248,7 @@ bool isReadable(uint64_t address, uint64_t size) {
 // jitcode.bin: records of {u64 address, u64 size, bytes}. Copied through a buffer first so the
 // kernel never reads JIT memory for the file write.
 void dumpJitCode() {
-    const int fd = open("/data/DolphinPS4/jitcode.bin", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    const int fd = open(profilePath("jitcode", "bin").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd >= 0) {
         static uint8_t buffer[0x10000];
         for (int i = 0; i < g_hot_chunk_count; i++) {
@@ -253,7 +263,7 @@ void dumpJitCode() {
     }
     g_hot_chunk_count = 0;
     if (ps4_profile_guest_ram && ps4_profile_guest_ram_size) {
-        const int ram = open("/data/DolphinPS4/mem1.bin", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        const int ram = open(profilePath("mem1", "bin").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
         if (ram >= 0) {
             static uint8_t copy[0x100000];
             for (uint32_t offset = 0; offset < ps4_profile_guest_ram_size; offset += sizeof(copy)) {
@@ -270,7 +280,7 @@ void dumpJitCode() {
 std::atomic<bool> g_sampler_on{false};
 
 void* samplerThread(void*) {
-    const int fd = open("/data/DolphinPS4/samples.log", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    const int fd = open(profilePath("samples", "log").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0)
         return nullptr;
     writeModuleList(fd);
@@ -557,7 +567,7 @@ extern "C" void ps4_sampler_start() {
 
     pthread_t thread;
     if (pthread_create(&thread, nullptr, samplerThread, nullptr) == 0)
-        ps4_boot_trace("sampler: started, writing /data/DolphinPS4/samples.log every 10 s");
+        ps4_boot_trace(("sampler: started, writing " + profilePath("samples", "log") + " every 10 s").c_str());
 }
 
 // The menus' Profiler switch: starts the sampler the first time, then pauses / resumes it.
