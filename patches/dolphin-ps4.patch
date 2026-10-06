@@ -10825,7 +10825,7 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..9499fb2
+index 0000000..2a0cae6
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 @@ -0,0 +1,4706 @@
@@ -11895,7 +11895,7 @@ index 0000000..9499fb2
 +    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
 +    for (const char* extension :
 +         {".iso", ".gcm", ".ciso", ".gcz", ".wbfs", ".wia", ".rvz", ".nkit.iso", ".tgc", ".wad",
-+          ".dol", ".elf"})
++          ".dol", ".elf", ".dff"})
 +    {
 +      const size_t length = std::strlen(extension);
 +      if (lower.size() > length && lower.compare(lower.size() - length, length, extension) == 0)
@@ -16241,10 +16241,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..471ae33
+index 0000000..5af67db
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1783 @@
+@@ -0,0 +1,1793 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -16294,6 +16294,7 @@ index 0000000..471ae33
 +#include "DolphinNoGUI/PS4XMB.h"
 +#include "Core/Boot/DolReader.h"
 +#include "Core/Boot/ElfReader.h"
++#include "Core/FifoPlayer/FifoDataFile.h"
 +#include "DiscIO/Volume.h"
 +#include "DiscIO/Blob.h"
 +#include "DiscIO/VolumeWad.h"
@@ -17173,12 +17174,13 @@ index 0000000..471ae33
 +}
 +
 +// Disc images (.tgc: GameCube demo discs), Wii title packages (.wad: WiiWare, Virtual Console,
-+// channels) and homebrew programs (.dol, .elf).
++// channels), homebrew programs (.dol, .elf) and FIFO recordings (.dff: frames recorded with a
++// PC Dolphin's FIFO Player, replayed without the game - for graphics tests).
 +bool IsDiscImage(const std::string& name)
 +{
-+  static const std::array<std::string, 12> extensions = {
++  static const std::array<std::string, 13> extensions = {
 +      ".iso", ".gcm", ".ciso", ".gcz", ".wbfs", ".wia", ".rvz", ".nkit.iso", ".tgc",
-+      ".wad", ".dol", ".elf"};
++      ".wad", ".dol", ".elf", ".dff"};
 +  std::string lower = name;
 +  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
 +  for (const std::string& extension : extensions)
@@ -17204,7 +17206,15 @@ index 0000000..471ae33
 +      continue;
 +    LibraryEntry game;
 +    game.path = entry.path().string();
-+    if (HasExtension(name, ".dol") || HasExtension(name, ".elf"))
++    if (HasExtension(name, ".dff"))
++    {
++      // A FIFO recording: no game ID; its file name is its title. Dolphin's FIFO player replays it.
++      game.homebrew = true;
++      game.title = entry.path().stem().string();
++      if (const auto file = FifoDataFile::Load(game.path, true))
++        game.wii = file->GetIsWii();
++    }
++    else if (HasExtension(name, ".dol") || HasExtension(name, ".elf"))
 +    {
 +      // Homebrew: no game ID; its file name is its title. Dolphin boots it directly.
 +      game.homebrew = true;
