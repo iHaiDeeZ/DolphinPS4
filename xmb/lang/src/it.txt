@@ -428,3 +428,8 @@ Usate
 Non usate
 Chiedi all'avvio
 Scarica ora le impostazioni consigliate più recenti da GitHub (Dolphin lo fa anche a ogni avvio).
+# --- Nunchuk shake
+Scuoti Nunchuk
+# --- Folder browser
+Radice della console
+Unità

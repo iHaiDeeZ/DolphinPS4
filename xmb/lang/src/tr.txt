@@ -428,3 +428,8 @@ Kullanılıyor
 Kullanılmıyor
 Başlarken sor
 En yeni önerilen ayarları şimdi GitHub'dan indirir (Dolphin bunu her açılışta da yapar).
+# --- Nunchuk shake
+Nunchuk sallama
+# --- Folder browser
+Konsol kök dizini
+Sürücüler

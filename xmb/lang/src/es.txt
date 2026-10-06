@@ -428,3 +428,8 @@ Usados
 No usados
 Preguntar al iniciar
 Descarga ahora los ajustes recomendados más recientes de GitHub (Dolphin también lo hace en cada inicio).
+# --- Nunchuk shake
+Agitar Nunchuk
+# --- Folder browser
+Raíz de la consola
+Unidades

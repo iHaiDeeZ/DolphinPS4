@@ -6113,10 +6113,10 @@ index 0000000..276a9b6
 +}  // namespace PS4Cheats
 diff --git a/Source/Core/DolphinNoGUI/PS4Controls.cpp b/Source/Core/DolphinNoGUI/PS4Controls.cpp
 new file mode 100755
-index 0000000..dc56381
+index 0000000..e9b0ba4
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Controls.cpp
-@@ -0,0 +1,511 @@
+@@ -0,0 +1,633 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -6192,6 +6192,9 @@ index 0000000..dc56381
 +Nunchuk/Stick/Down = `Left Y+`
 +Nunchuk/Stick/Left = `Left X-`
 +Nunchuk/Stick/Right = `Left X+`
++Nunchuk/Shake/X = L3
++Nunchuk/Shake/Y = L3
++Nunchuk/Shake/Z = L3
 +)";
 +
 +const std::vector<Binding> GC_BINDINGS = {
@@ -6230,14 +6233,51 @@ index 0000000..dc56381
 +    {"Nunchuk/Buttons/C", "Nunchuk C", false},
 +    {"Nunchuk/Buttons/Z", "Nunchuk Z", false},
 +    {"Nunchuk/Stick", "Nunchuk Stick", true},
++    {"Nunchuk/Shake", "Nunchuk Shake", false},
 +};
 +
 +std::string s_user_dir = "/data/DolphinPS4/User";
++std::string s_edit_game;  // the menu edits this game's own layout ("": the normal one)
 +
-+std::string Path(Device device)
++// The files Dolphin reads (the normal layout, or a game's while that game runs).
++std::string LivePath(Device device)
 +{
 +  return s_user_dir + (device == Device::GameCube ? "/Config/GCPadNew.ini" :
 +                                                    "/Config/WiimoteNew.ini");
++}
++
++std::string ProfileDir()
++{
++  return s_user_dir + "/Config/PS4Controls";
++}
++
++std::string GamePath(Device device, const std::string& game_id)
++{
++  return ProfileDir() + "/" + game_id + (device == Device::GameCube ? "-GCPad.ini" : "-Wiimote.ini");
++}
++
++// The normal layout while a game's own is in place.
++std::string BackupPath(Device device)
++{
++  return ProfileDir() + (device == Device::GameCube ? "/_normal-GCPad.ini" : "/_normal-Wiimote.ini");
++}
++
++std::string Path(Device device)
++{
++  return s_edit_game.empty() ? LivePath(device) : GamePath(device, s_edit_game);
++}
++
++bool Exists(const std::string& path)
++{
++  struct stat st;
++  return stat(path.c_str(), &st) == 0;
++}
++
++// Shake groups ("Shake", "Nunchuk/Shake") are three keys with the same input.
++bool IsShake(const Binding& binding)
++{
++  const std::string key = binding.key;
++  return key == "Shake" || key == "Nunchuk/Shake";
 +}
 +
 +const char* Section(Device device)
@@ -6357,6 +6397,23 @@ index 0000000..dc56381
 +{
 +  mkdir(s_user_dir.c_str(), 0777);
 +  mkdir((s_user_dir + "/Config").c_str(), 0777);
++  mkdir(ProfileDir().c_str(), 0777);
++  // Layouts from before the Nunchuk shake input: L3, which nothing else uses in Wii games.
++  {
++    Common::IniFile ini;
++    if (ini.Load(LivePath(Device::Wii)))
++    {
++      Common::IniFile::Section* section = ini.GetSection("Wiimote1");
++      std::string shake;
++      if (section && !section->Get("Nunchuk/Shake/X", &shake))
++      {
++        section->Set("Nunchuk/Shake/X", std::string("L3"));
++        section->Set("Nunchuk/Shake/Y", std::string("L3"));
++        section->Set("Nunchuk/Shake/Z", std::string("L3"));
++        SaveIni(ini, LivePath(Device::Wii));
++      }
++    }
++  }
 +  WriteIfMissing(Path(Device::GameCube), GCPAD_DEFAULTS, "GCPad1");
 +  WriteIfMissing(Path(Device::Wii), WIIMOTE_DEFAULTS, "Wiimote1");
 +  // The GameCube L / R clicks came from the DualShock 4's digital L2 / R2, which switch on early
@@ -6461,7 +6518,7 @@ index 0000000..dc56381
 +    }
 +    return "Custom";
 +  }
-+  const std::string key = std::string(binding.key) == "Shake" ? "Shake/X" : binding.key;
++  const std::string key = IsShake(binding) ? std::string(binding.key) + "/X" : binding.key;
 +  section->Get(key, &value);
 +  return WithoutMove(value);
 +}
@@ -6512,11 +6569,12 @@ index 0000000..dc56381
 +      section->Set(prefix + "/Right", std::string(choice.right));
 +    }
 +  }
-+  else if (std::string(binding.key) == "Shake")
++  else if (IsShake(binding))
 +  {
-+    section->Set("Shake/X", expression);
-+    section->Set("Shake/Y", expression);
-+    section->Set("Shake/Z", expression);
++    const std::string prefix = binding.key;
++    section->Set(prefix + "/X", expression);
++    section->Set(prefix + "/Y", expression);
++    section->Set(prefix + "/Z", expression);
 +  }
 +  else
 +  {
@@ -6627,13 +6685,77 @@ index 0000000..dc56381
 +    return "`Right Y+`";
 +  return {};
 +}
++
++void EditGame(const std::string& game_id)
++{
++  s_edit_game = game_id;
++}
++
++bool HasGameProfile(const std::string& game_id)
++{
++  return !game_id.empty() &&
++         (Exists(GamePath(Device::GameCube, game_id)) || Exists(GamePath(Device::Wii, game_id)));
++}
++
++void CreateGameProfile(const std::string& game_id)
++{
++  mkdir(ProfileDir().c_str(), 0777);
++  for (const Device device : {Device::GameCube, Device::Wii})
++  {
++    Common::IniFile ini;
++    ini.Load(LivePath(device));
++    SaveIni(ini, GamePath(device, game_id));
++  }
++}
++
++void DeleteGameProfile(const std::string& game_id)
++{
++  for (const Device device : {Device::GameCube, Device::Wii})
++    std::remove(GamePath(device, game_id).c_str());
++}
++
++void RestoreGlobal()
++{
++  for (const Device device : {Device::GameCube, Device::Wii})
++  {
++    if (Exists(BackupPath(device)))
++      std::rename(BackupPath(device).c_str(), LivePath(device).c_str());
++  }
++}
++
++bool UseGameProfile(const std::string& game_id)
++{
++  RestoreGlobal();
++  if (!HasGameProfile(game_id))
++    return false;
++  for (const Device device : {Device::GameCube, Device::Wii})
++  {
++    Common::IniFile mine;
++    if (!mine.Load(GamePath(device, game_id)))
++      continue;
++    const Common::IniFile::Section* own = mine.GetSection(Section(device));
++    if (!own)
++      continue;
++    // The normal layout aside, then player 1 from the game's layout; players 2-4 follow it.
++    Common::IniFile live;
++    live.Load(LivePath(device));
++    SaveIni(live, BackupPath(device));
++    live.DeleteSection(Section(device));
++    Common::IniFile::Section* target = live.GetOrCreateSection(Section(device));
++    for (const auto& [key, value] : own->GetValues())
++      target->Set(key, value);
++    SaveIni(live, LivePath(device));
++    SyncPlayers(device);
++  }
++  return true;
++}
 +}  // namespace PS4Controls
 diff --git a/Source/Core/DolphinNoGUI/PS4Controls.h b/Source/Core/DolphinNoGUI/PS4Controls.h
 new file mode 100755
-index 0000000..5a405de
+index 0000000..5b671b3
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Controls.h
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,77 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -6682,6 +6804,17 @@ index 0000000..5a405de
 +// Stick groups: "Left Stick", "Right Stick" or "D-Pad".
 +std::vector<std::string> StickChoices();
 +void ResetToDefault(Device device);
++
++// Per-game layouts: User/Config/PS4Controls/<GAME ID>-GCPad.ini / -Wiimote.ini. The menu edits
++// either the normal layout (game "") or a game's own (EditGame). A game process puts its own
++// layout in place (UseGameProfile); the normal one waits in a backup and the menu restores it
++// (RestoreGlobal), so a game's layout never reaches another game.
++void EditGame(const std::string& game_id);
++bool HasGameProfile(const std::string& game_id);
++void CreateGameProfile(const std::string& game_id);  // starts as a copy of the normal layout
++void DeleteGameProfile(const std::string& game_id);
++bool UseGameProfile(const std::string& game_id);     // game process; true when it had one
++void RestoreGlobal();
 +// The Wii Remote's extension ("nunchuk" or "none") and sideways orientation.
 +void SetWiiAttachment(const std::string& extension, bool sideways);
 +
@@ -10413,10 +10546,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..ad98a61
+index 0000000..9499fb2
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,4660 @@
+@@ -0,0 +1,4706 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11065,7 +11198,7 @@ index 0000000..ad98a61
 +  std::string InstalledPackageNote() const;
 +  void ApplySettingOption(int setting, int option);
 +  void OpenSettingsList(const std::string& category, const std::string& game_id);
-+  void OpenControlsList(PS4Controls::Device device);
++  void OpenControlsList(PS4Controls::Device device, const std::string& game_id = {});
 +  void BuildControlRows();
 +  void OpenCheatsList(const Game& game);
 +  void BuildCheatRows();
@@ -11170,6 +11303,7 @@ index 0000000..ad98a61
 +
 +  // Controls panel: which controller, and a button capture in progress.
 +  int m_controls_device = -1;  // PS4Controls::Device, or -1
++  std::string m_controls_game;  // Controls opened from a game (Triangle): its ID, else empty
 +  bool m_capture = false;
 +  bool m_capture_released = false;
 +  float m_capture_time = 0.0f;
@@ -11501,6 +11635,10 @@ index 0000000..ad98a61
 +  if (path.empty())
 +  {
 +    rows.push_back({"Places", "", "", true});
++    // The whole console: its root and /mnt first (USB drives, extended storage, discs...), then
++    // the usual places when they exist.
++    rows.push_back({"/", "Console root", "dir:/"});
++    rows.push_back({"/mnt", "Drives", "dir:/mnt"});
 +    std::vector<std::string> places = {"/data", m_data_dir + "/games"};
 +    for (int i = 0; i < 8; i++)
 +      places.push_back("/mnt/usb" + std::to_string(i));
@@ -11548,10 +11686,12 @@ index 0000000..ad98a61
 +    std::sort(folders.begin(), folders.end());
 +    rows.push_back({"Use This Folder", std::to_string(games) + (games == 1 ? " game" : " games"),
 +                    "usedir"});
-+    const std::filesystem::path parent = std::filesystem::path(path).parent_path();
-+    const bool top = path == "/data" || (path.rfind("/mnt/", 0) == 0 &&
-+                                             std::count(path.begin(), path.end(), '/') == 2);
-+    rows.push_back({"..", top ? "Places" : "", top ? "dir:" : "dir:" + parent.string()});
++    // ".." climbs up to the console root; from there, back to the places.
++    std::string parent = std::filesystem::path(path).parent_path().string();
++    if (parent.empty())
++      parent = "/";
++    const bool top = path == "/";
++    rows.push_back({"..", top ? "Places" : parent, top ? "dir:" : "dir:" + parent});
 +    if (!readable && ec)
 +    {
 +      rows.push_back({"(this folder can't be opened: " + ec.message() + ")", "", "", true});
@@ -11979,6 +12119,24 @@ index 0000000..ad98a61
 +    }
 +    return;
 +  }
++  if (row.key == "__ctlscope__")
++  {
++    // This Game: its own layout, starting from the normal one. All Games: back to the normal.
++    if (PS4Controls::HasGameProfile(m_controls_game))
++    {
++      PS4Controls::DeleteGameProfile(m_controls_game);
++      PS4Controls::EditGame("");
++    }
++    else
++    {
++      PS4Controls::CreateGameProfile(m_controls_game);
++      PS4Controls::EditGame(m_controls_game);
++    }
++    Log("controls: " + m_controls_game +
++        (PS4Controls::HasGameProfile(m_controls_game) ? " own layout" : " normal layout"));
++    BuildControlRows();
++    return;
++  }
 +  if (row.key.rfind("ctl:", 0) == 0 || row.key == "__ctlreset__")
 +  {
 +    const auto device = static_cast<PS4Controls::Device>(m_controls_device);
@@ -12100,12 +12258,14 @@ index 0000000..ad98a61
 +  BuildSettingRows();
 +}
 +
-+void Menu::OpenControlsList(PS4Controls::Device device)
++void Menu::OpenControlsList(PS4Controls::Device device, const std::string& game_id)
 +{
 +  m_panel = {};
 +  m_panel.open = true;
 +  m_panel.title = PS4Controls::DeviceName(device);
 +  m_controls_device = static_cast<int>(device);
++  m_controls_game = game_id;
++  PS4Controls::EditGame(PS4Controls::HasGameProfile(game_id) ? game_id : "");
 +  BuildControlRows();
 +  m_panel.selected = 0;
 +}
@@ -12115,6 +12275,12 @@ index 0000000..ad98a61
 +  const auto device = static_cast<PS4Controls::Device>(m_controls_device);
 +  std::vector<SettingRow> rows;
 +  const auto& bindings = PS4Controls::Bindings(device);
++  if (!m_controls_game.empty())
++  {
++    rows.push_back({"Apply To",
++                    PS4Controls::HasGameProfile(m_controls_game) ? "This Game" : "All Games",
++                    "__ctlscope__", false, true});
++  }
 +  for (size_t i = 0; i < bindings.size(); i++)
 +  {
 +    const std::string value = PS4Controls::Get(device, bindings[i]);
@@ -12471,6 +12637,8 @@ index 0000000..ad98a61
 +      if (m_panel.setting == SET_UPDATE && m_update_state == UpdateState::Downloading)
 +        m_update_cancel = true;
 +      m_controls_device = -1;
++      m_controls_game.clear();
++      PS4Controls::EditGame("");  // a game's own layout is only edited while its page is open
 +      m_panel.open = false;
 +      Play("back");
 +      return;
@@ -12593,7 +12761,15 @@ index 0000000..ad98a61
 +        Play("confirm");
 +        return;
 +      }
-+      else if (m_panel.title == "Game" && m_panel.selected == 5)
++      else if (m_panel.title == "Game" && m_panel.options[m_panel.selected] == "Controls")
++      {
++        const Item& item = m_items[m_category][m_selected[m_category]];
++        const Game& game = m_games[item.game];
++        OpenControlsList(game.wii ? PS4Controls::Device::Wii : PS4Controls::Device::GameCube, game.id);
++        Play("confirm");
++        return;
++      }
++      else if (m_panel.title == "Game" && m_panel.options[m_panel.selected] == "Riivolution Patches")
 +      {
 +        const Item& item = m_items[m_category][m_selected[m_category]];
 +        OpenRiivolutionList(m_games[item.game]);
@@ -12740,6 +12916,7 @@ index 0000000..ad98a61
 +      if (m_games[items[selected].game].wii && !m_games[items[selected].game].homebrew &&
 +          !m_games[items[selected].game].wad)
 +        m_panel.options.push_back("Riivolution Patches");
++      m_panel.options.push_back("Controls");
 +      Play("menu");
 +    }
 +  }
@@ -14903,6 +15080,8 @@ index 0000000..ad98a61
 +  s_log = fopen((m_data_dir + "/xmb.log").c_str(), "w");
 +  File::SetUserPath(D_USER_IDX, m_data_dir + "/User/");
 +  PS4Controls::SetUserDirectory(m_data_dir + "/User");
++  // The normal layout back in place if a game's own was in use.
++  PS4Controls::RestoreGlobal();
 +  PS4Controls::WriteDefaultsIfMissing();
 +  int user = 0;
 +  sceUserServiceInitialize(nullptr);
@@ -15783,10 +15962,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..4115da9
+index 0000000..d784e4c
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1788 @@
+@@ -0,0 +1,1802 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -17477,11 +17656,21 @@ index 0000000..4115da9
 +      break;
 +    }
 +  }
++  // Dolphin Lab: ps4.ini lab_profile=on profiles every game (its own samples-<ID>.log), whatever
++  // the game settings center or the game's own settings say about diagnostics.
++  if (GetPS4Option("lab_profile", "off") == "on")
++  {
++    s_options["profile"] = "on";
++    s_options["diagnostics_all"] = "on";
++    BootTrace("lab_profile: profiling this game");
++  }
 +  // A Wii game (a Wii disc, a .wad or Wii homebrew)? The Wii settings apply only to those.
++  std::string controls_game;
 +  for (const LibraryEntry& entry : GameLibrary())
 +  {
 +    if (std::filesystem::path(entry.path) != std::filesystem::path(game))
 +      continue;
++    controls_game = entry.game_id;
 +    s_wii_game = entry.wad || (entry.homebrew ? entry.wii :
 +                                                !entry.game_id.empty() &&
 +                                                    (entry.game_id[0] == 'R' || entry.game_id[0] == 'S'));
@@ -17489,6 +17678,10 @@ index 0000000..4115da9
 +  }
 +  BootTrace(s_wii_game ? "Wii game: Wii controller settings applied" :
 +                         "GameCube game: Wii settings left alone");
++  // The game's own controller layout (Triangle on it -> Controls -> This Game), else the normal.
++  BootTrace(PS4Controls::UseGameProfile(controls_game) ?
++                ("controls: " + controls_game + "'s own layout").c_str() :
++                "controls: the normal layout");
 +  // The Wii Remote's attachment and orientation for this game (WiimoteNew.ini, read by Dolphin
 +  // when it starts).
 +  if (s_wii_game)
