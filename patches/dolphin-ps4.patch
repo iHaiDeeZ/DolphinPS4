@@ -7693,10 +7693,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..dfea98f
+index 0000000..6673fb7
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,1079 @@
+@@ -0,0 +1,1087 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -8164,11 +8164,19 @@ index 0000000..dfea98f
 +    return;
 +  const std::string value =
 +      PS4Settings::Step(*setting, PS4Settings::Get(key, s_game_id), direction);
++  // The game's recommended settings decide this one for this game: a global change wouldn't
++  // show here (Diagnostics stayed Off after Mario Kart Wii's recommended settings), so the
++  // game gets its own settings, starting from what it uses now.
++  const bool hidden = !Custom() && PS4Settings::HasGameValue(key, s_game_id);
++  if (hidden)
++    PS4Settings::SetCustom(s_game_id, true);
 +  PS4Settings::Set(key, value, Custom() ? s_game_id : std::string());
 +  if (setting->live)
 +    PS4Settings::ApplyLive(key, value);
 +  else
 +    Toast(std::string(setting->label) + ": next time a game starts");
++  if (hidden && setting->live)
++    Toast(std::string(setting->label) + ": saved for this game");
 +  Log("setting " + key + "=" + value + (Custom() ? " (" + s_game_id + ")" : " (global)"));
 +}
 +
@@ -9707,10 +9715,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..de0f82f
+index 0000000..0597c5e
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,564 @@
+@@ -0,0 +1,571 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10076,6 +10084,12 @@ index 0000000..de0f82f
 +  return values;
 +}
 +
++bool HasGameValue(const std::string& key, const std::string& game_id)
++{
++  std::lock_guard lock(s_mutex);
++  return !game_id.empty() && s_game_base && !s_game_base(game_id, key).empty();
++}
++
 +bool IsCustom(const std::string& game_id)
 +{
 +  std::lock_guard lock(s_mutex);
@@ -10093,9 +10107,10 @@ index 0000000..de0f82f
 +    auto& section = s_sections[game_id];
 +    if (custom && section.size() <= 1)
 +    {
-+      // First time: start from what the game uses now.
++      // First time: start from what the game uses now (its recommended settings included; the
++      // global values alone dropped them).
 +      for (const Setting& setting : SETTINGS)
-+        section[setting.key] = GetLocked(setting.key, {});
++        section[setting.key] = GetLocked(setting.key, game_id);
 +    }
 +    section["custom"] = custom ? "on" : "off";
 +  }
@@ -10277,10 +10292,10 @@ index 0000000..de0f82f
 +}  // namespace PS4Settings
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.h b/Source/Core/DolphinNoGUI/PS4Settings.h
 new file mode 100755
-index 0000000..41d2bb2
+index 0000000..a668b6a
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.h
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,81 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10340,6 +10355,9 @@ index 0000000..41d2bb2
 +std::vector<std::pair<std::string, std::string>> GlobalValues();
 +std::vector<std::pair<std::string, std::string>> GameValues(const std::string& game_id);
 +bool IsCustom(const std::string& game_id);
++// The game's own value of a setting decides over the global one (the game settings center or
++// a ps4.ini section sets it for this game): a global change wouldn't show in this game.
++bool HasGameValue(const std::string& key, const std::string& game_id);
 +// Custom on: the game starts with a copy of the effective global values.
 +void SetCustom(const std::string& game_id, bool custom);
 +
