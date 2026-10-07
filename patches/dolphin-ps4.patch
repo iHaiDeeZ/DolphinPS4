@@ -911,22 +911,24 @@ index 0000000..90decba
 +  void* m_context = nullptr;
 +};
 diff --git a/Source/Core/Common/HttpRequest.cpp b/Source/Core/Common/HttpRequest.cpp
-index 94a4664..156c10d 100644
+index 94a4664..bb4c3dc 100644
 --- a/Source/Core/Common/HttpRequest.cpp
 +++ b/Source/Core/Common/HttpRequest.cpp
-@@ -13,6 +13,11 @@
+@@ -13,6 +13,13 @@
  #include "Common/ScopeGuard.h"
  #include "Common/StringUtil.h"
  
 +#ifdef __ORBIS__
 +extern "C" const char* ps4_assets_dir();  // DolphinNoGUI/PlatformPS4.cpp
 +extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
++extern "C" int ps4_net_resolve(const char* host, char* address, size_t size);  // PS4Net.cpp
++#include <cstdlib>
 +#endif
 +
  namespace Common
  {
  class HttpRequest::Impl final
-@@ -147,6 +152,14 @@ HttpRequest::Impl::Impl(std::chrono::milliseconds timeout_ms, ProgressCallback c
+@@ -147,6 +154,14 @@ HttpRequest::Impl::Impl(std::chrono::milliseconds timeout_ms, ProgressCallback c
        m_curl.get(), CURLOPT_LOW_SPEED_TIME,
        static_cast<long>(std::chrono::duration_cast<std::chrono::seconds>(timeout_ms).count()));
    curl_easy_setopt(m_curl.get(), CURLOPT_LOW_SPEED_LIMIT, 1);
@@ -941,7 +943,44 @@ index 94a4664..156c10d 100644
  }
  
  bool HttpRequest::Impl::IsValid() const
-@@ -281,6 +294,10 @@ HttpRequest::Response HttpRequest::Impl::Fetch(const std::string& url, Method me
+@@ -276,11 +291,47 @@ HttpRequest::Response HttpRequest::Impl::Fetch(const std::string& url, Method me
+   curl_easy_setopt(m_curl.get(), CURLOPT_WRITEFUNCTION, CurlWriteCallback);
+   curl_easy_setopt(m_curl.get(), CURLOPT_WRITEDATA, &buffer);
+ 
++#ifdef __ORBIS__
++  // curl can't look host names up on the PS4: the PS4's resolver does (as the XMB's downloads).
++  curl_slist* resolves = nullptr;
++  Common::ScopeGuard resolves_guard{[&resolves] { curl_slist_free_all(resolves); }};
++  {
++    const size_t scheme = url.find("://");
++    if (scheme != std::string::npos)
++    {
++      const size_t start = scheme + 3;
++      const size_t end = url.find_first_of("/?#", start);
++      std::string host = url.substr(start, end == std::string::npos ? std::string::npos :
++                                                                       end - start);
++      const size_t at = host.rfind('@');
++      if (at != std::string::npos)
++        host = host.substr(at + 1);
++      int port = url.compare(0, scheme, "https") == 0 ? 443 : 80;
++      const size_t colon = host.rfind(':');
++      if (colon != std::string::npos)
++      {
++        port = std::atoi(host.c_str() + colon + 1);
++        host = host.substr(0, colon);
++      }
++      char address[64] = {};
++      if (!host.empty() && ps4_net_resolve(host.c_str(), address, sizeof(address)) == 0)
++      {
++        resolves = curl_slist_append(
++            nullptr, (host + ":" + std::to_string(port) + ":" + address).c_str());
++      }
++    }
++  }
++  curl_easy_setopt(m_curl.get(), CURLOPT_RESOLVE, resolves);
++#endif
+   const char* type = method == Method::POST ? "POST" : "GET";
+   const CURLcode res = curl_easy_perform(m_curl.get());
    if (res != CURLE_OK)
    {
      ERROR_LOG_FMT(COMMON, "Failed to {} {}: {}", type, url, m_error_string);
@@ -1459,10 +1498,36 @@ index 9d15477..ac60cc5 100644
  
  struct WindowSystemInfo
 diff --git a/Source/Core/Core/AchievementManager.cpp b/Source/Core/Core/AchievementManager.cpp
-index ec0fee2..21877fc 100644
+index ec0fee2..133c548 100644
 --- a/Source/Core/Core/AchievementManager.cpp
 +++ b/Source/Core/Core/AchievementManager.cpp
-@@ -1138,10 +1138,26 @@ void AchievementManager::DisplayWelcomeMessage()
+@@ -933,6 +933,14 @@ void AchievementManager::LoginCallback(int result, const char* error_message, rc
+   {
+     WARN_LOG_FMT(ACHIEVEMENTS, "Failed to login {} to RetroAchievements server.",
+                  Config::Get(Config::RA_USERNAME));
++#ifdef __ORBIS__
++    // Only a refused login forgets the token: a network problem (no answer, the PS4 offline)
++    // keeps it for the next start.
++    if (ps4_achievement_login)
++      ps4_achievement_login(result, error_message ? error_message : "");
++    if (result == RC_INVALID_CREDENTIALS || result == RC_EXPIRED_TOKEN ||
++        result == RC_ACCESS_DENIED)
++#endif
+     Config::SetBaseOrCurrent(Config::RA_API_TOKEN, "");
+     instance.update_event.Trigger({.failed_login_code = result});
+     instance.login_event.Trigger(result);
+@@ -962,6 +970,10 @@ void AchievementManager::LoginCallback(int result, const char* error_message, rc
+ 
+   INFO_LOG_FMT(ACHIEVEMENTS, "Successfully logged in {} to RetroAchievements server.",
+                user->username);
++#ifdef __ORBIS__
++  if (ps4_achievement_login)
++    ps4_achievement_login(0, user->display_name ? user->display_name : user->username);
++#endif
+   std::lock_guard lg{instance.GetLock()};
+   Config::SetBaseOrCurrent(Config::RA_API_TOKEN, user->token);
+   instance.FetchPlayerBadge();
+@@ -1138,10 +1150,27 @@ void AchievementManager::DisplayWelcomeMessage()
                    OSD::Duration::VERY_LONG, color);
  }
  
@@ -1470,6 +1535,7 @@ index ec0fee2..21877fc 100644
 +// DolphinNoGUI/PS4IngameMenu.cpp: its own unlock pop-up (with the badge) instead of the OSD line.
 +void (*ps4_achievement_unlocked)(u32 id, const char* title, const char* description, u32 points,
 +                                 bool hardcore) = nullptr;
++void (*ps4_achievement_login)(int result, const char* text) = nullptr;
 +#endif
 +
  void AchievementManager::HandleAchievementTriggeredEvent(const rc_client_event_t* client_event)
@@ -1490,10 +1556,10 @@ index ec0fee2..21877fc 100644
                                client_event->achievement->points),
                    OSD::Duration::VERY_LONG,
 diff --git a/Source/Core/Core/AchievementManager.h b/Source/Core/Core/AchievementManager.h
-index 74f26b9..82532dd 100644
+index 74f26b9..72c8ed7 100644
 --- a/Source/Core/Core/AchievementManager.h
 +++ b/Source/Core/Core/AchievementManager.h
-@@ -58,6 +58,13 @@ namespace ActionReplay
+@@ -58,6 +58,16 @@ namespace ActionReplay
  struct ARCode;
  }  // namespace ActionReplay
  
@@ -1502,12 +1568,15 @@ index 74f26b9..82532dd 100644
 +// the manager's lock held).
 +extern void (*ps4_achievement_unlocked)(u32 id, const char* title, const char* description,
 +                                        u32 points, bool hardcore);
++// The login at the game's start: result 0 (text: the user name) or the rcheevos error (text:
++// its message).
++extern void (*ps4_achievement_login)(int result, const char* text);
 +#endif
 +
  class AchievementManager
  {
  public:
-@@ -157,6 +164,16 @@ public:
+@@ -157,6 +167,16 @@ public:
    rc_client_t* GetClient();
    const Badge& GetGameBadge() const;
    const Badge& GetAchievementBadge(AchievementId id, bool locked) const;
@@ -8155,10 +8224,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..ea99e6d
+index 0000000..eb71c6d
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,1814 @@
+@@ -0,0 +1,1836 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -8475,6 +8544,27 @@ index 0000000..ea99e6d
 +}
 +
 +#ifdef USE_RETRO_ACHIEVEMENTS
++void Log(const std::string& text);
++void Toast(const std::string& text, int ms);
++
++// RetroAchievements' login at the game's start (its network thread).
++void OnAchievementLogin(int result, const char* text)
++{
++  std::string message;
++  if (result == 0)
++    message = std::string("RetroAchievements: logged in as ") + text;
++  else if (result == RC_INVALID_CREDENTIALS || result == RC_EXPIRED_TOKEN ||
++           result == RC_ACCESS_DENIED)
++    message = "RetroAchievements: the login expired - log in again in Settings";
++  else if (result == RC_NO_RESPONSE)
++    message = "RetroAchievements: no answer from the server (is the PS4 online?)";
++  else
++    message = std::string("RetroAchievements: couldn't log in (") +
++              (text && *text ? text : std::to_string(result).c_str()) + ")";
++  Toast(message, 6000);
++  Log(message + " [" + std::to_string(result) + "]");
++}
++
 +// CPU thread, the AchievementManager's lock held.
 +void OnAchievementUnlocked(u32 id, const char* title, const char* description, u32 points,
 +                           bool hardcore)
@@ -9725,6 +9815,7 @@ index 0000000..ea99e6d
 +  ps4_overlay_draw = Draw;
 +#ifdef USE_RETRO_ACHIEVEMENTS
 +  ps4_achievement_unlocked = OnAchievementUnlocked;
++  ps4_achievement_login = OnAchievementLogin;
 +#endif
 +  State::PS4SetLoadResultCallback([](State::PS4Slot result, const std::string& made_by) {
 +    {
@@ -10612,10 +10703,10 @@ index 0000000..d80c0ef
 +}  // namespace PS4MemoryCards
 diff --git a/Source/Core/DolphinNoGUI/PS4Net.cpp b/Source/Core/DolphinNoGUI/PS4Net.cpp
 new file mode 100755
-index 0000000..023f183
+index 0000000..c8b6cb8
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Net.cpp
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,266 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10767,6 +10858,27 @@ index 0000000..023f183
 +  return text;
 +}
 +
++}  // namespace PS4Net
++
++// Common/HttpRequest.cpp (Dolphin's own requests: RetroAchievements, the Wii Menu): curl can't
++// look host names up on the PS4, so they are looked up here, starting libSceNet in this process
++// if nothing did yet (a game process doesn't).
++extern "C" int ps4_net_resolve(const char* host, char* address, size_t size);
++extern "C" int ps4_net_resolve(const char* host, char* address, size_t size)
++{
++  std::string error;
++  const std::string result = PS4Net::Resolve(host, &error);
++  if (result.empty())
++  {
++    PS4Net::Log(error);
++    return -1;
++  }
++  snprintf(address, size, "%s", result.c_str());
++  return 0;
++}
++
++namespace PS4Net
++{
 +long Get(const Request& request, const Sink& sink, const Progress& progress, std::string* error)
 +{
 +  if (!Init(error))
@@ -12416,10 +12528,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..1635488
+index 0000000..1291576
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5758 @@
+@@ -0,0 +1,5791 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -13092,6 +13204,10 @@ index 0000000..1635488
 +  void OpenRiivolutionList(const Game& game);
 +  void OpenAchievementList(const Game& game);
 +  void OpenAchievementKey(const std::string& key);
++  // RetroAchievements account (top right, beside the clock): read in BuildItems.
++  std::string m_ra_user;
++  bool m_ra_logged_in = false;
++  void DrawAccountStatus(ImDrawList* dl, float right, float center_y);
 +  PS4Achievements::List m_ach_view;  // the Achievements panel's list
 +  // Badge pictures (achievements/badges), loaded once.
 +  std::map<std::string, ImTextureID> m_badge_textures;
@@ -13823,6 +13939,8 @@ index 0000000..1635488
 +    // Achievements: the account, then every game with a saved list (most recently played first).
 +    auto& achievements = m_items[static_cast<int>(Category::Achievements)];
 +    const std::string user = RaGet("Username"), token = RaGet("ApiToken");
++    m_ra_user = user;
++    m_ra_logged_in = !token.empty() && !user.empty();
 +    achievements.push_back({"RetroAchievements",
 +                            token.empty() ? "Not logged in - press Cross to log in" :
 +                                            "Logged in as " + user,
@@ -14191,6 +14309,7 @@ index 0000000..1635488
 +      RaSet("ApiToken", "");
 +      m_ra_status = "Logged out";
 +      Log("retroachievements: logged out");
++      BuildItems();
 +    }
 +    else if (key == "ra:enabled")
 +    {
@@ -15690,6 +15809,21 @@ index 0000000..1635488
 +  }
 +}
 +
++// A trophy and the user name (gold: logged in), or "Not logged in" once a name was entered.
++void Menu::DrawAccountStatus(ImDrawList* dl, float right, float center_y)
++{
++  if (m_ra_user.empty())
++    return;
++  const Theme& theme = CurrentTheme();
++  const std::string text = m_ra_logged_in ? m_ra_user : "Not logged in";
++  const float tw = TextWidth(m_font, 26, text);
++  const float x = right - tw;
++  Text(dl, m_font, 26, ImVec2(x, center_y - 16), Rgba(theme.text, m_ra_logged_in ? 0.92f : 0.6f),
++       text);
++  DrawCategoryIcon(dl, Category::Achievements, ImVec2(x - 24, center_y), 32,
++                   m_ra_logged_in ? Rgba(0xFFC846, 0.95f) : Rgba(theme.text, 0.45f));
++}
++
 +void Menu::DrawItem(ImDrawList* dl, const Item& item, float y, bool selected, float alpha)
 +{
 +  const Theme& theme = CurrentTheme();
@@ -16156,6 +16290,11 @@ index 0000000..1635488
 +      std::strftime(clock, sizeof(clock), "%H:%M", &local);
 +      const float tw = TextWidth(m_bold, 40, clock);
 +      Text(dl, m_bold, 40, ImVec2(W - 110 - tw, 70), Rgba(theme.text, 0.95f), clock);
++      DrawAccountStatus(dl, W - 110 - tw - 44, 94);
++    }
++    else
++    {
++      DrawAccountStatus(dl, W - 110, 94);
 +    }
 +    if (m_logo != ImTextureID{})
 +    {
@@ -16550,6 +16689,11 @@ index 0000000..1635488
 +    std::strftime(clock, sizeof(clock), "%H:%M", &local);
 +    const float tw = TextWidth(m_bold, 36, clock);
 +    Text(dl, m_bold, 36, ImVec2(W - 90 - tw, 62), Rgba(theme.text, 0.95f), clock);
++    DrawAccountStatus(dl, W - 90 - tw - 40, 82);
++  }
++  else
++  {
++    DrawAccountStatus(dl, W - 90, 82);
 +  }
 +
 +  // The tab's page; it fades in while the highlight moves.
@@ -17385,6 +17529,7 @@ index 0000000..1635488
 +  }
 +  if (m_panel.open && m_panel.setting == SET_ACHIEVEMENTS)
 +    BuildAchievementRows();
++  BuildItems();  // the account beside the clock and in the Achievements category
 +}
 +
 +// ---------------------------------------------------------------------------------------------
