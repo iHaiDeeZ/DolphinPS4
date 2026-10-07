@@ -2768,7 +2768,7 @@ index 0000000..78d77cf
 +void PatchGame(Core::System& system);
 +}  // namespace HLE_PS4Games
 diff --git a/Source/Core/Core/HW/GPFifo.cpp b/Source/Core/Core/HW/GPFifo.cpp
-index 0de434b..77d527e 100644
+index 0de434b..da62ff3 100644
 --- a/Source/Core/Core/HW/GPFifo.cpp
 +++ b/Source/Core/Core/HW/GPFifo.cpp
 @@ -16,6 +16,10 @@
@@ -2870,6 +2870,27 @@ index 0de434b..77d527e 100644
    }
  }
  
+@@ -194,4 +251,9 @@ void FastCheckGatherPipe(GPFifoManager& gpfifo)
+ {
+   gpfifo.FastCheckGatherPipe();
+ }
++
++void CheckGatherPipe(GPFifoManager& gpfifo)
++{
++  gpfifo.CheckGatherPipe();
++}
+ }  // namespace GPFifo
+diff --git a/Source/Core/Core/HW/GPFifo.h b/Source/Core/Core/HW/GPFifo.h
+index 006c8ed..a5494ec 100644
+--- a/Source/Core/Core/HW/GPFifo.h
++++ b/Source/Core/Core/HW/GPFifo.h
+@@ -65,4 +65,6 @@ private:
+ // For use from the JIT.
+ void UpdateGatherPipe(GPFifoManager& gpfifo);
+ void FastCheckGatherPipe(GPFifoManager& gpfifo);
++// The burst check GPFifoManager::Write* do after each write (EmuCodeBlock's jit_gp_dynamic).
++void CheckGatherPipe(GPFifoManager& gpfifo);
+ }  // namespace GPFifo
 diff --git a/Source/Core/Core/HW/Memmap.cpp b/Source/Core/Core/HW/Memmap.cpp
 index 054596e..939e27c 100644
 --- a/Source/Core/Core/HW/Memmap.cpp
@@ -4649,7 +4670,7 @@ index 34c327d..2003140 100644
    {
      Gen::XEmitter emit(location, location + 5);
 diff --git a/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.cpp b/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
-index 1019aa7..15ab9f1 100644
+index 1019aa7..fdc51e6 100644
 --- a/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 +++ b/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 @@ -3,6 +3,7 @@
@@ -4660,19 +4681,23 @@ index 1019aa7..15ab9f1 100644
  #include <functional>
  
  #include "Common/Assert.h"
-@@ -22,6 +23,11 @@
+@@ -22,6 +23,15 @@
  
  using namespace Gen;
  
 +#ifdef __ORBIS__
 +extern "C" int ps4_gp_fuse;  // Core/PowerPC/Jit64/Jit.cpp (ps4.ini jit_gp_fuse)
++// ps4.ini jit_gp_dynamic (Dolphin Lab): stores whose address is only known at run time write to
++// the gather pipe directly when it is the gather pipe (SafeWriteRegToReg's slow path).
++extern "C" int ps4_jit_gp_dynamic;
++int ps4_jit_gp_dynamic = 1;
 +extern "C" int ps4_jit_tlb_inline;  // Core/PowerPC/Jit64/Jit.cpp (ps4.ini jit_tlb_inline)
 +#endif
 +
  namespace
  {
  OpArg SwapImmediate(int access_size, const OpArg& reg_value)
-@@ -108,6 +114,83 @@ FixupBranch EmuCodeBlock::BATAddressLookup(X64Reg addr, X64Reg tmp, const void*
+@@ -108,6 +118,83 @@ FixupBranch EmuCodeBlock::BATAddressLookup(X64Reg addr, X64Reg tmp, const void*
    return J_CC(CC_NC, m_far_code.Enabled() ? Jump::Near : Jump::Short);
  }
  
@@ -4756,7 +4781,7 @@ index 1019aa7..15ab9f1 100644
  FixupBranch EmuCodeBlock::CheckIfSafeAddress(const OpArg& reg_value, X64Reg reg_addr,
                                               BitSet32 registers_in_use)
  {
-@@ -392,6 +475,26 @@ void EmuCodeBlock::SafeLoadToReg(X64Reg reg_value, const Gen::OpArg& opAddress,
+@@ -392,6 +479,26 @@ void EmuCodeBlock::SafeLoadToReg(X64Reg reg_value, const Gen::OpArg& opAddress,
      SetJumpTarget(slow);
    }
  
@@ -4783,7 +4808,7 @@ index 1019aa7..15ab9f1 100644
    // In the case of Jit64AsmCommon routines, the state we want to store here isn't known
    // when compiling the routine, so the caller has to store it themselves.
    if (!(flags & SAFE_LOADSTORE_NO_UPDATE_PC))
-@@ -428,6 +531,10 @@ void EmuCodeBlock::SafeLoadToReg(X64Reg reg_value, const Gen::OpArg& opAddress,
+@@ -428,6 +535,10 @@ void EmuCodeBlock::SafeLoadToReg(X64Reg reg_value, const Gen::OpArg& opAddress,
    {
      MOVZX(64, accessSize, reg_value, R(ABI_RETURN));
    }
@@ -4794,7 +4819,7 @@ index 1019aa7..15ab9f1 100644
  
    if (fast_check_address)
    {
-@@ -562,6 +669,33 @@ void EmuCodeBlock::SafeWriteRegToReg(OpArg reg_value, X64Reg reg_addr, int acces
+@@ -562,6 +673,33 @@ void EmuCodeBlock::SafeWriteRegToReg(OpArg reg_value, X64Reg reg_addr, int acces
      SetJumpTarget(slow);
    }
  
@@ -4828,18 +4853,92 @@ index 1019aa7..15ab9f1 100644
    // In the case of Jit64AsmCommon routines, the state we want to store here isn't known
    // when compiling the routine, so the caller has to store it themselves.
    if (!(flags & SAFE_LOADSTORE_NO_UPDATE_PC))
-@@ -605,6 +739,10 @@ void EmuCodeBlock::SafeWriteRegToReg(OpArg reg_value, X64Reg reg_addr, int acces
+@@ -569,6 +707,68 @@ void EmuCodeBlock::SafeWriteRegToReg(OpArg reg_value, X64Reg reg_addr, int acces
+     FlushPCBeforeSlowAccess();
+   }
+ 
++
++#ifdef __ORBIS__
++  // jit_gp_dynamic: a store through a pointer (Metroid Prime's vertex writes) reached the gather
++  // pipe through MMU::Write -> GPFifo::Write32 for every 4 bytes - ~13% of the CPU thread in heavy
++  // scenes. If the address is the gather pipe, write it here as GPFifoManager::Write* do: into
++  // the buffer, then GPFifo::CheckGatherPipe once 32 bytes are there (a burst, and the FIFO-write
++  // profiling). Other addresses take the slow path below as before. Not in the asm routines (no
++  // PC stored, and the address translation isn't known when they are made).
++  FixupBranch gp_written, gp_burst_done;
++  bool gp_inline = false;
++  if (ps4_jit_gp_dynamic && m_jit.jo.optimizeGatherPipe && cpu_info.bMOVBE &&
++      !(flags & SAFE_LOADSTORE_NO_UPDATE_PC))
++  {
++    u32 page = 0;
++    for (const u32 candidate : {0xCC008000u, 0x0C008000u})
++    {
++      if (m_jit.m_mmu.IsOptimizableGatherPipeWrite(candidate))
++      {
++        page = candidate;
++        break;
++      }
++    }
++    X64Reg tmp = INVALID_REG;
++    for (const X64Reg r : {RSCRATCH, RSCRATCH2, RSCRATCH_EXTRA})
++    {
++      if (r != reg_addr && !(reg_value.IsSimpleReg() && reg_value.GetSimpleReg() == r) &&
++          !registersInUse[r])
++      {
++        tmp = r;
++        break;
++      }
++    }
++    if (page != 0 && tmp != INVALID_REG)
++    {
++      gp_inline = true;
++      const size_t gp_alignment = (flags & SAFE_LOADSTORE_NO_PROLOG) ? 8 : 0;
++      CMP(32, R(reg_addr), Imm32(page));
++      FixupBranch below = J_CC(CC_B, Jump::Near);
++      CMP(32, R(reg_addr), Imm32(page + 0x1000));
++      FixupBranch above = J_CC(CC_AE, Jump::Near);
++      MOV(64, R(tmp), PPCSTATE(gather_pipe_ptr));
++      if (reg_value.IsImm())
++        MOV(accessSize, MatR(tmp), swap ? SwapImmediate(accessSize, reg_value) : reg_value);
++      else if (swap)
++        SwapAndStore(accessSize, MatR(tmp), reg_value.GetSimpleReg());
++      else
++        MOV(accessSize, MatR(tmp), reg_value);
++      ADD(64, R(tmp), Imm8(accessSize >> 3));
++      MOV(64, PPCSTATE(gather_pipe_ptr), R(tmp));
++      SUB(64, R(tmp), PPCSTATE(gather_pipe_base_ptr));
++      CMP(64, R(tmp), Imm8(GPFifo::GATHER_PIPE_SIZE));
++      gp_written = J_CC(CC_B, Jump::Near);
++      ABI_PushRegistersAndAdjustStack(registersInUse, gp_alignment);
++      ABI_CallFunctionP(GPFifo::CheckGatherPipe, &m_jit.m_system.GetGPFifo());
++      ABI_PopRegistersAndAdjustStack(registersInUse, gp_alignment);
++      gp_burst_done = J(Jump::Near);
++      SetJumpTarget(below);
++      SetJumpTarget(above);
++    }
++  }
++#endif
++
+   size_t rsp_alignment = (flags & SAFE_LOADSTORE_NO_PROLOG) ? 8 : 0;
+   ABI_PushRegistersAndAdjustStack(registersInUse, rsp_alignment);
+ 
+@@ -605,6 +805,15 @@ void EmuCodeBlock::SafeWriteRegToReg(OpArg reg_value, X64Reg reg_addr, int acces
    ABI_PopRegistersAndAdjustStack(registersInUse, rsp_alignment);
  
    MemoryExceptionCheck();
 +#ifdef __ORBIS__
 +  if (tlb.active)
 +    SetJumpTarget(tlb_exit);
++  if (gp_inline)
++  {
++    SetJumpTarget(gp_written);
++    SetJumpTarget(gp_burst_done);
++  }
 +#endif
  
    if (fast_check_address)
    {
-@@ -647,6 +785,18 @@ bool EmuCodeBlock::WriteToConstAddress(int accessSize, OpArg arg, u32 address,
+@@ -647,6 +856,18 @@ bool EmuCodeBlock::WriteToConstAddress(int accessSize, OpArg arg, u32 address,
        MOV(accessSize, R(arg_reg), arg);
  
      // And store it in the gather pipe
@@ -6096,7 +6195,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..a01ecb9 100644
+index 3bf40ea..e6c000f 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -6147,7 +6246,7 @@ index 3bf40ea..a01ecb9 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,51 @@
+@@ -31,6 +53,52 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -6168,6 +6267,7 @@ index 3bf40ea..a01ecb9 100644
 +extern "C" int ps4_jit_inline_dispatch;  // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_lazy_pc;          // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_unroll;           // Core/PowerPC/PPCAnalyst.cpp
++extern "C" int ps4_jit_gp_dynamic;       // Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 +extern "C" int ps4_shader_dump;          // VideoCommon/ShaderCache.cpp
 +extern "C" int ps4_tev_ras_float;        // VideoCommon/PixelShaderGen.cpp
 +extern "C" int ps4_vk_dynamic_vertex_loader;
@@ -6199,7 +6299,7 @@ index 3bf40ea..a01ecb9 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +240,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +241,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -6210,7 +6310,7 @@ index 3bf40ea..a01ecb9 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +255,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +256,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -6229,7 +6329,7 @@ index 3bf40ea..a01ecb9 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +287,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +288,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -6240,7 +6340,7 @@ index 3bf40ea..a01ecb9 100644
  #endif
        });
  
-@@ -270,7 +354,349 @@ int main(const int argc, char* argv[])
+@@ -270,7 +355,351 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -6423,6 +6523,8 @@ index 3bf40ea..a01ecb9 100644
 +    ps4_jit_lazy_pc = Platform::GetPS4Option("jit_lazy_pc", "on") == "on";
 +    // jit_unroll=off (Dolphin Lab): loops are compiled one iteration per block again.
 +    ps4_jit_unroll = Platform::GetPS4Option("jit_unroll", "on") == "on";
++    // jit_gp_dynamic=off (Dolphin Lab): gather pipe writes through a pointer call MMU::Write again.
++    ps4_jit_gp_dynamic = Platform::GetPS4Option("jit_gp_dynamic", "on") == "on";
 +    // shader_dump=on (Dolphin Lab): specialized shaders' source to /data/DolphinPS4/shader-dump.
 +    ps4_shader_dump = Platform::GetPS4Option("shader_dump", "off") == "on";
 +    // tev_ras_swizzle=float, vk_dynamic_vertex_loader=off (Dolphin Lab): colour tests (TMNT 2007).
@@ -6590,7 +6692,7 @@ index 3bf40ea..a01ecb9 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +710,12 @@ int main(const int argc, char* argv[])
+@@ -284,6 +713,12 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -6603,7 +6705,7 @@ index 3bf40ea..a01ecb9 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,6 +735,46 @@ int main(const int argc, char* argv[])
+@@ -303,6 +738,46 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
