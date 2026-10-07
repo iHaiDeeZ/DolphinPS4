@@ -8276,10 +8276,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..2e10fbf
+index 0000000..dfd0596
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,2276 @@
+@@ -0,0 +1,2455 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -8319,6 +8319,7 @@ index 0000000..2e10fbf
 +#include "DolphinNoGUI/PS4Cheats.h"
 +#include "DolphinNoGUI/PS4Controls.h"
 +#include "DolphinNoGUI/PS4Lang.h"
++#include "DolphinNoGUI/Platform.h"
 +#include "DolphinNoGUI/PS4Settings.h"
 +#include "VideoCommon/Fifo.h"
 +#include "Common/Image.h"
@@ -8450,6 +8451,20 @@ index 0000000..2e10fbf
 +std::vector<Popup> s_popups;
 +Clock::time_point s_popup_start;
 +bool s_popup_showing = false;
++// The game's start, Xbox style at the bottom centre: the game's badge in a circle that opens into
++// a bar with the game and its progress (or why there are no achievements).
++struct Banner
++{
++  std::string title;
++  std::string line;
++  std::string badge;      // s_badge_pixels key ("" : a trophy)
++  float progress = -1.0f;  // 0..1, -1: no bar
++};
++std::vector<Banner> s_banners;
++Clock::time_point s_banner_start;
++bool s_banner_showing = false;
++// RetroAchievements loaded the game's achievements (its network thread): the banner follows.
++std::atomic<bool> s_ach_game_ready{false};
 +// An achievement unlocked: the list saved for the XMB is written again (host thread).
 +std::atomic<bool> s_ach_dirty{false};
 +
@@ -8820,7 +8835,12 @@ index 0000000..2e10fbf
 +  else
 +    message = std::string("RetroAchievements: couldn't log in (") +
 +              (text && *text ? text : std::to_string(result).c_str()) + ")";
-+  Toast(message, 6000);
++  if (result != 0)
++  {
++    std::lock_guard lock(s_mutex);
++    s_banners.push_back({"RetroAchievements", message.substr(std::string("RetroAchievements: ").size()),
++                         "", -1.0f});
++  }
 +  Log(message + " [" + std::to_string(result) + "]");
 +}
 +
@@ -8830,7 +8850,7 @@ index 0000000..2e10fbf
 +  std::string brief, message;
 +  if (result == 0)
 +  {
-+    Toast(std::string("RetroAchievements: ") + text + " - achievements ready", 5000);
++    s_ach_game_ready = true;  // the banner, once its badge had a moment to arrive
 +  }
 +  else if (result == RC_API_FAILURE)
 +  {
@@ -8851,7 +8871,10 @@ index 0000000..2e10fbf
 +              (text && *text ? std::string(" (") + text + ")." : std::string("."));
 +  }
 +  if (!message.empty())
-+    Toast("RetroAchievements: " + brief, 5000);
++  {
++    std::lock_guard lock(s_mutex);
++    s_banners.push_back({"RetroAchievements", brief + ": " + message, "", -1.0f});
++  }
 +  {
 +    std::lock_guard lock(s_mutex);
 +    s_ach_brief = brief;
@@ -8860,6 +8883,45 @@ index 0000000..2e10fbf
 +  Log("achievements: game " + std::to_string(result) + " " + (text ? text : ""));
 +}
 +#endif
++
++// The game's progress, Xbox style (host thread).
++void ShowProgressBanner()
++{
++  PS4Achievements::List list;
++  if (!CaptureAchievements(&list))
++    return;
++  std::string badge;
++  if (DemoMode())
++  {
++    std::lock_guard lock(s_mutex);
++    s_badge_pixels["G"] = DemoBadge(0, false);
++    s_badge_textures.erase("G");
++    badge = "G";
++  }
++#ifdef USE_RETRO_ACHIEVEMENTS
++  else
++  {
++    auto& manager = AchievementManager::GetInstance();
++    std::lock_guard lock(manager.GetLock());
++    if (manager.PS4HasGameBadge())
++    {
++      CopyBadge("G", manager.GetGameBadge());
++      badge = "G";
++    }
++  }
++#endif
++  Banner banner;
++  banner.title = list.game.empty() ? SConfig::GetInstance().GetTitleName() : list.game;
++  banner.line = std::to_string(list.unlocked) + " of " + std::to_string(list.total) +
++                " achievements   " + std::to_string(list.points) + " / " +
++                std::to_string(list.points_total) + " points" +
++                (list.hardcore ? "   Hardcore" : "");
++  banner.badge = badge;
++  banner.progress =
++      list.total ? static_cast<float>(list.unlocked) / static_cast<float>(list.total) : 0.0f;
++  std::lock_guard lock(s_mutex);
++  s_banners.push_back(std::move(banner));
++}
 +
 +// A demo achievement unlocks (host thread, while the game runs).
 +void DemoUnlockNext()
@@ -9946,6 +10008,87 @@ index 0000000..2e10fbf
 +              row.value.c_str());
 +}
 +
++float Smooth(float x)
++{
++  x = std::clamp(x, 0.0f, 1.0f);
++  return x * x * (3.0f - 2.0f * x);
++}
++
++// The Xbox-style banner at the bottom centre: the circle pops in, the bar opens to the right of
++// it, the text fades in; 6 s later it closes the same way.
++bool DrawBanner(ImDrawList* dl, ImFont* bold, ImFont* regular, float s, Clock::time_point now)
++{
++  if (s_banners.empty())
++    return false;
++  if (!s_banner_showing)
++  {
++    s_banner_showing = true;
++    s_banner_start = now;
++  }
++  constexpr float SHOW = 6.0f;
++  const float t = std::chrono::duration<float>(now - s_banner_start).count();
++  if (t > SHOW)
++  {
++    s_banners.erase(s_banners.begin());
++    s_banner_showing = false;
++    return !s_banners.empty();
++  }
++  const Banner& banner = s_banners.front();
++  const ImVec2 size = ImGui::GetIO().DisplaySize;
++  const float circle = std::min(Smooth(t / 0.3f), Smooth((SHOW - t) / 0.3f));
++  const float open = std::min(Smooth((t - 0.25f) / 0.45f), Smooth((SHOW - 0.3f - t) / 0.45f));
++  const float text_a = std::min(Smooth((t - 0.55f) / 0.3f), Smooth((SHOW - 0.55f - t) / 0.25f));
++  const float h = 104 * s;
++  const float title_w = bold->CalcTextSizeA(32 * s, FLT_MAX, 0, banner.title.c_str()).x;
++  const float line_w = regular->CalcTextSizeA(24 * s, FLT_MAX, 0, banner.line.c_str()).x;
++  const float full = std::min(size.x - 200 * s,
++                              std::max(520 * s, h + 30 * s + std::max(title_w, line_w) + 48 * s));
++  const float w = h + (full - h) * open;
++  const float x = size.x * 0.5f - full * 0.5f, y = size.y - 140 * s - h;
++  // The bar (it opens from behind the circle).
++  if (open > 0.0f)
++  {
++    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h),
++                      IM_COL32(28, 30, 34, static_cast<int>(238 * std::max(open, 0.2f))), h * 0.5f);
++    dl->PushClipRect(ImVec2(x + h * 0.5f, y), ImVec2(x + w - 10 * s, y + h), true);
++    const int ta = static_cast<int>(255 * text_a);
++    const float tx = x + h + 26 * s;
++    dl->AddText(bold, 32 * s, ImVec2(tx, y + 16 * s), IM_COL32(255, 255, 255, ta),
++                Ellipsize(bold, 32 * s, banner.title, full - h - 70 * s).c_str());
++    dl->AddText(regular, 24 * s, ImVec2(tx, y + 56 * s), IM_COL32(200, 205, 215, ta),
++                Ellipsize(regular, 24 * s, banner.line, full - h - 70 * s).c_str());
++    if (banner.progress >= 0.0f)
++    {
++      const float bx0 = tx, bx1 = x + full - 46 * s, by = y + h - 16 * s;
++      dl->AddRectFilled(ImVec2(bx0, by), ImVec2(bx1, by + 5 * s),
++                        IM_COL32(255, 255, 255, static_cast<int>(50 * text_a)), 3 * s);
++      if (banner.progress > 0.0f)
++      {
++        dl->AddRectFilled(ImVec2(bx0, by),
++                          ImVec2(bx0 + (bx1 - bx0) * std::min(banner.progress, 1.0f), by + 5 * s),
++                          IM_COL32(16, 190, 90, ta), 3 * s);
++      }
++    }
++    dl->PopClipRect();
++  }
++  // The circle: the game's badge, or a trophy.
++  const ImVec2 c(x + h * 0.5f, y + h * 0.5f);
++  const float r = h * 0.5f * (0.6f + 0.4f * circle);
++  const int ca = static_cast<int>(255 * circle);
++  dl->AddCircleFilled(c, r, IM_COL32(16, 124, 16, ca), 48);
++  if (AbstractTexture* badge = BadgeTexture(banner.badge))
++  {
++    const float b = r - 7 * s;
++    dl->AddImageRounded(ImTextureRef(*badge), ImVec2(c.x - b, c.y - b), ImVec2(c.x + b, c.y + b),
++                        ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, ca), b);
++  }
++  else
++  {
++    DrawTrophy(dl, c, r * 1.1f, IM_COL32(255, 255, 255, ca));
++  }
++  return true;
++}
++
 +// The unlock pop-up: slides in at the top right, stays 5 s, slides out; the next one follows.
 +bool DrawPopup(ImDrawList* dl, ImFont* bold, ImFont* regular, float s, Clock::time_point now)
 +{
@@ -10082,7 +10225,8 @@ index 0000000..2e10fbf
 +      hint_time < 3.0f || hint_time > 10.0f ?
 +          0.0f :
 +          std::min({1.0f, (hint_time - 3.0f) / 0.4f, (10.0f - hint_time) / 0.6f});
-+  if (s_appear < 0.01f && !toast && hint_alpha <= 0.0f && s_popups.empty())
++  if (s_appear < 0.01f && !toast && hint_alpha <= 0.0f && s_popups.empty() &&
++      s_banners.empty())
 +    return;
 +
 +  ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -10092,6 +10236,8 @@ index 0000000..2e10fbf
 +  const float s = size.y / 1080.0f;  // layout in 1080p units
 +  if (DrawPopup(dl, bold, regular, s, now))
 +    ps4_overlay_repaint = 1;  // keep animating while paused
++  if (s_appear < 0.5f && DrawBanner(dl, bold, regular, s, now))
++    ps4_overlay_repaint = 1;
 +  const float a = s_appear;
 +
 +  if (a > 0.01f)
@@ -10422,6 +10568,39 @@ index 0000000..2e10fbf
 +      s_play_pending += std::min(0.5, std::chrono::duration<double>(now - s_play_last).count());
 +    }
 +    s_play_last = now;
++    {
++      // The game's progress banner: when RetroAchievements answered (the demo: at the start),
++      // after a moment for the game's badge to download.
++      static bool s_banner_pending = false, s_demo_banner = false;
++      static Clock::time_point s_banner_when;
++      if (s_ach_game_ready.exchange(false) || (DemoMode() && !s_demo_banner))
++      {
++        s_demo_banner = true;
++        s_banner_pending = true;
++        s_banner_when = now;
++      }
++      if (s_banner_pending && now - s_banner_when > std::chrono::milliseconds(1500))
++      {
++        s_banner_pending = false;
++        ShowProgressBanner();
++      }
++    }
++    {
++      // ps4.ini crash_test=on: the game crashes 20 s in (a write to address 0), to try the crash
++      // handler's way back to the game list.
++      static int s_crash_test = -1;
++      static Clock::time_point s_crash_start;
++      if (s_crash_test < 0)
++      {
++        s_crash_test = Platform::GetPS4Option("crash_test", "off") == "on";
++        s_crash_start = now;
++      }
++      if (s_crash_test > 0 && now - s_crash_start > std::chrono::seconds(20))
++      {
++        Log("crash_test: crashing now");
++        *static_cast<volatile int*>(nullptr) = 1;
++      }
++    }
 +    if (DemoMode() && now - s_demo_last > std::chrono::seconds(25))
 +    {
 +      s_demo_last = now;
@@ -13045,10 +13224,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..379b44d
+index 0000000..d1cb9f0
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5820 @@
+@@ -0,0 +1,5847 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -18762,6 +18941,33 @@ index 0000000..379b44d
 +  }
 +  Log("menu: " + std::to_string(m_games.size()) + " games, " +
 +      std::to_string(m_wallpapers.size()) + " wallpapers");
++  {
++    // The last game crashed or stopped by itself (PlatformPS4.cpp wrote why): shown once.
++    const std::string note_path = m_data_dir + "/last-stop.txt";
++    std::ifstream note(note_path);
++    std::string line;
++    std::vector<std::string> lines;
++    while (std::getline(note, line))
++    {
++      while (!line.empty() && line.back() == '\r')
++        line.pop_back();
++      lines.push_back(line);
++    }
++    note.close();
++    if (!lines.empty())
++    {
++      std::error_code error;
++      std::filesystem::remove(note_path, error);
++      Log("last game: " + lines[0] + (lines.size() > 4 ? " - " + lines[4] : std::string()));
++      m_panel = {};
++      m_panel.open = true;
++      m_panel.title = lines[0];
++      m_panel.lines.assign(lines.begin() + 1, lines.end());
++      m_panel.lines.push_back("");
++      m_panel.lines.push_back("Circle closes this.");
++      Play("error");
++    }
++  }
 +
 +  auto last = Clock::now();
 +  std::string result;
@@ -19575,10 +19781,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..fd71064
+index 0000000..ab15653
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1823 @@
+@@ -0,0 +1,1897 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -20768,6 +20974,48 @@ index 0000000..fd71064
 +  PS4Controls::WriteDefaultsIfMissing();
 +}
 +
++// The game stopped without the in-game menu's Quit Game: data_dir/last-stop.txt for the menu
++// (PS4XMB.cpp shows it once, then removes it): the panel's title, then its lines. The game's part
++// is prepared at its start, so the crash handler (a signal handler) only open()s and write()s.
++char s_stop_game[512] = {};
++char s_stop_path[512] = {};
++char s_to_menu_path[512] = {};
++
++void SetStopGame(const std::string& title, const std::string& id)
++{
++  snprintf(s_stop_game, sizeof(s_stop_game), "%s%s%s\n", title.c_str(),
++           id.empty() ? "" : "  -  ", id.c_str());
++  snprintf(s_stop_path, sizeof(s_stop_path), "%s/last-stop.txt", PS4_DATA_DIR_PATH);
++  snprintf(s_to_menu_path, sizeof(s_to_menu_path), "%s/to-menu.txt", PS4_DATA_DIR_PATH);
++  ps4_self_path();  // its path made now: the crash handler mustn't allocate
++}
++
++void WriteStopNote(const char* title, const char* what, const char* where)
++{
++  if (!s_stop_game[0])
++    return;
++  const int fd = open(s_stop_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
++  if (fd < 0)
++    return;
++  const auto put = [fd](const char* text) {
++    if (text)
++      write(fd, text, strlen(text));
++  };
++  put(title);
++  put("\n\n");
++  put(s_stop_game);
++  put("\n");
++  put(what);
++  put("\n\n");
++  put(where);
++  put("\n");
++  close(fd);
++  // Back to the game list, not into the default game again (to-menu.txt).
++  const int menu = open(s_to_menu_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
++  if (menu >= 0)
++    close(menu);
++}
++
 +void OnExit()
 +{
 +  // The raw exit syscall isn't allowed for apps: ask the system to close us, or restart into the
@@ -20781,6 +21029,14 @@ index 0000000..fd71064
 +  if (PS4IngameMenu::ReturnToXMB())
 +  {
 +    ps4_return_to_menu();
++    sceSystemServiceLoadExec(ps4_self_path(), nullptr);
++  }
++  if (s_stop_game[0] && Platform::GetPS4Option("xmb", "on") == "on")
++  {
++    // The emulation ended by itself (an error, or the game ended): back to the game list with why.
++    Platform::BootTrace("the game stopped by itself: back to the menu");
++    WriteStopNote("Game Stopped", "The game stopped unexpectedly.",
++                  "Details are in dolphin.log and boot-trace.log\n(in /data/DolphinPS4).");
 +    sceSystemServiceLoadExec(ps4_self_path(), nullptr);
 +  }
 +  sceSystemServiceLoadExec("exit", nullptr);
@@ -20816,6 +21072,25 @@ index 0000000..fd71064
 +  s_fonts[bold != 0] = PS4Lang::ExtraFonts(AssetsDir(), bold != 0);
 +  return index < static_cast<int>(s_fonts[bold != 0].size()) ? s_fonts[bold != 0][index].c_str() :
 +                                                                 nullptr;
++}
++
++// port/ps4_crashlog.cpp, after crash.log.
++extern "C" void ps4_crash_note(int sig)
++{
++  const char* what = sig == 11 ? "The game crashed (invalid memory access)." :
++                     sig == 10 ? "The game crashed (bus error)." :
++                     sig == 4  ? "The game crashed (illegal instruction)." :
++                     sig == 8  ? "The game crashed (arithmetic error)." :
++                     sig == 6  ? "The game crashed (Dolphin stopped on an error)." :
++                                 "The game crashed.";
++  WriteStopNote("Game Crashed", what,
++                "Details are in crash.log and boot-trace.log\n(in /data/DolphinPS4).");
++}
++
++extern "C" void ps4_crash_restart()
++{
++  if (s_stop_game[0])
++    sceSystemServiceLoadExec(ps4_self_path(), nullptr);
 +}
 +
 +// Restarts that should show the menu (a game quit to it, the menu restarted itself) leave this
@@ -21301,6 +21576,9 @@ index 0000000..fd71064
 +         std::filesystem::path(entry.path) != std::filesystem::path(s_launch_disc)))
 +      continue;
 +    controls_game = entry.game_id;
++    SetStopGame(entry.title.empty() ? std::filesystem::path(entry.path).stem().string() :
++                                      entry.title,
++                entry.game_id);
 +    s_wii_game = entry.wad || (entry.homebrew ? entry.wii :
 +                                                !entry.game_id.empty() &&
 +                                                    (entry.game_id[0] == 'R' || entry.game_id[0] == 'S'));
@@ -21308,6 +21586,8 @@ index 0000000..fd71064
 +  }
 +  if (game.rfind("nand:", 0) == 0)
 +    s_wii_game = true;  // a Wii title: the Wii Remote settings apply
++  if (!s_stop_game[0] && !game.empty())
++    SetStopGame(std::filesystem::path(game).stem().string(), {});
 +  BootTrace(s_wii_game ? "Wii game: Wii controller settings applied" :
 +                         "GameCube game: Wii settings left alone");
 +  // The game's own controller layout (Triangle on it -> Controls -> This Game), else the normal.

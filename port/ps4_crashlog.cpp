@@ -26,6 +26,14 @@
 
 extern "C" char __text_start[];  // defined by the OpenOrbis link.x at the start of .text
 
+// The app's own reaction once crash.log is written (DolphinNoGUI/PlatformPS4.cpp): a note for the
+// menu, then a restart into it - the player is back in the game list instead of the PS4's crash
+// report (which could hang the console while it wrote the coredump). Both do nothing when no game
+// runs (a crash of the menu itself), and the restart returns only if it failed. Weak: the probes
+// link this file without them.
+extern "C" __attribute__((weak)) void ps4_crash_note(int sig);
+extern "C" __attribute__((weak)) void ps4_crash_restart();
+
 namespace {
 
 // FreeBSD values (the PS4 kernel's); the OpenOrbis musl headers may carry Linux ones.
@@ -125,6 +133,13 @@ void crashHandler(int sig, siginfo_t* info, void* context) {
     }
     if (traceFd() >= 0)
         writeAll(traceFd(), "crashed (see crash.log)\n");
+    if (ps4_crash_note)
+        ps4_crash_note(sig);
+    if (ps4_crash_restart) {
+        if (traceFd() >= 0)
+            writeAll(traceFd(), "crash: restarting into the menu\n");
+        ps4_crash_restart();
+    }
 
     // Back to the default action: returning re-executes the faulting instruction, which now
     // ends the process with the system's crash report.
