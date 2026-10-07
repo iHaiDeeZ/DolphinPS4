@@ -6652,10 +6652,10 @@ index 0000000..276a9b6
 +}  // namespace PS4Cheats
 diff --git a/Source/Core/DolphinNoGUI/PS4Controls.cpp b/Source/Core/DolphinNoGUI/PS4Controls.cpp
 new file mode 100755
-index 0000000..4b322be
+index 0000000..69e2480
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Controls.cpp
-@@ -0,0 +1,707 @@
+@@ -0,0 +1,722 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -6723,6 +6723,7 @@ index 0000000..4b322be
 +Shake/X = R3
 +Shake/Y = R3
 +Shake/Z = R3
++IMUIR/Recenter = R1
 +Rumble/Motor = `Motor L`
 +Extension = Nunchuk
 +Nunchuk/Buttons/C = L1
@@ -6970,6 +6971,20 @@ index 0000000..4b322be
 +        section->Set("Nunchuk/Shake/X", std::string("L3"));
 +        section->Set("Nunchuk/Shake/Y", std::string("L3"));
 +        section->Set("Nunchuk/Shake/Z", std::string("L3"));
++        SaveIni(ini, LivePath(Device::Wii));
++      }
++    }
++  }
++  // Layouts from before the motion pointer: R1 (free in the Wii layout) re-centres it.
++  {
++    Common::IniFile ini;
++    if (ini.Load(LivePath(Device::Wii)))
++    {
++      Common::IniFile::Section* section = ini.GetSection("Wiimote1");
++      std::string recenter;
++      if (section && (!section->Get("IMUIR/Recenter", &recenter) || recenter.empty()))
++      {
++        section->Set("IMUIR/Recenter", std::string("R1"));
 +        SaveIni(ini, LivePath(Device::Wii));
 +      }
 +    }
@@ -10445,10 +10460,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..8edb044
+index 0000000..20b17f0
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,754 @@
+@@ -0,0 +1,755 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10588,9 +10603,10 @@ index 0000000..8edb044
 +     false, "For games played with the Wii Remote held sideways (NSMB Wii, Mario Kart Wii)."},
 +    {"motion_controls", "Motion Controls", "System", {{"on", "On"}, {"off", "Off"}}, "on", false,
 +     "The DualShock 4's motion sensors move the Wii Remote: tilt, swing and shake it."},
-+    {"wii_pointer", "Wii Pointer", "System", {{"stick", "Right Stick"}, {"motion", "Motion"}},
-+     "stick", false,
-+     "Motion: aim the DualShock 4 at the TV like a Wii Remote (Controls: set Pointer Re-centre)."},
++    {"wii_pointer", "Wii Pointer", "System",
++     {{"motion", "Motion + Stick"}, {"stick", "Right Stick"}}, "motion", false,
++     "Motion + Stick: aim by moving the DualShock 4 (R1 re-centres) and with the right stick. "
++     "Controllers without motion sensors use the stick."},
 +    {"wii_controller", "Wii Remote Controller", "System",
 +     {{"ds4", "DualShock 4"}, {"auto", "Auto"}}, "ds4", false,
 +     "Auto: a PS Move that is on when the game starts becomes the Wii Remote (buttons, motion "
@@ -17960,7 +17976,7 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..4ccbbed
+index 0000000..fd71064
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 @@ -0,0 +1,1823 @@
@@ -19734,7 +19750,7 @@ index 0000000..4ccbbed
 +      BootTrace(("PS Move: players with one on:" + (found.empty() ? std::string(" none") : found)).c_str());
 +    PS4Controls::SetWiiMotion(GetPS4Option("wii_controller", "ds4"),
 +                              GetPS4Option("motion_controls", "on") == "on", moves,
-+                              GetPS4Option("wii_pointer", "stick") == "motion");
++                              GetPS4Option("wii_pointer", "motion") == "motion");
 +  }
 +  // Speed Features: Compatible turns off the command-stream shortcuts (freezes and missing menu
 +  // items in Crash Tag Team Racing and FIFA Street 2 came from them).
@@ -19866,10 +19882,10 @@ index 8f7f4ba..34feb8e 100644
  {
 diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
 new file mode 100644
-index 0000000..1ec5ea8
+index 0000000..99767ed
 --- /dev/null
 +++ b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
-@@ -0,0 +1,612 @@
+@@ -0,0 +1,647 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -20118,6 +20134,38 @@ index 0000000..1ec5ea8
 +    {
 +      m_state = data;
 +      m_buttons = data.buttons;
++      // Real motion sensors jitter even lying still; copies without them report fixed numbers
++      // (0 0 -0.5, no rotation). Until a reading moves, the pad looks like one lying still
++      // (gravity straight down, no rotation): the motion pointer then stays put and the right
++      // stick aims, instead of the copy's fake gravity tipping the pointer off the screen.
++      if (!m_motion_real)
++      {
++        if (m_reads > 0 &&
++            (data.vel.x != m_prev_motion[0] || data.vel.y != m_prev_motion[1] ||
++             data.vel.z != m_prev_motion[2] || data.acell.x != m_prev_motion[3] ||
++             data.acell.y != m_prev_motion[4] || data.acell.z != m_prev_motion[5]))
++        {
++          m_motion_real = true;
++          ps4_boot_trace("DualShock 4 motion sensors: working (motion pointer and tilt)");
++        }
++        m_prev_motion[0] = data.vel.x;
++        m_prev_motion[1] = data.vel.y;
++        m_prev_motion[2] = data.vel.z;
++        m_prev_motion[3] = data.acell.x;
++        m_prev_motion[4] = data.acell.y;
++        m_prev_motion[5] = data.acell.z;
++        if (!m_motion_real)
++        {
++          if (m_reads == 600)
++            ps4_boot_trace("DualShock 4 motion sensors: no readings (a copy?): the right stick aims");
++          m_state.vel.x = 0.0f;
++          m_state.vel.y = 1.0f;
++          m_state.vel.z = 0.0f;
++          m_state.acell.x = 0.0f;
++          m_state.acell.y = 0.0f;
++          m_state.acell.z = 0.0f;
++        }
++      }
 +      // The sensors refused at open (the pad still settling)? Once more on the first reads.
 +      if (m_motion_result != 0 && m_reads == 10)
 +      {
@@ -20178,6 +20226,9 @@ index 0000000..1ec5ea8
 +  const int32_t m_user_id;
 +  const int32_t m_handle;
 +  OrbisPadData m_state{};
++  // Motion sensors seen moving (a pad without them reports fixed numbers), and the last readings.
++  bool m_motion_real = false;
++  float m_prev_motion[6]{};
 +  u32 m_buttons = 0;
 +  OrbisPadVibeParam m_vibration{0, 0};
 +  int m_reads = 0;
