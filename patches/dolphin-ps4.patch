@@ -3561,7 +3561,7 @@ index 0000000..01c97dd
 +void OnMemory(u32 address, u32 size, bool write);
 +}  // namespace ParallelismOracle
 diff --git a/Source/Core/Core/PowerPC/Jit64/Jit.cpp b/Source/Core/Core/PowerPC/Jit64/Jit.cpp
-index 1248b1a..30adcab 100644
+index 1248b1a..01a71e3 100644
 --- a/Source/Core/Core/PowerPC/Jit64/Jit.cpp
 +++ b/Source/Core/Core/PowerPC/Jit64/Jit.cpp
 @@ -49,6 +49,29 @@
@@ -3947,7 +3947,17 @@ index 1248b1a..30adcab 100644
    if (bl)
    {
      CALL(asm_routines.dispatcher);
-@@ -992,10 +1324,21 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+@@ -819,6 +1151,9 @@ void Jit64::Jit(u32 em_address, bool clear_cache_and_retry_on_failure)
+         analyzer.ClearOption(PPCAnalyst::PPCAnalyzer::OPTION_CROR_MERGE);
+         analyzer.ClearOption(PPCAnalyst::PPCAnalyzer::OPTION_CARRY_MERGE);
+         analyzer.ClearOption(PPCAnalyst::PPCAnalyzer::OPTION_BRANCH_FOLLOW);
++#ifdef __ORBIS__
++        analyzer.ClearOption(PPCAnalyst::PPCAnalyzer::OPTION_PS4_UNROLL);
++#endif
+       }
+       Trace();
+     }
+@@ -992,10 +1327,21 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
      IntializeSpeculativeConstants();
    }
  
@@ -3969,7 +3979,7 @@ index 1248b1a..30adcab 100644
  
      js.compilerPC = op.address;
      js.op = &op;
-@@ -1018,16 +1361,32 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+@@ -1018,16 +1364,32 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
        bool gatherPipeIntCheck = js.fifoWriteAddresses.contains(prev_address);
  
        // Gather pipe writes using an immediate address are explicitly tracked.
@@ -4004,7 +4014,7 @@ index 1248b1a..30adcab 100644
        }
  
        // Gather pipe writes can generate an exception; add an exception check.
-@@ -1155,7 +1514,12 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+@@ -1155,7 +1517,12 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
              // prioritize the more important registers.
              gpr.PreloadRegisters(op.regsIn & (op.gprWillBeRead | op.gprWillBeWritten) &
                                   ~op.gprDiscardable);
@@ -4017,6 +4027,16 @@ index 1248b1a..30adcab 100644
            }
  
            CompileInstruction(op);
+@@ -1330,6 +1697,9 @@ void Jit64::EnableOptimization()
+   analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_CROR_MERGE);
+   analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_CARRY_MERGE);
+   analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_BRANCH_FOLLOW);
++#ifdef __ORBIS__
++  analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_PS4_UNROLL);
++#endif
+ }
+ 
+ void Jit64::IntializeSpeculativeConstants()
 diff --git a/Source/Core/Core/PowerPC/Jit64/Jit.h b/Source/Core/Core/PowerPC/Jit64/Jit.h
 index da1be2d..e7e98ea 100644
 --- a/Source/Core/Core/PowerPC/Jit64/Jit.h
@@ -4142,6 +4162,42 @@ index 7594d0e..b25f9f9 100644
    }
  
    // There is no point in calling the dispatcher in the fast lookup table
+diff --git a/Source/Core/Core/PowerPC/Jit64/Jit_Branch.cpp b/Source/Core/Core/PowerPC/Jit64/Jit_Branch.cpp
+index 4667238..6d9edba 100644
+--- a/Source/Core/Core/PowerPC/Jit64/Jit_Branch.cpp
++++ b/Source/Core/Core/PowerPC/Jit64/Jit_Branch.cpp
+@@ -179,6 +179,31 @@ void Jit64::bcx(UGeckoInstruction inst)
+   if (inst.LK)
+     MOV(32, PPCSTATE_LR, Imm32(js.compilerPC + 4));
+ 
++#ifdef __ORBIS__
++  if (js.op->ps4_unroll)
++  {
++    // Dolphin Lab (jit_unroll): taken, the loop goes on in the next copy of its body, compiled
++    // right after this with the registers where they are; not taken, the loop is over: exit to
++    // the instruction after it.
++    FixupBranch taken = J(Jump::Near);
++    if ((inst.BO & BO_DONT_CHECK_CONDITION) == 0)
++      SetJumpTarget(pConditionDontBranch);
++    if ((inst.BO & BO_DONT_DECREMENT_FLAG) == 0)
++      SetJumpTarget(pCTRDontBranch);
++    {
++      RCForkGuard gpr_guard = gpr.Fork();
++      RCForkGuard fpr_guard = fpr.Fork();
++      gpr.Flush();
++      fpr.Flush();
++      WriteBranchWatch<false>(js.compilerPC, js.compilerPC + 4, inst, {});
++      WriteExit(js.compilerPC + 4);
++    }
++    SetJumpTarget(taken);
++    WriteBranchWatch<true>(js.compilerPC, js.op->branchTo, inst, CallerSavedRegistersInUse());
++    return;
++  }
++#endif
++
+   // If this is not the last instruction of a block
+   // and an unconditional branch, we will skip the rest process.
+   // Because PPCAnalyst::Flatten() merged the blocks.
 diff --git a/Source/Core/Core/PowerPC/Jit64/Jit_FloatingPoint.cpp b/Source/Core/Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
 index 86f9e49..6a1f85c 100644
 --- a/Source/Core/Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
@@ -4217,6 +4273,22 @@ index 86f9e49..6a1f85c 100644
    FinalizeDoubleResult(Rd, R(XMM0));
  }
  
+diff --git a/Source/Core/Core/PowerPC/Jit64/Jit_Integer.cpp b/Source/Core/Core/PowerPC/Jit64/Jit_Integer.cpp
+index c77b831..be699dd 100644
+--- a/Source/Core/Core/PowerPC/Jit64/Jit_Integer.cpp
++++ b/Source/Core/Core/PowerPC/Jit64/Jit_Integer.cpp
+@@ -360,6 +360,11 @@ bool Jit64::CheckMergedBranch(u32 crf) const
+ 
+   if (!CanMergeNextInstructions(1))
+     return false;
++#ifdef __ORBIS__
++  // An unrolled loop branch (jit_unroll) is compiled inverted by bcx itself.
++  if (js.op[1].ps4_unroll)
++    return false;
++#endif
+ 
+   const UGeckoInstruction& next = js.op[1].inst;
+   return (((next.OPCD == 16 /* bcx */) ||
 diff --git a/Source/Core/Core/PowerPC/Jit64/Jit_LoadStoreFloating.cpp b/Source/Core/Core/PowerPC/Jit64/Jit_LoadStoreFloating.cpp
 index 4d64010..8dbbcbe 100644
 --- a/Source/Core/Core/PowerPC/Jit64/Jit_LoadStoreFloating.cpp
@@ -5374,6 +5446,84 @@ index 8c12ead..9ee129f 100644
    enum class TranslateAddressResultEnum : u8
    {
      BAT_TRANSLATED,
+diff --git a/Source/Core/Core/PowerPC/PPCAnalyst.cpp b/Source/Core/Core/PowerPC/PPCAnalyst.cpp
+index 386e349..0ae1676 100644
+--- a/Source/Core/Core/PowerPC/PPCAnalyst.cpp
++++ b/Source/Core/Core/PowerPC/PPCAnalyst.cpp
+@@ -36,6 +36,12 @@
+ // library functions.
+ // We don't do this much currently. Only for the special case Super Monkey Ball.
+ 
++// ps4.ini jit_unroll (Dolphin Lab): short loops back to the block's start are compiled as up to
++// four copies of their body in one block, so their registers stay in host registers from one
++// iteration to the next (the JIT writes them all back and reloads them at every block exit).
++extern "C" int ps4_jit_unroll;
++int ps4_jit_unroll = 1;
++
+ namespace PPCAnalyst
+ {
+ // 0 does not perform block merging
+@@ -832,6 +838,8 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
+   u32 num_inst = 0;
+ 
+   const bool enable_follow = m_enable_branch_following;
++  u32 unrolls = 0;          // copies of a loop body added (jit_unroll)
++  std::size_t body_len = 0;  // the loop body's length in instructions
+ 
+   auto& system = Core::System::GetInstance();
+   auto& mmu = system.GetMMU();
+@@ -949,6 +957,26 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
+     code[i].branchIsIdleLoop =
+         code[i].branchTo == block->m_address && IsBusyWaitLoop(block, code, i);
+ 
++#ifdef __ORBIS__
++    // A short loop back to the block's start (bc, no link, nothing followed or called on the
++    // way): read its body again, so the block holds up to four iterations.
++    if (ps4_jit_unroll && HasOption(OPTION_PS4_UNROLL) && conditional_continue && inst.OPCD == 16 && !inst.LK && !inst.AA &&
++        code[i].branchTo == block->m_address && !code[i].branchIsIdleLoop && numFollows == 0 &&
++        !found_call && unrolls < 3)
++    {
++      if (unrolls == 0)
++        body_len = i + 1;
++      if (body_len <= 48 && i + 1 == body_len * (unrolls + 1) &&
++          i + 1 + body_len + 1 <= block_size)
++      {
++        code[i].ps4_unroll = true;
++        unrolls++;
++        address = block->m_address;
++        continue;
++      }
++    }
++#endif
++
+     if (follow && numFollows < BRANCH_FOLLOWING_THRESHOLD)
+     {
+       // Follow the unconditional branch.
+diff --git a/Source/Core/Core/PowerPC/PPCAnalyst.h b/Source/Core/Core/PowerPC/PPCAnalyst.h
+index f9081ba..3593a20 100644
+--- a/Source/Core/Core/PowerPC/PPCAnalyst.h
++++ b/Source/Core/Core/PowerPC/PPCAnalyst.h
+@@ -51,6 +51,9 @@ struct CodeOp  // 16B
+   bool canCauseException = false;
+   bool skipLRStack = false;
+   bool skip = false;  // followed BL-s for example
++  // Dolphin Lab (jit_unroll): a loop's branch back to the block's start whose next copy of the
++  // loop body follows in this block - the branch exits only when it is NOT taken.
++  bool ps4_unroll = false;
+   BitSet8 crWillBeRead;
+   BitSet8 crWillBeWritten;
+   BitSet8 crDiscardable;
+@@ -174,6 +177,10 @@ public:
+ 
+     // Reorder cror instructions next to their associated fcmp.
+     OPTION_CROR_MERGE = (1 << 6),
++
++    // Dolphin Lab (PS4): unroll short loops back to the block's start (ps4_unroll ops). Only for
++    // the x86 JIT, which compiles those branches inverted (the cached interpreter doesn't).
++    OPTION_PS4_UNROLL = (1 << 7),
+   };
+ 
+   // Option setting/getting
 diff --git a/Source/Core/Core/PowerPC/PowerPC.cpp b/Source/Core/Core/PowerPC/PowerPC.cpp
 index 564d74d..481ff15 100644
 --- a/Source/Core/Core/PowerPC/PowerPC.cpp
@@ -5747,7 +5897,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..a181827 100644
+index 3bf40ea..a01ecb9 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -5798,7 +5948,7 @@ index 3bf40ea..a181827 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,50 @@
+@@ -31,6 +53,51 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -5818,6 +5968,7 @@ index 3bf40ea..a181827 100644
 +extern "C" int ps4_lazy_lfs;       // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_inline_dispatch;  // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_lazy_pc;          // Core/PowerPC/Jit64/Jit.cpp
++extern "C" int ps4_jit_unroll;           // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_shader_dump;          // VideoCommon/ShaderCache.cpp
 +extern "C" int ps4_tev_ras_float;        // VideoCommon/PixelShaderGen.cpp
 +extern "C" int ps4_vk_dynamic_vertex_loader;
@@ -5849,7 +6000,7 @@ index 3bf40ea..a181827 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +239,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +240,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -5860,7 +6011,7 @@ index 3bf40ea..a181827 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +254,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +255,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -5879,7 +6030,7 @@ index 3bf40ea..a181827 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +286,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +287,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -5890,7 +6041,7 @@ index 3bf40ea..a181827 100644
  #endif
        });
  
-@@ -270,7 +353,347 @@ int main(const int argc, char* argv[])
+@@ -270,7 +354,349 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -6071,6 +6222,8 @@ index 3bf40ea..a181827 100644
 +    ps4_jit_inline_dispatch = Platform::GetPS4Option("jit_inline_dispatch", "on") == "on";
 +    // jit_lazy_pc=off (Dolphin Lab): block exits store the PC every time again.
 +    ps4_jit_lazy_pc = Platform::GetPS4Option("jit_lazy_pc", "on") == "on";
++    // jit_unroll=off (Dolphin Lab): loops are compiled one iteration per block again.
++    ps4_jit_unroll = Platform::GetPS4Option("jit_unroll", "on") == "on";
 +    // shader_dump=on (Dolphin Lab): specialized shaders' source to /data/DolphinPS4/shader-dump.
 +    ps4_shader_dump = Platform::GetPS4Option("shader_dump", "off") == "on";
 +    // tev_ras_swizzle=float, vk_dynamic_vertex_loader=off (Dolphin Lab): colour tests (TMNT 2007).
@@ -6238,7 +6391,7 @@ index 3bf40ea..a181827 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +707,12 @@ int main(const int argc, char* argv[])
+@@ -284,6 +710,12 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -6251,7 +6404,7 @@ index 3bf40ea..a181827 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,6 +732,46 @@ int main(const int argc, char* argv[])
+@@ -303,6 +735,46 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
