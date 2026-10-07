@@ -6477,10 +6477,10 @@ index 0000000..276a9b6
 +}  // namespace PS4Cheats
 diff --git a/Source/Core/DolphinNoGUI/PS4Controls.cpp b/Source/Core/DolphinNoGUI/PS4Controls.cpp
 new file mode 100755
-index 0000000..e9b0ba4
+index 0000000..4b322be
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Controls.cpp
-@@ -0,0 +1,633 @@
+@@ -0,0 +1,707 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -6589,7 +6589,18 @@ index 0000000..e9b0ba4
 +    {"Buttons/+", "+ (Plus)", false},
 +    {"Buttons/Home", "Home", false},
 +    {"Shake", "Shake (spin)", false},
++    {"Swing/Up", "Swing Up", false},
++    {"Swing/Down", "Swing Down", false},
++    {"Swing/Left", "Swing Left", false},
++    {"Swing/Right", "Swing Right", false},
++    {"Swing/Forward", "Swing Forward", false},
++    {"Swing/Backward", "Swing Backward", false},
++    {"Tilt/Forward", "Tilt Forward", false},
++    {"Tilt/Backward", "Tilt Backward", false},
++    {"Tilt/Left", "Tilt Left", false},
++    {"Tilt/Right", "Tilt Right", false},
 +    {"IR", "Pointer", true},
++    {"IMUIR/Recenter", "Pointer Re-centre (motion pointer)", false},
 +    {"D-Pad/Up", "D-Pad Up", false},
 +    {"D-Pad/Down", "D-Pad Down", false},
 +    {"D-Pad/Left", "D-Pad Left", false},
@@ -6598,6 +6609,16 @@ index 0000000..e9b0ba4
 +    {"Nunchuk/Buttons/Z", "Nunchuk Z", false},
 +    {"Nunchuk/Stick", "Nunchuk Stick", true},
 +    {"Nunchuk/Shake", "Nunchuk Shake", false},
++    {"Nunchuk/Swing/Up", "Nunchuk Swing Up", false},
++    {"Nunchuk/Swing/Down", "Nunchuk Swing Down", false},
++    {"Nunchuk/Swing/Left", "Nunchuk Swing Left", false},
++    {"Nunchuk/Swing/Right", "Nunchuk Swing Right", false},
++    {"Nunchuk/Swing/Forward", "Nunchuk Swing Forward", false},
++    {"Nunchuk/Swing/Backward", "Nunchuk Swing Backward", false},
++    {"Nunchuk/Tilt/Forward", "Nunchuk Tilt Forward", false},
++    {"Nunchuk/Tilt/Backward", "Nunchuk Tilt Backward", false},
++    {"Nunchuk/Tilt/Left", "Nunchuk Tilt Left", false},
++    {"Nunchuk/Tilt/Right", "Nunchuk Tilt Right", false},
 +};
 +
 +std::string s_user_dir = "/data/DolphinPS4/User";
@@ -6817,8 +6838,21 @@ index 0000000..e9b0ba4
 +  return expression;
 +}
 +
-+void SetWiiMotion(const std::string& controller, bool motion, const std::array<bool, 4>& moves)
++// The last SetWiiMotion call (the game's start), redone after an in-game layout edit.
++static bool s_motion_set = false;
++static std::string s_motion_controller;
++static bool s_motion_on = false;
++static std::array<bool, 4> s_motion_moves{};
++static bool s_motion_pointer = false;
++
++void SetWiiMotion(const std::string& controller, bool motion, const std::array<bool, 4>& moves,
++                  bool motion_pointer)
 +{
++  s_motion_set = true;
++  s_motion_controller = controller;
++  s_motion_on = motion;
++  s_motion_moves = moves;
++  s_motion_pointer = motion_pointer;
 +  Common::IniFile ini;
 +  ini.Load(Path(Device::Wii));
 +  constexpr const char* ACCEL[] = {"Up", "Down", "Left", "Right", "Forward", "Backward"};
@@ -6857,9 +6891,22 @@ index 0000000..e9b0ba4
 +      section->Set(std::string("IMUGyroscope/") + direction,
 +                   move ? from_move(input) : motion ? "`" + input + "`" : std::string());
 +    }
-+    // The pointer: the Move's gyroscope (Start + Select recentres it), else the right stick.
-+    section->Set("IMUIR/Enabled", std::string(move ? "True" : "False"));
-+    section->Set("IMUIR/Recenter", move ? from_move("Start") + " & " + from_move("Select") : std::string());
++    // The pointer: the Move's gyroscope (Start + Select recentres it); with Pointer: Motion the
++    // DualShock 4's own (re-centred by the player's Pointer Re-centre button); else the right
++    // stick.
++    section->Set("IMUIR/Enabled",
++                 std::string(move || (motion && motion_pointer) ? "True" : "False"));
++    if (move)
++    {
++      section->Set("IMUIR/Recenter", from_move("Start") + " & " + from_move("Select"));
++    }
++    else
++    {
++      std::string recenter;
++      section->Get("IMUIR/Recenter", &recenter);
++      if (recenter.find("PS Move") != std::string::npos)
++        section->Set("IMUIR/Recenter", std::string());
++    }
 +  }
 +  SaveIni(ini, Path(Device::Wii));
 +}
@@ -7087,6 +7134,33 @@ index 0000000..e9b0ba4
 +  }
 +}
 +
++void RefreshLive(const std::string& game_id)
++{
++  const std::string editing = s_edit_game;
++  s_edit_game.clear();
++  for (const Device device : {Device::GameCube, Device::Wii})
++  {
++    Common::IniFile mine;
++    if (HasGameProfile(game_id) && mine.Load(GamePath(device, game_id)))
++    {
++      if (const Common::IniFile::Section* own = mine.GetSection(Section(device)))
++      {
++        Common::IniFile live;
++        live.Load(LivePath(device));
++        live.DeleteSection(Section(device));
++        Common::IniFile::Section* target = live.GetOrCreateSection(Section(device));
++        for (const auto& [key, value] : own->GetValues())
++          target->Set(key, value);
++        SaveIni(live, LivePath(device));
++      }
++    }
++    SyncPlayers(device);
++  }
++  if (s_motion_set)
++    SetWiiMotion(s_motion_controller, s_motion_on, s_motion_moves, s_motion_pointer);
++  s_edit_game = editing;
++}
++
 +bool UseGameProfile(const std::string& game_id)
 +{
 +  RestoreGlobal();
@@ -7116,10 +7190,10 @@ index 0000000..e9b0ba4
 +}  // namespace PS4Controls
 diff --git a/Source/Core/DolphinNoGUI/PS4Controls.h b/Source/Core/DolphinNoGUI/PS4Controls.h
 new file mode 100755
-index 0000000..5b671b3
+index 0000000..28bedc0
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Controls.h
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,81 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -7186,7 +7260,11 @@ index 0000000..5b671b3
 +// player's PS Move (moves[player - 1]) joins the Wii Remote (its buttons alongside the DualShock 4's,
 +// its motion and gyroscope pointer), or the DualShock 4's motion is used (motion), or none.
 +// controller: "auto" (the Move when it's on) or "ds4" (never the Move).
-+void SetWiiMotion(const std::string& controller, bool motion, const std::array<bool, 4>& moves);
++void SetWiiMotion(const std::string& controller, bool motion, const std::array<bool, 4>& moves,
++                  bool motion_pointer = false);
++// In a running game (the in-game menu): the files Dolphin reads follow this game's own layout
++// again after it was edited, players 2-4 follow player 1, and the motion setup is redone.
++void RefreshLive(const std::string& game_id);
 +// Players 2-4 (GCPad2-4, Wiimote2-4): player 1's mapping, each on their own DualShock 4
 +// ("PS4/<player - 1>/DualShock 4"). Done after every change to player 1's mapping.
 +void SyncPlayers(Device device);
@@ -7809,10 +7887,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..22760a2
+index 0000000..b49e1f2
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,1269 @@
+@@ -0,0 +1,1431 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -7843,7 +7921,9 @@ index 0000000..22760a2
 +#include "InputCommon/ControllerEmu/ControlGroup/Attachments.h"
 +#include "InputCommon/ControllerEmu/ControllerEmu.h"
 +#include "InputCommon/ControllerEmu/Setting/NumericSetting.h"
++#include "Core/HW/GCPad.h"
 +#include "DolphinNoGUI/PS4Cheats.h"
++#include "DolphinNoGUI/PS4Controls.h"
 +#include "DolphinNoGUI/PS4Lang.h"
 +#include "DolphinNoGUI/PS4Settings.h"
 +#include "VideoCommon/Fifo.h"
@@ -7889,6 +7969,7 @@ index 0000000..22760a2
 +  MAIN_CHEATS,
 +  MAIN_RESTART,
 +  MAIN_QUIT,
++  MAIN_CONTROLS,
 +  MAIN_COUNT,
 +};
 +
@@ -7897,6 +7978,7 @@ index 0000000..22760a2
 +  Main,
 +  Settings,
 +  Cheats,
++  Controls,
 +};
 +
 +// One line of the menu as drawn (prepared by the host thread, drawn by the video thread).
@@ -7924,6 +8006,10 @@ index 0000000..22760a2
 +bool s_open = false;
 +std::string s_title;
 +std::string s_subtitle;
++// Controls page: the row waiting for a button press (-1: none).
++int s_ctl_capture_row = -1;
++bool s_ctl_capture_armed = false;
++std::chrono::steady_clock::time_point s_ctl_capture_start;
 +std::string s_playtime;  // "Play time: 3 h 12 min" under the title (the menu's game)
 +
 +// Play time of the running game: counted while it runs (not paused, menu closed), written to
@@ -8071,6 +8157,9 @@ index 0000000..22760a2
 +      case MAIN_SAVE:
 +        rows.push_back({"Save State", slot});
 +        break;
++      case MAIN_CONTROLS:
++        rows.push_back({"Controls"});
++        break;
 +      case MAIN_LOAD:
 +        rows.push_back({"Load State", slot});
 +        break;
@@ -8107,6 +8196,34 @@ index 0000000..22760a2
 +      hints.push_back({Glyph::LeftRight, "Change"});
 +    hints.push_back({Glyph::Circle, "Resume"});
 +    hints.push_back({Glyph::L3R3, "Resume"});
++  }
++  else if (s_page == Page::Controls)
++  {
++    // The layout the running game uses: its own (if it has one) or the normal one.
++    const bool own = PS4Controls::HasGameProfile(s_game_id);
++    PS4Controls::EditGame(own ? s_game_id : std::string());
++    const auto device = s_wii ? PS4Controls::Device::Wii : PS4Controls::Device::GameCube;
++    rows.push_back({"Apply To", own ? "This Game" : "All Games"});
++    keys.push_back("__ctlscope__");
++    rows.push_back({s_wii ? "Wii Remote" : "GameCube Controller", "", true});
++    keys.push_back("");
++    const auto& bindings = PS4Controls::Bindings(device);
++    for (size_t i = 0; i < bindings.size(); i++)
++    {
++      const std::string value = PS4Controls::Get(device, bindings[i]);
++      std::string shown = bindings[i].stick_group ? value : PS4Controls::Describe(value);
++      if (s_ctl_capture_row == static_cast<int>(rows.size()))
++        shown = "Press a button...";
++      rows.push_back({bindings[i].label, shown});
++      keys.push_back("ctl:" + std::to_string(i));
++    }
++    rows.push_back({"", "", true});
++    keys.push_back("");
++    rows.push_back({"Reset to Default", ""});
++    keys.push_back("__ctlreset__");
++    selected = s_settings_selected;
++    subtitle = own ? "CONTROLS - THIS GAME" : "CONTROLS - ALL GAMES";
++    hints = {{Glyph::Cross, "Change"}, {Glyph::UpDown, "Move"}, {Glyph::Circle, "Back"}};
 +  }
 +  else if (s_page == Page::Cheats)
 +  {
@@ -8211,7 +8328,8 @@ index 0000000..22760a2
 +    s_main_items.push_back(MAIN_WII_EXTENSION);
 +    s_main_items.push_back(MAIN_WII_SIDEWAYS);
 +  }
-+  s_main_items.insert(s_main_items.end(), {MAIN_SETTINGS, MAIN_CHEATS, MAIN_RESTART, MAIN_QUIT});
++  s_main_items.insert(s_main_items.end(),
++                      {MAIN_CONTROLS, MAIN_SETTINGS, MAIN_CHEATS, MAIN_RESTART, MAIN_QUIT});
 +  BuildRows();
 +  FlushPlayTime();
 +  const std::string played = PS4PlayTime::Text(PS4PlayTime::Seconds(PlayKey()));
@@ -8227,11 +8345,125 @@ index 0000000..22760a2
 +  Log("opened");
 +}
 +
++// Controls page: the running game reads the edited layout again (Dolphin's controller
++// configuration reloaded from the files).
++void ApplyControls()
++{
++  PS4Controls::RefreshLive(s_game_id);
++  const auto lock = ControllerEmu::EmulatedController::GetStateLock();
++  Pad::LoadConfig();
++  if (s_wii)
++    Wiimote::LoadConfig();
++}
++
++void ChangeControl(int row, int direction)
++{
++  const std::string& key = s_row_keys[row];
++  const auto device = s_wii ? PS4Controls::Device::Wii : PS4Controls::Device::GameCube;
++  if (key == "__ctlscope__")
++  {
++    // This Game: its own layout, starting from the current one. All Games: the normal one back.
++    if (PS4Controls::HasGameProfile(s_game_id))
++    {
++      PS4Controls::DeleteGameProfile(s_game_id);
++      PS4Controls::RestoreGlobal();
++      Toast("Controls: the normal layout");
++    }
++    else
++    {
++      PS4Controls::CreateGameProfile(s_game_id);
++      PS4Controls::UseGameProfile(s_game_id);
++      Toast("Controls: this game's own layout");
++    }
++    ApplyControls();
++    Log("controls: " + s_game_id +
++        (PS4Controls::HasGameProfile(s_game_id) ? " own layout" : " normal layout"));
++    return;
++  }
++  PS4Controls::EditGame(PS4Controls::HasGameProfile(s_game_id) ? s_game_id : std::string());
++  if (key == "__ctlreset__")
++  {
++    if (direction <= 0)
++      return;
++    PS4Controls::ResetToDefault(device);
++    ApplyControls();
++    Toast("Controls: back to the default layout");
++    return;
++  }
++  if (key.rfind("ctl:", 0) != 0)
++    return;
++  const auto& binding = PS4Controls::Bindings(device)[std::atoi(key.c_str() + 4)];
++  if (binding.stick_group)
++  {
++    const auto choices = PS4Controls::StickChoices();
++    const std::string current = PS4Controls::Get(device, binding);
++    int index = 0;
++    for (size_t i = 0; i < choices.size(); i++)
++    {
++      if (choices[i] == current)
++        index = static_cast<int>(i);
++    }
++    const int count = static_cast<int>(choices.size());
++    index = ((index + direction) % count + count) % count;
++    PS4Controls::Set(device, binding, choices[index]);
++    ApplyControls();
++    return;
++  }
++  if (direction > 0)
++  {
++    // Buttons: the next press (UpdateControlCapture).
++    s_ctl_capture_row = row;
++    s_ctl_capture_armed = false;
++    s_ctl_capture_start = Clock::now();
++  }
++}
++
++// A button capture for a Controls row: waits until the pad is at rest, then takes the next press
++// (6 s without one cancels).
++void UpdateControlCapture(const OrbisPadData& data)
++{
++  if (!s_ctl_capture_armed)
++  {
++    s_ctl_capture_armed = PS4Controls::IsAtRest(data);
++    return;
++  }
++  if (Clock::now() - s_ctl_capture_start > std::chrono::seconds(6))
++  {
++    s_ctl_capture_row = -1;
++    BuildRows();
++    return;
++  }
++  const int row = s_ctl_capture_row;
++  if (row < 0 || row >= static_cast<int>(s_row_keys.size()) || s_row_keys[row].rfind("ctl:", 0) != 0)
++  {
++    s_ctl_capture_row = -1;
++    return;
++  }
++  const auto device = s_wii ? PS4Controls::Device::Wii : PS4Controls::Device::GameCube;
++  const auto& binding = PS4Controls::Bindings(device)[std::atoi(s_row_keys[row].c_str() + 4)];
++  const bool analog = std::string(binding.key).rfind("Triggers/", 0) == 0;
++  const std::string expression = PS4Controls::Capture(data, analog);
++  if (expression.empty())
++    return;
++  PS4Controls::Set(device, binding, expression);
++  ApplyControls();
++  s_ctl_capture_row = -1;
++  Toast(std::string(binding.label) + ": " + PS4Controls::Describe(expression));
++  Log("controls: " + std::string(binding.key) + "=" + expression);
++  BuildRows();
++}
++
 +// Changes the setting on a settings row (direction -1/+1) and saves it.
 +void ChangeSetting(int row, int direction)
 +{
 +  if (row < 0 || row >= static_cast<int>(s_row_keys.size()))
 +    return;
++  if (s_page == Page::Controls)
++  {
++    ChangeControl(row, direction);
++    BuildRows();
++    return;
++  }
 +  if (s_page == Page::Cheats)
 +  {
 +    const std::string& key = s_row_keys[row];
@@ -8565,6 +8797,10 @@ index 0000000..22760a2
 +    }
 +  case MAIN_SETTINGS:
 +    s_page = Page::Settings;
++    s_settings_selected = 0;
++    break;
++  case MAIN_CONTROLS:
++    s_page = Page::Controls;
 +    s_settings_selected = 0;
 +    break;
 +  case MAIN_CHEATS:
@@ -8988,6 +9224,10 @@ index 0000000..22760a2
 +  else if (!s_capture_key.empty())
 +  {
 +    UpdateCapture(held);
++  }
++  else if (s_ctl_capture_row >= 0)
++  {
++    UpdateControlCapture(data);
 +  }
 +  else
 +  {
@@ -10013,10 +10253,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..f288cd9
+index 0000000..8edb044
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,751 @@
+@@ -0,0 +1,754 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10156,6 +10396,9 @@ index 0000000..f288cd9
 +     false, "For games played with the Wii Remote held sideways (NSMB Wii, Mario Kart Wii)."},
 +    {"motion_controls", "Motion Controls", "System", {{"on", "On"}, {"off", "Off"}}, "on", false,
 +     "The DualShock 4's motion sensors move the Wii Remote: tilt, swing and shake it."},
++    {"wii_pointer", "Wii Pointer", "System", {{"stick", "Right Stick"}, {"motion", "Motion"}},
++     "stick", false,
++     "Motion: aim the DualShock 4 at the TV like a Wii Remote (Controls: set Pointer Re-centre)."},
 +    {"wii_controller", "Wii Remote Controller", "System",
 +     {{"ds4", "DualShock 4"}, {"auto", "Auto"}}, "ds4", false,
 +     "Auto: a PS Move that is on when the game starts becomes the Wii Remote (buttons, motion "
@@ -11310,10 +11553,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..3120cf2
+index 0000000..b9dafe0
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,4875 @@
+@@ -0,0 +1,4876 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -12810,7 +13053,8 @@ index 0000000..3120cf2
 +    }
 +  }
 +  static const std::set<std::string> WII_ONLY = {
-+      "wii_extension", "wii_sideways", "motion_controls", "wii_controller", "wii_input",
++      "wii_extension", "wii_sideways", "motion_controls", "wii_pointer", "wii_controller",
++      "wii_input",
 +      "sd_card",       "sd_sync",      "sd_writes",       "sd_size"};
 +  for (const char* category : PS4Settings::Categories())
 +  {
@@ -16895,10 +17139,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..5af67db
+index 0000000..4d9b2fd
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1793 @@
+@@ -0,0 +1,1794 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -18639,7 +18883,8 @@ index 0000000..5af67db
 +    if (ps4_move_enabled)
 +      BootTrace(("PS Move: players with one on:" + (found.empty() ? std::string(" none") : found)).c_str());
 +    PS4Controls::SetWiiMotion(GetPS4Option("wii_controller", "ds4"),
-+                              GetPS4Option("motion_controls", "on") == "on", moves);
++                              GetPS4Option("motion_controls", "on") == "on", moves,
++                              GetPS4Option("wii_pointer", "stick") == "motion");
 +  }
 +  // Speed Features: Compatible turns off the command-stream shortcuts (freezes and missing menu
 +  // items in Crash Tag Team Racing and FIFA Street 2 came from them).
