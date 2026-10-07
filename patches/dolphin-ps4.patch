@@ -1458,6 +1458,72 @@ index 9d15477..ac60cc5 100644
  };
  
  struct WindowSystemInfo
+diff --git a/Source/Core/Core/AchievementManager.cpp b/Source/Core/Core/AchievementManager.cpp
+index ec0fee2..21877fc 100644
+--- a/Source/Core/Core/AchievementManager.cpp
++++ b/Source/Core/Core/AchievementManager.cpp
+@@ -1138,10 +1138,26 @@ void AchievementManager::DisplayWelcomeMessage()
+                   OSD::Duration::VERY_LONG, color);
+ }
+ 
++#ifdef __ORBIS__
++// DolphinNoGUI/PS4IngameMenu.cpp: its own unlock pop-up (with the badge) instead of the OSD line.
++void (*ps4_achievement_unlocked)(u32 id, const char* title, const char* description, u32 points,
++                                 bool hardcore) = nullptr;
++#endif
++
+ void AchievementManager::HandleAchievementTriggeredEvent(const rc_client_event_t* client_event)
+ {
+   auto& instance = AchievementManager::GetInstance();
+ 
++#ifdef __ORBIS__
++  if (ps4_achievement_unlocked)
++  {
++    ps4_achievement_unlocked(client_event->achievement->id, client_event->achievement->title,
++                             client_event->achievement->description,
++                             client_event->achievement->points,
++                             rc_client_get_hardcore_enabled(instance.m_client) != 0);
++  }
++  else
++#endif
+   OSD::AddMessage(fmt::format("Unlocked: {} ({})", client_event->achievement->title,
+                               client_event->achievement->points),
+                   OSD::Duration::VERY_LONG,
+diff --git a/Source/Core/Core/AchievementManager.h b/Source/Core/Core/AchievementManager.h
+index 74f26b9..82532dd 100644
+--- a/Source/Core/Core/AchievementManager.h
++++ b/Source/Core/Core/AchievementManager.h
+@@ -58,6 +58,13 @@ namespace ActionReplay
+ struct ARCode;
+ }  // namespace ActionReplay
+ 
++#ifdef __ORBIS__
++// DolphinNoGUI/PS4IngameMenu.cpp: its own unlock pop-up instead of the OSD line (CPU thread,
++// the manager's lock held).
++extern void (*ps4_achievement_unlocked)(u32 id, const char* title, const char* description,
++                                        u32 points, bool hardcore);
++#endif
++
+ class AchievementManager
+ {
+ public:
+@@ -157,6 +164,16 @@ public:
+   rc_client_t* GetClient();
+   const Badge& GetGameBadge() const;
+   const Badge& GetAchievementBadge(AchievementId id, bool locked) const;
++#ifdef __ORBIS__
++  // The real badge has been downloaded (not the placeholder shown until then).
++  bool PS4HasGameBadge() const { return !m_game_badge.data.empty(); }
++  bool PS4HasAchievementBadge(AchievementId id, bool locked) const
++  {
++    const auto& list = locked ? m_locked_badges : m_unlocked_badges;
++    const auto it = list.find(id);
++    return it != list.end() && it->second.data.size() > 0;
++  }
++#endif
+   const LeaderboardStatus* GetLeaderboardInfo(AchievementId leaderboard_id);
+   RichPresence GetRichPresence() const;
+   bool AreChallengesUpdated() const;
 diff --git a/Source/Core/Core/CMakeLists.txt b/Source/Core/Core/CMakeLists.txt
 index 56c8dba..e4ff037 100644
 --- a/Source/Core/Core/CMakeLists.txt
@@ -8089,10 +8155,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..9d107c2
+index 0000000..ea99e6d
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,1610 @@
+@@ -0,0 +1,1814 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -8133,6 +8199,14 @@ index 0000000..9d107c2
 +#include "DolphinNoGUI/PS4Lang.h"
 +#include "DolphinNoGUI/PS4Settings.h"
 +#include "VideoCommon/Fifo.h"
++#include "Common/Image.h"
++#include "VideoCommon/AbstractGfx.h"
++#include "VideoCommon/AbstractTexture.h"
++#include "VideoCommon/TextureConfig.h"
++#include <map>
++#include <memory>
++#include <sys/stat.h>
++#include <unistd.h>
 +
 +extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
 +extern "C" int ps4_pad_handle;                     // InputCommon/.../PS4Pad/PS4Pad.cpp
@@ -8197,6 +8271,7 @@ index 0000000..9d107c2
 +  bool header = false;  // category title, not selectable
 +  bool note = false;    // value takes effect at the next start (shown in amber)
 +  int tag = 0;          // cheats: 1 = an ON tag (green), -1 = an OFF tag (red)
++  std::string badge;    // achievements: the badge picture's key ("U12345" / "L12345")
 +};
 +
 +// Hint glyphs for the bottom bar.
@@ -8220,6 +8295,28 @@ index 0000000..9d107c2
 +std::chrono::steady_clock::time_point s_ctl_capture_start;
 +std::string s_playtime;  // "Play time: 3 h 12 min" under the title (the menu's game)
 +std::string s_detail;    // Achievements page: the selected achievement's description
++// Badge pictures copied from the AchievementManager (RGBA), and their textures (video thread).
++struct BadgePixels
++{
++  std::vector<u8> rgba;
++  u32 width = 0, height = 0;
++};
++std::map<std::string, BadgePixels> s_badge_pixels;
++std::map<std::string, std::unique_ptr<AbstractTexture>> s_badge_textures;
++// Unlock pop-ups, shown one after the other in the top-right corner.
++struct Popup
++{
++  std::string title;
++  std::string description;
++  std::string badge;
++  u32 points = 0;
++  bool hardcore = false;
++};
++std::vector<Popup> s_popups;
++Clock::time_point s_popup_start;
++bool s_popup_showing = false;
++// An achievement unlocked: the list saved for the XMB is written again (host thread).
++std::atomic<bool> s_ach_dirty{false};
 +
 +// Play time of the running game: counted while it runs (not paused, menu closed), written to
 +// playtime.ini every minute and when the game is quit.
@@ -8268,6 +8365,7 @@ index 0000000..9d107c2
 +  rc_client_get_user_game_summary(client, &summary);
 +  const rc_client_game_t* game = rc_client_get_game_info(client);
 +  list.game = game && game->title ? game->title : "";
++  list.badge = game ? game->badge_name : "";
 +  list.unlocked = summary.num_unlocked_achievements;
 +  list.total = summary.num_core_achievements;
 +  list.points = summary.points_unlocked;
@@ -8290,6 +8388,8 @@ index 0000000..9d107c2
 +        entry.points = a->points;
 +        entry.unlocked = a->state == RC_CLIENT_ACHIEVEMENT_STATE_UNLOCKED;
 +        entry.unlock_time = static_cast<int64_t>(a->unlock_time);
++        entry.badge = a->badge_name;
++        entry.id = a->id;
 +        list.entries.push_back(std::move(entry));
 +      }
 +    }
@@ -8303,13 +8403,92 @@ index 0000000..9d107c2
 +#endif
 +}
 +
-+// Saved for the XMB (Triangle on the game -> Achievements).
++#ifdef USE_RETRO_ACHIEVEMENTS
++void CopyBadge(const std::string& key, const AchievementManager::Badge& badge)
++{
++  if (badge.width == 0 || badge.height == 0 ||
++      badge.data.size() < static_cast<size_t>(badge.width) * badge.height * 4)
++    return;
++  BadgePixels pixels;
++  pixels.width = badge.width;
++  pixels.height = badge.height;
++  pixels.rgba.assign(badge.data.data(), badge.data.data() + badge.width * badge.height * 4);
++  std::lock_guard lock(s_mutex);
++  s_badge_pixels[key] = std::move(pixels);
++  s_badge_textures.erase(key);  // made again from the new picture
++}
++
++void SavePng(const std::string& path, const AchievementManager::Badge& badge)
++{
++  if (path.empty() || badge.width == 0 || access(path.c_str(), F_OK) == 0 ||
++      badge.data.size() < static_cast<size_t>(badge.width) * badge.height * 4)
++    return;
++  Common::SavePNG(path, badge.data.data(), Common::ImageByteFormat::RGBA, badge.width,
++                  badge.height, badge.width * 4);
++}
++#endif
++
++// The page's badges (host thread): copied for the video thread to draw.
++void CopyPageBadges()
++{
++#ifdef USE_RETRO_ACHIEVEMENTS
++  auto& manager = AchievementManager::GetInstance();
++  std::lock_guard lock(manager.GetLock());
++  for (const PS4Achievements::Entry& entry : s_ach.entries)
++  {
++    const bool locked = !entry.unlocked;
++    CopyBadge((locked ? "L" : "U") + std::to_string(entry.id),
++              manager.GetAchievementBadge(entry.id, locked));
++  }
++#endif
++}
++
++// Saved for the XMB (Triangle on the game -> Achievements, the Achievements category), with
++// the badge pictures it doesn't have yet.
 +void SaveAchievements()
 +{
 +  PS4Achievements::List list;
-+  if (CaptureAchievements(&list))
-+    PS4Achievements::Save(PlayKey(), list);
++  if (!CaptureAchievements(&list))
++    return;
++  PS4Achievements::Save(PlayKey(), list);
++#ifdef USE_RETRO_ACHIEVEMENTS
++  const std::string data_dir = PS4Achievements::DataDir();
++  if (data_dir.empty())
++    return;
++  mkdir((data_dir + "/achievements/badges").c_str(), 0777);
++  auto& manager = AchievementManager::GetInstance();
++  std::lock_guard lock(manager.GetLock());
++  if (manager.PS4HasGameBadge())
++    SavePng(PS4Achievements::GameBadgePath(data_dir, list.badge), manager.GetGameBadge());
++  for (const PS4Achievements::Entry& entry : list.entries)
++  {
++    for (const bool locked : {false, true})
++    {
++      if (manager.PS4HasAchievementBadge(entry.id, locked))
++      {
++        SavePng(PS4Achievements::BadgePath(data_dir, entry.badge, locked),
++                manager.GetAchievementBadge(entry.id, locked));
++      }
++    }
++  }
++#endif
 +}
++
++#ifdef USE_RETRO_ACHIEVEMENTS
++// CPU thread, the AchievementManager's lock held.
++void OnAchievementUnlocked(u32 id, const char* title, const char* description, u32 points,
++                           bool hardcore)
++{
++  const std::string key = "U" + std::to_string(id);
++  CopyBadge(key, AchievementManager::GetInstance().GetAchievementBadge(id, false));
++  {
++    std::lock_guard lock(s_mutex);
++    s_popups.push_back({title ? title : "", description ? description : "", key, points, hardcore});
++  }
++  s_ach_dirty = true;
++  ps4_boot_trace((std::string("achievement unlocked: ") + (title ? title : "")).c_str());
++}
++#endif
 +
 +void FlushPlayTime()
 +{
@@ -8539,8 +8718,9 @@ index 0000000..9d107c2
 +          keys.push_back("");
 +          any = true;
 +        }
-+        Row row{FitText(entry.title, 34), std::to_string(entry.points) + " pts"};
++        Row row{FitText(entry.title, 30), std::to_string(entry.points) + " pts"};
 +        row.note = unlocked;  // gold points: earned
++        row.badge = (unlocked ? "U" : "L") + std::to_string(entry.id);
 +        rows.push_back(row);
 +        keys.push_back("ach:" + std::to_string(i));
 +      }
@@ -9172,6 +9352,7 @@ index 0000000..9d107c2
 +  case MAIN_ACHIEVEMENTS:
 +    s_page = Page::Achievements;
 +    CaptureAchievements(&s_ach);
++    CopyPageBadges();
 +    s_settings_selected = 0;
 +    BuildRows();
 +    SelectableMove(1);
@@ -9201,6 +9382,80 @@ index 0000000..9d107c2
 +}
 +
 +// ---- Drawing (video thread) ----
++
++// A badge's texture, made from its copied pixels the first time it is drawn (s_mutex held).
++AbstractTexture* BadgeTexture(const std::string& key)
++{
++  if (key.empty() || !g_gfx)
++    return nullptr;
++  const auto made = s_badge_textures.find(key);
++  if (made != s_badge_textures.end())
++    return made->second.get();
++  const auto pixels = s_badge_pixels.find(key);
++  if (pixels == s_badge_pixels.end())
++    return nullptr;
++  const BadgePixels& p = pixels->second;
++  TextureConfig config(p.width, p.height, 1, 1, 1, AbstractTextureFormat::RGBA8, 0,
++                       AbstractTextureType::Texture_2DArray);
++  std::unique_ptr<AbstractTexture> texture = g_gfx->CreateTexture(config);
++  if (texture)
++    texture->Load(0, p.width, p.height, p.width, p.rgba.data(), p.rgba.size());
++  AbstractTexture* result = texture.get();
++  s_badge_textures[key] = std::move(texture);
++  return result;
++}
++
++// The unlock pop-up: slides in at the top right, stays 5 s, slides out; the next one follows.
++bool DrawPopup(ImDrawList* dl, ImFont* bold, ImFont* regular, float s, Clock::time_point now)
++{
++  if (s_popups.empty())
++    return false;
++  if (!s_popup_showing)
++  {
++    s_popup_showing = true;
++    s_popup_start = now;
++  }
++  const float t = std::chrono::duration<float>(now - s_popup_start).count();
++  constexpr float SHOW = 5.5f;
++  if (t > SHOW)
++  {
++    s_popups.erase(s_popups.begin());
++    s_popup_showing = false;
++    return !s_popups.empty();
++  }
++  const Popup& popup = s_popups.front();
++  const float in = std::clamp(t / 0.35f, 0.0f, 1.0f), out = std::clamp((SHOW - t) / 0.35f, 0.0f, 1.0f);
++  const float k = std::min(in, out);
++  const float ease = 1.0f - (1.0f - k) * (1.0f - k) * (1.0f - k);
++  const ImVec2 size = ImGui::GetIO().DisplaySize;
++  const float w = 640 * s, h = 128 * s;
++  const float x = size.x - 50 * s - w + (1.0f - ease) * (w + 80 * s), y = 50 * s;
++  const int a = static_cast<int>(255 * k);
++  const ImU32 gold = IM_COL32(255, 200, 70, a);
++  dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), IM_COL32(8, 20, 46, static_cast<int>(235 * k)),
++                    18 * s);
++  dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h),
++              popup.hardcore ? gold : IM_COL32(91, 184, 255, a), 18 * s, 0, 2.5f * s);
++  float tx = x + 28 * s;
++  if (AbstractTexture* badge = BadgeTexture(popup.badge))
++  {
++    const float b = 88 * s;
++    dl->AddImageRounded(ImTextureRef(*badge), ImVec2(x + 20 * s, y + 20 * s),
++                        ImVec2(x + 20 * s + b, y + 20 * s + b), ImVec2(0, 0), ImVec2(1, 1),
++                        IM_COL32(255, 255, 255, a), 10 * s);
++    tx = x + 20 * s + b + 22 * s;
++  }
++  const float tw = w - (tx - x) - 24 * s;
++  dl->AddText(regular, 24 * s, ImVec2(tx, y + 18 * s), gold,
++              (std::string(PS4Lang::T("Achievement Unlocked")) + "  -  " +
++               std::to_string(popup.points) + " " + PS4Lang::T("points"))
++                  .c_str());
++  dl->AddText(bold, 32 * s, ImVec2(tx, y + 46 * s), IM_COL32(255, 255, 255, a),
++              FitText(popup.title, 34).c_str(), nullptr, tw);
++  dl->AddText(regular, 22 * s, ImVec2(tx, y + 88 * s), IM_COL32(255, 255, 255, static_cast<int>(170 * k)),
++              FitText(popup.description, 52).c_str());
++  return true;
++}
 +
 +void DrawGlyph(ImDrawList* dl, Glyph glyph, ImVec2 c, float r, float a)
 +{
@@ -9286,7 +9541,7 @@ index 0000000..9d107c2
 +      hint_time < 3.0f || hint_time > 10.0f ?
 +          0.0f :
 +          std::min({1.0f, (hint_time - 3.0f) / 0.4f, (10.0f - hint_time) / 0.6f});
-+  if (s_appear < 0.01f && !toast && hint_alpha <= 0.0f)
++  if (s_appear < 0.01f && !toast && hint_alpha <= 0.0f && s_popups.empty())
 +    return;
 +
 +  ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -9294,6 +9549,8 @@ index 0000000..9d107c2
 +  ImFont* bold = ps4_overlay_font ? ps4_overlay_font : ImGui::GetFont();
 +  ImFont* regular = ps4_overlay_font_regular ? ps4_overlay_font_regular : bold;
 +  const float s = size.y / 1080.0f;  // layout in 1080p units
++  if (DrawPopup(dl, bold, regular, s, now))
++    ps4_overlay_repaint = 1;  // keep animating while paused
 +  const float a = s_appear;
 +
 +  if (a > 0.01f)
@@ -9346,7 +9603,15 @@ index 0000000..9d107c2
 +                          ImVec2(x0 + panel_w - 40 * s, y + 54 * s),
 +                          IM_COL32(91, 184, 255, static_cast<int>(70 * a)), 12 * s);
 +      }
-+      dl->AddText(sel ? bold : regular, (sel ? 36 : 32) * s, ImVec2(x0 + 70 * s, y + 4 * s),
++      float label_x = x0 + 70 * s;
++      if (AbstractTexture* badge = BadgeTexture(row.badge))
++      {
++        dl->AddImageRounded(ImTextureRef(*badge), ImVec2(label_x, y + 2 * s),
++                            ImVec2(label_x + 46 * s, y + 48 * s), ImVec2(0, 0), ImVec2(1, 1),
++                            IM_COL32(255, 255, 255, static_cast<int>(255 * a)), 6 * s);
++        label_x += 60 * s;
++      }
++      dl->AddText(sel ? bold : regular, (sel ? 36 : 32) * s, ImVec2(label_x, y + 4 * s),
 +                  sel ? white : dim, PS4Lang::T(row.label).c_str());
 +      if (row.tag != 0)
 +      {
@@ -9458,6 +9723,9 @@ index 0000000..9d107c2
 +void Install()
 +{
 +  ps4_overlay_draw = Draw;
++#ifdef USE_RETRO_ACHIEVEMENTS
++  ps4_achievement_unlocked = OnAchievementUnlocked;
++#endif
 +  State::PS4SetLoadResultCallback([](State::PS4Slot result, const std::string& made_by) {
 +    {
 +      std::lock_guard lock(s_mutex);
@@ -9576,6 +9844,8 @@ index 0000000..9d107c2
 +      s_play_pending += std::min(0.5, std::chrono::duration<double>(now - s_play_last).count());
 +    }
 +    s_play_last = now;
++    if (s_ach_dirty.exchange(false))
++      SaveAchievements();
 +    if (now - s_play_flushed > std::chrono::seconds(60))
 +    {
 +      s_play_flushed = now;
@@ -10634,10 +10904,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..050384d
+index 0000000..a198171
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,879 @@
+@@ -0,0 +1,927 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10651,6 +10921,7 @@ index 0000000..050384d
 +
 +#include <cctype>
 +#include <cstdio>
++#include <filesystem>
 +#include <ctime>
 +#include <fcntl.h>
 +#include <sys/stat.h>
@@ -11399,6 +11670,48 @@ index 0000000..050384d
 +
 +namespace PS4Achievements
 +{
++std::string FileKey(const std::string& game)
++{
++  std::string name;
++  for (const char c : game)
++    name += std::isalnum(static_cast<unsigned char>(c)) ? c : '_';
++  return name;
++}
++
++std::string DataDir()
++{
++  std::lock_guard lock(PS4Settings::s_mutex);
++  return PS4Settings::s_data_dir;
++}
++
++std::string BadgePath(const std::string& data_dir, const std::string& badge, bool locked)
++{
++  if (data_dir.empty() || badge.empty())
++    return {};
++  return data_dir + "/achievements/badges/" + FileKey(badge) + (locked ? "_lock.png" : ".png");
++}
++
++std::string GameBadgePath(const std::string& data_dir, const std::string& badge)
++{
++  if (data_dir.empty() || badge.empty())
++    return {};
++  return data_dir + "/achievements/badges/game_" + FileKey(badge) + ".png";
++}
++
++std::vector<std::string> SavedKeys(const std::string& data_dir)
++{
++  std::vector<std::string> keys;
++  std::error_code error;
++  for (const auto& entry :
++       std::filesystem::directory_iterator(data_dir + "/achievements", error))
++  {
++    const std::filesystem::path path = entry.path();
++    if (path.extension() == ".txt")
++      keys.push_back(path.stem().string());
++  }
++  return keys;
++}
++
 +namespace
 +{
 +// One line per field: tabs and line breaks inside texts become spaces.
@@ -11414,9 +11727,7 @@ index 0000000..050384d
 +
 +std::string FilePath(const std::string& data_dir, const std::string& game)
 +{
-+  std::string name;
-+  for (const char c : game)
-+    name += std::isalnum(static_cast<unsigned char>(c)) ? c : '_';
++  const std::string name = FileKey(game);
 +  if (data_dir.empty() || name.empty())
 +    return {};
 +  return data_dir + "/achievements/" + name + ".txt";
@@ -11452,7 +11763,7 @@ index 0000000..050384d
 +  const std::string temp = path + ".tmp";
 +  {
 +    std::ofstream file(temp, std::ios::trunc);
-+    file << "game\t" << Clean(list.game) << '\n';
++    file << "game\t" << Clean(list.game) << '\t' << Clean(list.badge) << '\n';
 +    file << "summary\t" << list.unlocked << '\t' << list.total << '\t' << list.points << '\t'
 +         << list.points_total << '\t' << (list.hardcore ? 1 : 0) << '\t'
 +         << static_cast<int64_t>(std::time(nullptr)) << '\n';
@@ -11460,7 +11771,7 @@ index 0000000..050384d
 +    {
 +      file << "a\t" << (entry.unlocked ? 1 : 0) << '\t' << entry.points << '\t' << entry.unlock_time
 +           << '\t' << Clean(entry.title) << '\t' << Clean(entry.description) << '\t'
-+           << Clean(entry.progress) << '\n';
++           << Clean(entry.progress) << '\t' << Clean(entry.badge) << '\t' << entry.id << '\n';
 +    }
 +  }
 +  const int fd = open(temp.c_str(), O_RDONLY);
@@ -11490,6 +11801,8 @@ index 0000000..050384d
 +    if (f[0] == "game" && f.size() >= 2)
 +    {
 +      result.game = f[1];
++      if (f.size() >= 3)
++        result.badge = f[2];
 +    }
 +    else if (f[0] == "summary" && f.size() >= 7)
 +    {
@@ -11509,6 +11822,11 @@ index 0000000..050384d
 +      entry.title = f[4];
 +      entry.description = f[5];
 +      entry.progress = f[6];
++      if (f.size() >= 9)
++      {
++        entry.badge = f[7];
++        entry.id = static_cast<uint32_t>(std::atol(f[8].c_str()));
++      }
 +      result.entries.push_back(std::move(entry));
 +    }
 +  }
@@ -11519,10 +11837,10 @@ index 0000000..050384d
 +}  // namespace PS4Achievements
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.h b/Source/Core/DolphinNoGUI/PS4Settings.h
 new file mode 100755
-index 0000000..48cd393
+index 0000000..f382f5d
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.h
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,137 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11631,6 +11949,8 @@ index 0000000..48cd393
 +  std::string title;
 +  std::string description;
 +  std::string progress;  // "3/10" for measured achievements
++  std::string badge;     // RetroAchievements badge name (badges/<badge>.png, <badge>_lock.png)
++  uint32_t id = 0;
 +  uint32_t points = 0;
 +  bool unlocked = false;
 +  int64_t unlock_time = 0;
@@ -11638,6 +11958,7 @@ index 0000000..48cd393
 +struct List
 +{
 +  std::string game;
++  std::string badge;  // the game's icon (badges/game_<badge>.png)
 +  uint32_t unlocked = 0, total = 0, points = 0, points_total = 0;
 +  bool hardcore = false;
 +  int64_t saved = 0;
@@ -11647,6 +11968,15 @@ index 0000000..48cd393
 +void Save(const std::string& game, const List& list);
 +// The XMB: false when the game hasn't been played with RetroAchievements yet.
 +bool Load(const std::string& data_dir, const std::string& game, List* list);
++// The file name a game's list is saved under (letters and digits; others become '_').
++std::string FileKey(const std::string& game);
++// Every game with a saved list (FileKey names).
++std::vector<std::string> SavedKeys(const std::string& data_dir);
++// Badge pictures, saved by the game process: "" for no badge name.
++std::string BadgePath(const std::string& data_dir, const std::string& badge, bool locked);
++std::string GameBadgePath(const std::string& data_dir, const std::string& badge);
++// The settings' data folder (the game process).
++std::string DataDir();
 +}  // namespace PS4Achievements
 diff --git a/Source/Core/DolphinNoGUI/PS4Updater.cpp b/Source/Core/DolphinNoGUI/PS4Updater.cpp
 new file mode 100755
@@ -12086,10 +12416,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..6661aad
+index 0000000..1635488
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5615 @@
+@@ -0,0 +1,5758 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -12646,17 +12976,19 @@ index 0000000..6661aad
 +{
 +  Settings,
 +  Games,
++  Achievements,
 +  MemoryCards,
 +  Themes,
 +};
-+constexpr int CATEGORY_COUNT = 4;
-+constexpr const char* CATEGORY_NAMES[CATEGORY_COUNT] = {"Settings", "Games", "Memory Cards",
-+                                                        "Themes"};
++constexpr int CATEGORY_COUNT = 5;
++constexpr const char* CATEGORY_NAMES[CATEGORY_COUNT] = {"Settings", "Games", "Achievements",
++                                                        "Memory Cards", "Themes"};
 +// The Library style's tabs (L1 / R1), left to right, and their names.
-+constexpr Category TABS[] = {Category::Games, Category::MemoryCards, Category::Settings,
-+                             Category::Themes};
-+constexpr int TAB_COUNT = 4;
-+constexpr const char* TAB_NAMES[TAB_COUNT] = {"Library", "Memory Cards", "Settings", "Themes"};
++constexpr Category TABS[] = {Category::Games, Category::Achievements, Category::MemoryCards,
++                             Category::Settings, Category::Themes};
++constexpr int TAB_COUNT = 5;
++constexpr const char* TAB_NAMES[TAB_COUNT] = {"Library", "Achievements", "Memory Cards",
++                                              "Settings", "Themes"};
 +constexpr const char* SORT_NAMES[][2] = {
 +    {"title", "A-Z"}, {"recent", "Recently Played"}, {"platform", "Platform"}};
 +
@@ -12668,6 +13000,8 @@ index 0000000..6661aad
 +  int theme = -1;      // index into THEMES, or -2 - wallpaper index
 +  int setting = -1;
 +  int card = -1;  // index into the memory cards; CARD_NEW: "New Memory Card"
++  std::string ach_key;  // Achievements category: the game's saved list (PS4Achievements)
++  ImTextureID icon{};   // Achievements category: the game's badge
 +};
 +constexpr int CARD_NEW = -2;
 +
@@ -12757,7 +13091,31 @@ index 0000000..6661aad
 +  void UpdateCheatDownload();
 +  void OpenRiivolutionList(const Game& game);
 +  void OpenAchievementList(const Game& game);
++  void OpenAchievementKey(const std::string& key);
 +  PS4Achievements::List m_ach_view;  // the Achievements panel's list
++  // Badge pictures (achievements/badges), loaded once.
++  std::map<std::string, ImTextureID> m_badge_textures;
++  ImTextureID BadgeTexture(const std::string& path)
++  {
++    if (path.empty())
++      return ImTextureID{};
++    const auto it = m_badge_textures.find(path);
++    if (it != m_badge_textures.end())
++      return it->second;
++    const ImTextureID texture =
++        std::filesystem::exists(path) ? LoadPngTexture(path, nullptr) : ImTextureID{};
++    m_badge_textures[path] = texture;
++    return texture;
++  }
++  // "12 / 40 achievements" for a game's details ("" before it was played with them).
++  std::string AchievementText(const Game& game) const
++  {
++    PS4Achievements::List list;
++    if (!PS4Achievements::Load(m_data_dir, game.id.empty() ? game.title : game.id, &list) ||
++        list.total == 0)
++      return {};
++    return std::to_string(list.unlocked) + " / " + std::to_string(list.total) + " achievements";
++  }
 +  void BuildRiivolutionRows();
 +  void SaveRiivolutionConfig();
 +  void StartCoverDownload();
@@ -13449,6 +13807,9 @@ index 0000000..6661aad
 +    const std::string played = PS4PlayTime::Text(PlayTime(game));
 +    if (!played.empty())
 +      detail += (detail.empty() ? "" : "  -  ") + played;
++    const std::string achieved = AchievementText(game);
++    if (!achieved.empty())
++      detail += (detail.empty() ? "" : "  -  ") + achieved;
 +    if (game.discs > 1)
 +      detail += "  -  " + std::to_string(game.discs) + " discs";
 +    if (!m_prefs.default_game.empty() && game.path == m_prefs.default_game)
@@ -13457,6 +13818,46 @@ index 0000000..6661aad
 +  }
 +  if (games.empty())
 +    games.push_back({"No games found", "Copy games to " + GamesFolder() + ", then press Square"});
++
++  {
++    // Achievements: the account, then every game with a saved list (most recently played first).
++    auto& achievements = m_items[static_cast<int>(Category::Achievements)];
++    const std::string user = RaGet("Username"), token = RaGet("ApiToken");
++    achievements.push_back({"RetroAchievements",
++                            token.empty() ? "Not logged in - press Cross to log in" :
++                                            "Logged in as " + user,
++                            -1, -1, SET_ACHIEVEMENTS});
++    std::vector<std::pair<int64_t, Item>> found;
++    for (const std::string& key : PS4Achievements::SavedKeys(m_data_dir))
++    {
++      PS4Achievements::List list;
++      if (!PS4Achievements::Load(m_data_dir, key, &list))
++        continue;
++      std::string title = list.game;
++      for (const Game& game : m_games)
++      {
++        if (PS4Achievements::FileKey(game.id.empty() ? game.title : game.id) == key)
++          title = game.title;
++      }
++      Item item{title.empty() ? key : title,
++                std::to_string(list.unlocked) + " / " + std::to_string(list.total) +
++                    " achievements  -  " + std::to_string(list.points) + " / " +
++                    std::to_string(list.points_total) + " points"};
++      item.ach_key = key;
++      item.icon = BadgeTexture(PS4Achievements::GameBadgePath(m_data_dir, list.badge));
++      found.push_back({list.saved, item});
++    }
++    std::stable_sort(found.begin(), found.end(),
++                     [](const auto& a, const auto& b) { return a.first > b.first; });
++    for (auto& [saved, item] : found)
++      achievements.push_back(std::move(item));
++    if (found.empty())
++    {
++      achievements.push_back({"No achievements yet",
++                              "Log in, then play a game RetroAchievements supports", -1, -1,
++                              SET_ACHIEVEMENTS});
++    }
++  }
 +
 +  auto& cards = m_items[static_cast<int>(Category::MemoryCards)];
 +  for (size_t i = 0; i < m_cards.size(); i++)
@@ -14072,8 +14473,13 @@ index 0000000..6661aad
 +// The list the game saved the last time it ran with RetroAchievements (PS4Achievements).
 +void Menu::OpenAchievementList(const Game& game)
 +{
++  OpenAchievementKey(game.id.empty() ? game.title : game.id);
++}
++
++void Menu::OpenAchievementKey(const std::string& key)
++{
 +  m_ach_view = {};
-+  PS4Achievements::Load(m_data_dir, game.id.empty() ? game.title : game.id, &m_ach_view);
++  PS4Achievements::Load(m_data_dir, key, &m_ach_view);
 +  m_panel = {};
 +  m_panel.open = true;
 +  m_panel.setting = SET_ACHVIEW;
@@ -14108,6 +14514,7 @@ index 0000000..6661aad
 +      row.value = std::to_string(entry.points) + " pts";
 +      row.key = "ach:" + std::to_string(i);
 +      row.note = unlocked;  // gold points: earned
++      row.icon = BadgeTexture(PS4Achievements::BadgePath(m_data_dir, entry.badge, !unlocked));
 +      rows.push_back(row);
 +    }
 +  }
@@ -14756,6 +15163,9 @@ index 0000000..6661aad
 +                         "Play time: " + (PS4PlayTime::Text(PlayTime(game)).empty() ?
 +                                              std::string("None yet") :
 +                                              PS4PlayTime::Text(PlayTime(game))),
++                         "Achievements: " + (AchievementText(game).empty() ?
++                                                 std::string("None yet") :
++                                                 AchievementText(game)),
 +                         "File: " + std::filesystem::path(game.path).filename().string()};
 +        Play("confirm");
 +        return;
@@ -14883,6 +15293,12 @@ index 0000000..6661aad
 +// Cross on an item (both styles).
 +void Menu::ActivateItem(const Item& item)
 +{
++  if (!item.ach_key.empty())
++  {
++    OpenAchievementKey(item.ach_key);
++    Play("menu");
++    return;
++  }
 +  if (item.game >= 0 && CenterFor(m_games[item.game].id) &&
 +      PS4Center::Choice(m_games[item.game].id).empty())
 +  {
@@ -15244,6 +15660,22 @@ index 0000000..6661aad
 +  case Category::MemoryCards:
 +    DrawMemoryCardIcon(dl, c, s * 0.95f, color, IM_COL32(0, 0, 0, 110));
 +    break;
++  case Category::Achievements:
++  {
++    // A trophy: the cup, its handles, the stem and the base.
++    const float w = r * 0.56f, top = c.y - r * 0.78f, mid = c.y - r * 0.3f;
++    dl->PathArcTo(ImVec2(c.x, mid), w, 0.0f, 3.14159265f, 24);
++    dl->PathLineTo(ImVec2(c.x - w, top));
++    dl->PathLineTo(ImVec2(c.x + w, top));
++    dl->PathFillConvex(color);
++    dl->AddCircle(ImVec2(c.x - w, c.y - r * 0.5f), r * 0.24f, color, 20, r * 0.1f);
++    dl->AddCircle(ImVec2(c.x + w, c.y - r * 0.5f), r * 0.24f, color, 20, r * 0.1f);
++    dl->AddRectFilled(ImVec2(c.x - r * 0.09f, c.y + r * 0.2f), ImVec2(c.x + r * 0.09f, c.y + r * 0.6f),
++                      color);
++    dl->AddRectFilled(ImVec2(c.x - r * 0.42f, c.y + r * 0.58f),
++                      ImVec2(c.x + r * 0.42f, c.y + r * 0.82f), color, r * 0.08f);
++    break;
++  }
 +  case Category::Themes:
 +  {
 +    // A palette with paint dots.
@@ -15308,6 +15740,25 @@ index 0000000..6661aad
 +    }
 +    if (selected && game.cover == ImTextureID{})
 +      dl->AddRect(icon_min, icon_max, Rgba(theme.text, alpha * 0.9f), 8.0f, 0, 3.0f);
++  }
++  else if (!item.ach_key.empty())
++  {
++    const float b = icon_h * 0.95f;
++    if (item.icon != ImTextureID{})
++    {
++      dl->AddImageRounded(ImTextureRef(item.icon), ImVec2(x - b * 0.5f, y - b * 0.5f),
++                          ImVec2(x + b * 0.5f, y + b * 0.5f), ImVec2(0, 0), ImVec2(1, 1),
++                          IM_COL32(255, 255, 255, static_cast<int>(alpha * 255)), 8.0f);
++    }
++    else
++    {
++      DrawCategoryIcon(dl, Category::Achievements, ImVec2(x, y), b * 0.8f, text);
++    }
++    if (selected)
++    {
++      dl->AddRect(ImVec2(x - b * 0.5f, y - b * 0.5f), ImVec2(x + b * 0.5f, y + b * 0.5f),
++                  Rgba(theme.text, alpha * 0.9f), 8.0f, 0, 3.0f);
++    }
 +  }
 +  else if (item.theme != -1)
 +  {
@@ -16199,6 +16650,9 @@ index 0000000..6661aad
 +  const std::string played = PS4PlayTime::Text(PlayTime(game));
 +  if (!played.empty())
 +    info += "  -  " + played;
++  const std::string achieved = AchievementText(game);
++  if (!achieved.empty())
++    info += "  -  " + achieved;
 +  if (game.discs > 1)
 +    info += "  -  " + std::to_string(game.discs) + " discs";
 +  if (!m_prefs.default_game.empty() && game.path == m_prefs.default_game)
@@ -16358,10 +16812,13 @@ index 0000000..6661aad
 +  const int c = m_category;
 +  const auto& items = m_items[c];
 +  const bool themes = c == static_cast<int>(Category::Themes);
-+  Text(dl, m_bold, 50, ImVec2(90, 150), Rgba(theme.text, alpha), themes ? "Themes" : "Settings");
++  const bool achievements = c == static_cast<int>(Category::Achievements);
++  Text(dl, m_bold, 50, ImVec2(90, 150), Rgba(theme.text, alpha),
++       achievements ? "Achievements" : themes ? "Themes" : "Settings");
 +  Text(dl, m_bold, 26, ImVec2(92, 214), Rgba(theme.wave, alpha * 0.85f),
-+       themes ? "Colours and wallpapers (PNG in " + m_data_dir + "/themes)" :
-+                "Emulation, controls, updates and more",
++       achievements ? std::string("RetroAchievements: your progress, game by game") :
++       themes       ? "Colours and wallpapers (PNG in " + m_data_dir + "/themes)" :
++                      std::string("Emulation, controls, updates and more"),
 +       false);
 +  constexpr float X = 90.0f, ROW_H = 84.0f, TOP = 280.0f, BOTTOM = 960.0f;
 +  const float right = W - 90.0f;
@@ -16405,6 +16862,22 @@ index 0000000..6661aad
 +      }
 +      dl->AddRect(s0, s1, Rgba(theme.text, alpha * 0.4f), 6.0f, 0, 1.5f);
 +      tx = X + 170;
++    }
++    else if (!item.ach_key.empty() || achievements)
++    {
++      const float b = ROW_H - 30;
++      const ImVec2 b0(X + 22, y + 9), b1(X + 22 + b, y + 9 + b);
++      if (item.icon != ImTextureID{})
++      {
++        dl->AddImageRounded(ImTextureRef(item.icon), b0, b1, ImVec2(0, 0), ImVec2(1, 1),
++                            IM_COL32(255, 255, 255, static_cast<int>(alpha * 255)), 6.0f);
++      }
++      else
++      {
++        DrawCategoryIcon(dl, Category::Achievements, ImVec2(X + 22 + b * 0.5f, y + 9 + b * 0.5f),
++                         b * 0.8f, Rgba(theme.text, alpha * 0.85f));
++      }
++      tx = X + 22 + b + 24;
 +    }
 +    Text(dl, sel ? m_bold : m_font, 32, ImVec2(tx, y + 18), Rgba(theme.text, alpha), item.label);
 +    const float dw = TextWidth(m_font, 26, item.detail);
