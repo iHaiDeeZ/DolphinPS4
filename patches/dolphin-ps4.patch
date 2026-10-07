@@ -8089,10 +8089,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..2bd2b6e
+index 0000000..9d107c2
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,1448 @@
+@@ -0,0 +1,1610 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -8103,6 +8103,7 @@ index 0000000..2bd2b6e
 +#include <chrono>
 +#include <cmath>
 +#include <cstdio>
++#include <ctime>
 +#include <mutex>
 +#include <string>
 +#include <thread>
@@ -8175,6 +8176,7 @@ index 0000000..2bd2b6e
 +  MAIN_RESTART,
 +  MAIN_QUIT,
 +  MAIN_CONTROLS,
++  MAIN_ACHIEVEMENTS,
 +  MAIN_COUNT,
 +};
 +
@@ -8184,6 +8186,7 @@ index 0000000..2bd2b6e
 +  Settings,
 +  Cheats,
 +  Controls,
++  Achievements,
 +};
 +
 +// One line of the menu as drawn (prepared by the host thread, drawn by the video thread).
@@ -8216,6 +8219,7 @@ index 0000000..2bd2b6e
 +bool s_ctl_capture_armed = false;
 +std::chrono::steady_clock::time_point s_ctl_capture_start;
 +std::string s_playtime;  // "Play time: 3 h 12 min" under the title (the menu's game)
++std::string s_detail;    // Achievements page: the selected achievement's description
 +
 +// Play time of the running game: counted while it runs (not paused, menu closed), written to
 +// playtime.ini every minute and when the game is quit.
@@ -8227,6 +8231,84 @@ index 0000000..2bd2b6e
 +{
 +  const std::string id = SConfig::GetInstance().GetGameID();
 +  return id.empty() || id == "00000000" ? SConfig::GetInstance().GetTitleName() : id;
++}
++
++// Achievements page (host thread): the running game's list, read when the menu opens.
++PS4Achievements::List s_ach;
++
++std::string ShortDate(int64_t when)
++{
++  if (when <= 0)
++    return {};
++  const std::time_t then = static_cast<std::time_t>(when);
++  std::tm day = {};
++  localtime_r(&then, &day);
++  char text[32];
++  std::strftime(text, sizeof(text), "%b %e, %Y", &day);
++  return text;
++}
++
++std::string FitText(const std::string& text, size_t max)
++{
++  return text.size() <= max ? text : text.substr(0, max - 3) + "...";
++}
++
++// The game's achievements from RetroAchievements (false: none loaded - not logged in, or a game
++// RetroAchievements doesn't know).
++bool CaptureAchievements(PS4Achievements::List* out)
++{
++#ifdef USE_RETRO_ACHIEVEMENTS
++  auto& manager = AchievementManager::GetInstance();
++  std::lock_guard lock(manager.GetLock());
++  rc_client_t* client = manager.GetClient();
++  if (!client || !rc_client_is_game_loaded(client))
++    return false;
++  PS4Achievements::List list;
++  rc_client_user_game_summary_t summary{};
++  rc_client_get_user_game_summary(client, &summary);
++  const rc_client_game_t* game = rc_client_get_game_info(client);
++  list.game = game && game->title ? game->title : "";
++  list.unlocked = summary.num_unlocked_achievements;
++  list.total = summary.num_core_achievements;
++  list.points = summary.points_unlocked;
++  list.points_total = summary.points_core;
++  list.hardcore = rc_client_get_hardcore_enabled(client) != 0;
++  rc_client_achievement_list_t* achievements = rc_client_create_achievement_list(
++      client, RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE, RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
++  if (achievements)
++  {
++    for (uint32_t b = 0; b < achievements->num_buckets; b++)
++    {
++      const rc_client_achievement_bucket_t& bucket = achievements->buckets[b];
++      for (uint32_t i = 0; i < bucket.num_achievements; i++)
++      {
++        const rc_client_achievement_t* a = bucket.achievements[i];
++        PS4Achievements::Entry entry;
++        entry.title = a->title ? a->title : "";
++        entry.description = a->description ? a->description : "";
++        entry.progress = a->measured_progress;
++        entry.points = a->points;
++        entry.unlocked = a->state == RC_CLIENT_ACHIEVEMENT_STATE_UNLOCKED;
++        entry.unlock_time = static_cast<int64_t>(a->unlock_time);
++        list.entries.push_back(std::move(entry));
++      }
++    }
++    rc_client_destroy_achievement_list(achievements);
++  }
++  *out = std::move(list);
++  return true;
++#else
++  (void)out;
++  return false;
++#endif
++}
++
++// Saved for the XMB (Triangle on the game -> Achievements).
++void SaveAchievements()
++{
++  PS4Achievements::List list;
++  if (CaptureAchievements(&list))
++    PS4Achievements::Save(PlayKey(), list);
 +}
 +
 +void FlushPlayTime()
@@ -8383,6 +8465,10 @@ index 0000000..2bd2b6e
 +      case MAIN_CHEATS:
 +        rows.push_back({"Cheats"});
 +        break;
++      case MAIN_ACHIEVEMENTS:
++        rows.push_back({"Achievements",
++                        std::to_string(s_ach.unlocked) + " / " + std::to_string(s_ach.total)});
++        break;
 +      case MAIN_RESTART:
 +        rows.push_back({"Restart Game"});
 +        break;
@@ -8429,6 +8515,44 @@ index 0000000..2bd2b6e
 +    selected = s_settings_selected;
 +    subtitle = own ? "CONTROLS - THIS GAME" : "CONTROLS - ALL GAMES";
 +    hints = {{Glyph::Cross, "Change"}, {Glyph::UpDown, "Move"}, {Glyph::Circle, "Back"}};
++  }
++  else if (s_page == Page::Achievements)
++  {
++    rows.push_back({std::to_string(s_ach.unlocked) + " of " + std::to_string(s_ach.total) +
++                        " unlocked  -  " + std::to_string(s_ach.points) + " / " +
++                        std::to_string(s_ach.points_total) + " points" +
++                        (s_ach.hardcore ? "  -  Hardcore" : ""),
++                    "", true});
++    keys.push_back("");
++    for (int pass = 0; pass < 2; pass++)
++    {
++      const bool unlocked = pass == 0;
++      bool any = false;
++      for (size_t i = 0; i < s_ach.entries.size(); i++)
++      {
++        const PS4Achievements::Entry& entry = s_ach.entries[i];
++        if (entry.unlocked != unlocked)
++          continue;
++        if (!any)
++        {
++          rows.push_back({unlocked ? "Unlocked" : "Locked", "", true});
++          keys.push_back("");
++          any = true;
++        }
++        Row row{FitText(entry.title, 34), std::to_string(entry.points) + " pts"};
++        row.note = unlocked;  // gold points: earned
++        rows.push_back(row);
++        keys.push_back("ach:" + std::to_string(i));
++      }
++    }
++    if (s_ach.entries.empty())
++    {
++      rows.push_back({"No achievements for this game", "", true});
++      keys.push_back("");
++    }
++    selected = s_settings_selected;
++    subtitle = "ACHIEVEMENTS";
++    hints = {{Glyph::UpDown, "Move"}, {Glyph::Circle, "Back"}};
 +  }
 +  else if (s_page == Page::Cheats)
 +  {
@@ -8490,8 +8614,24 @@ index 0000000..2bd2b6e
 +    subtitle = custom ? "SETTINGS - THIS GAME" : "SETTINGS - ALL GAMES";
 +    hints = {{Glyph::LeftRight, "Change"}, {Glyph::UpDown, "Move"}, {Glyph::Circle, "Back"}};
 +  }
++  std::string detail;
++  if (s_page == Page::Achievements && selected >= 0 && selected < static_cast<int>(keys.size()) &&
++      keys[selected].rfind("ach:", 0) == 0)
++  {
++    const size_t index = static_cast<size_t>(std::atoi(keys[selected].c_str() + 4));
++    if (index < s_ach.entries.size())
++    {
++      const PS4Achievements::Entry& entry = s_ach.entries[index];
++      detail = entry.title + ": " + entry.description;
++      if (!entry.progress.empty())
++        detail += "  (" + entry.progress + ")";
++      if (entry.unlocked && entry.unlock_time > 0)
++        detail += "  -  Unlocked " + ShortDate(entry.unlock_time);
++    }
++  }
 +  s_row_keys = std::move(keys);
 +  std::lock_guard lock(s_mutex);
++  s_detail = std::move(detail);
 +  s_rows = std::move(rows);
 +  s_selected = selected;
 +  s_subtitle = subtitle;
@@ -8533,8 +8673,14 @@ index 0000000..2bd2b6e
 +    s_main_items.push_back(MAIN_WII_EXTENSION);
 +    s_main_items.push_back(MAIN_WII_SIDEWAYS);
 +  }
-+  s_main_items.insert(s_main_items.end(),
-+                      {MAIN_CONTROLS, MAIN_SETTINGS, MAIN_CHEATS, MAIN_RESTART, MAIN_QUIT});
++  s_main_items.insert(s_main_items.end(), {MAIN_CONTROLS, MAIN_SETTINGS, MAIN_CHEATS});
++  s_ach = {};
++  if (CaptureAchievements(&s_ach))
++  {
++    s_main_items.push_back(MAIN_ACHIEVEMENTS);
++    PS4Achievements::Save(PlayKey(), s_ach);
++  }
++  s_main_items.insert(s_main_items.end(), {MAIN_RESTART, MAIN_QUIT});
 +  BuildRows();
 +  FlushPlayTime();
 +  const std::string played = PS4PlayTime::Text(PS4PlayTime::Seconds(PlayKey()));
@@ -8661,7 +8807,7 @@ index 0000000..2bd2b6e
 +// Changes the setting on a settings row (direction -1/+1) and saves it.
 +void ChangeSetting(int row, int direction)
 +{
-+  if (row < 0 || row >= static_cast<int>(s_row_keys.size()))
++  if (row < 0 || row >= static_cast<int>(s_row_keys.size()) || s_page == Page::Achievements)
 +    return;
 +  if (s_page == Page::Controls)
 +  {
@@ -8809,6 +8955,7 @@ index 0000000..2bd2b6e
 +void QuitToXMB(Core::System& system, const char* why)
 +{
 +  FlushPlayTime();
++  SaveAchievements();
 +  Log(why);
 +  s_quit = true;
 +  s_quit_time = Clock::now();
@@ -9022,6 +9169,15 @@ index 0000000..2bd2b6e
 +    s_page = Page::Controls;
 +    s_settings_selected = 0;
 +    break;
++  case MAIN_ACHIEVEMENTS:
++    s_page = Page::Achievements;
++    CaptureAchievements(&s_ach);
++    s_settings_selected = 0;
++    BuildRows();
++    SelectableMove(1);
++    if (!s_row_keys.empty() && s_row_keys[s_settings_selected].empty())
++      s_settings_selected = 0;
++    break;
 +  case MAIN_CHEATS:
 +    s_page = Page::Cheats;
 +    s_cheats.Load(s_game_id, SConfig::GetInstance().GetRevision());
@@ -9164,7 +9320,7 @@ index 0000000..2bd2b6e
 +
 +    // The list scrolls to keep the selection in view.
 +    const float row_h = 62.0f * s;
-+    const float top = 220.0f * s, bottom = size.y - 160.0f * s;
++    const float top = 220.0f * s, bottom = size.y - (s_detail.empty() ? 160.0f : 280.0f) * s;
 +    const float visible = (bottom - top) / row_h;
 +    const float target = std::clamp(static_cast<float>(s_selected) - visible * 0.5f + 1.0f, 0.0f,
 +                                    std::max(0.0f, static_cast<float>(s_rows.size()) - visible));
@@ -9217,6 +9373,11 @@ index 0000000..2bd2b6e
 +      }
 +    }
 +    dl->PopClipRect();
++    if (!s_detail.empty())
++    {
++      dl->AddText(regular, 26 * s, ImVec2(x0 + 70 * s, bottom + 26 * s), dim, s_detail.c_str(),
++                  nullptr, panel_w - 140 * s);
++    }
 +
 +    // Button hints with icons.
 +    float hx = x0 + 70 * s;
@@ -9419,6 +9580,7 @@ index 0000000..2bd2b6e
 +    {
 +      s_play_flushed = now;
 +      FlushPlayTime();
++      SaveAchievements();
 +    }
 +  }
 +
@@ -10472,10 +10634,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..20b17f0
+index 0000000..050384d
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,755 @@
+@@ -0,0 +1,879 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10487,8 +10649,11 @@ index 0000000..20b17f0
 +#include <map>
 +#include <mutex>
 +
++#include <cctype>
 +#include <cstdio>
++#include <ctime>
 +#include <fcntl.h>
++#include <sys/stat.h>
 +#include <unistd.h>
 +
 +#include "Common/Config/Config.h"
@@ -11231,12 +11396,133 @@ index 0000000..20b17f0
 +  return std::to_string(hours) + " h" + (minutes % 60 ? " " + std::to_string(minutes % 60) + " min" : "");
 +}
 +}  // namespace PS4PlayTime
++
++namespace PS4Achievements
++{
++namespace
++{
++// One line per field: tabs and line breaks inside texts become spaces.
++std::string Clean(std::string text)
++{
++  for (char& c : text)
++  {
++    if (c == '\t' || c == '\n' || c == '\r')
++      c = ' ';
++  }
++  return text;
++}
++
++std::string FilePath(const std::string& data_dir, const std::string& game)
++{
++  std::string name;
++  for (const char c : game)
++    name += std::isalnum(static_cast<unsigned char>(c)) ? c : '_';
++  if (data_dir.empty() || name.empty())
++    return {};
++  return data_dir + "/achievements/" + name + ".txt";
++}
++
++std::vector<std::string> Fields(const std::string& line)
++{
++  std::vector<std::string> fields;
++  size_t start = 0;
++  while (true)
++  {
++    const size_t tab = line.find('\t', start);
++    fields.push_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start));
++    if (tab == std::string::npos)
++      break;
++    start = tab + 1;
++  }
++  return fields;
++}
++}  // namespace
++
++void Save(const std::string& game, const List& list)
++{
++  std::string data_dir;
++  {
++    std::lock_guard lock(PS4Settings::s_mutex);
++    data_dir = PS4Settings::s_data_dir;
++  }
++  const std::string path = FilePath(data_dir, game);
++  if (path.empty())
++    return;
++  mkdir((data_dir + "/achievements").c_str(), 0777);
++  const std::string temp = path + ".tmp";
++  {
++    std::ofstream file(temp, std::ios::trunc);
++    file << "game\t" << Clean(list.game) << '\n';
++    file << "summary\t" << list.unlocked << '\t' << list.total << '\t' << list.points << '\t'
++         << list.points_total << '\t' << (list.hardcore ? 1 : 0) << '\t'
++         << static_cast<int64_t>(std::time(nullptr)) << '\n';
++    for (const Entry& entry : list.entries)
++    {
++      file << "a\t" << (entry.unlocked ? 1 : 0) << '\t' << entry.points << '\t' << entry.unlock_time
++           << '\t' << Clean(entry.title) << '\t' << Clean(entry.description) << '\t'
++           << Clean(entry.progress) << '\n';
++    }
++  }
++  const int fd = open(temp.c_str(), O_RDONLY);
++  if (fd >= 0)
++  {
++    fsync(fd);
++    close(fd);
++  }
++  std::rename(temp.c_str(), path.c_str());
++}
++
++bool Load(const std::string& data_dir, const std::string& game, List* list)
++{
++  const std::string path = FilePath(data_dir, game);
++  if (path.empty())
++    return false;
++  std::ifstream file(path);
++  if (!file)
++    return false;
++  List result;
++  std::string line;
++  while (std::getline(file, line))
++  {
++    while (!line.empty() && line.back() == '\r')
++      line.pop_back();
++    const std::vector<std::string> f = Fields(line);
++    if (f[0] == "game" && f.size() >= 2)
++    {
++      result.game = f[1];
++    }
++    else if (f[0] == "summary" && f.size() >= 7)
++    {
++      result.unlocked = static_cast<uint32_t>(std::atol(f[1].c_str()));
++      result.total = static_cast<uint32_t>(std::atol(f[2].c_str()));
++      result.points = static_cast<uint32_t>(std::atol(f[3].c_str()));
++      result.points_total = static_cast<uint32_t>(std::atol(f[4].c_str()));
++      result.hardcore = f[5] == "1";
++      result.saved = std::atoll(f[6].c_str());
++    }
++    else if (f[0] == "a" && f.size() >= 7)
++    {
++      Entry entry;
++      entry.unlocked = f[1] == "1";
++      entry.points = static_cast<uint32_t>(std::atol(f[2].c_str()));
++      entry.unlock_time = std::atoll(f[3].c_str());
++      entry.title = f[4];
++      entry.description = f[5];
++      entry.progress = f[6];
++      result.entries.push_back(std::move(entry));
++    }
++  }
++  if (list)
++    *list = std::move(result);
++  return true;
++}
++}  // namespace PS4Achievements
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.h b/Source/Core/DolphinNoGUI/PS4Settings.h
 new file mode 100755
-index 0000000..036b351
+index 0000000..48cd393
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.h
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,125 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11335,6 +11621,33 @@ index 0000000..036b351
 +// "3 h 12 min", "12 min", "Less than a minute"; empty for 0.
 +std::string Text(int64_t seconds);
 +}  // namespace PS4PlayTime
++
++// RetroAchievements: the running game saves its achievement list (achievements/<game>.txt, every
++// minute and when it quits), so the XMB can show it without signing in or going online.
++namespace PS4Achievements
++{
++struct Entry
++{
++  std::string title;
++  std::string description;
++  std::string progress;  // "3/10" for measured achievements
++  uint32_t points = 0;
++  bool unlocked = false;
++  int64_t unlock_time = 0;
++};
++struct List
++{
++  std::string game;
++  uint32_t unlocked = 0, total = 0, points = 0, points_total = 0;
++  bool hardcore = false;
++  int64_t saved = 0;
++  std::vector<Entry> entries;
++};
++// The game process (the settings' data folder).
++void Save(const std::string& game, const List& list);
++// The XMB: false when the game hasn't been played with RetroAchievements yet.
++bool Load(const std::string& data_dir, const std::string& game, List* list);
++}  // namespace PS4Achievements
 diff --git a/Source/Core/DolphinNoGUI/PS4Updater.cpp b/Source/Core/DolphinNoGUI/PS4Updater.cpp
 new file mode 100755
 index 0000000..56e00cd
@@ -11773,10 +12086,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..f6512db
+index 0000000..6661aad
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5537 @@
+@@ -0,0 +1,5615 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -12377,6 +12690,7 @@ index 0000000..f6512db
 +  SET_MEMCARD,       // a memory card: Slot A and the saves on it
 +  SET_ACHIEVEMENTS,  // RetroAchievements: account and options
 +  SET_WIIMENU,       // Wii Menu: install it from Nintendo, start it or the Mii Channel
++  SET_ACHVIEW,       // a game's achievements (saved by the game while it ran)
 +  SET_GROUP = 100,  // + index into PS4Settings::Categories(): an emulation settings list
 +};
 +
@@ -12442,6 +12756,8 @@ index 0000000..f6512db
 +  void BuildCheatRows();
 +  void UpdateCheatDownload();
 +  void OpenRiivolutionList(const Game& game);
++  void OpenAchievementList(const Game& game);
++  PS4Achievements::List m_ach_view;  // the Achievements panel's list
 +  void BuildRiivolutionRows();
 +  void SaveRiivolutionConfig();
 +  void StartCoverDownload();
@@ -13388,6 +13704,8 @@ index 0000000..f6512db
 +    direction = 1;
 +  if (m_panel.selected < 0 || m_panel.selected >= static_cast<int>(m_panel.rows.size()))
 +    return;
++  if (m_panel.setting == SET_ACHVIEW)
++    return;  // a list to read
 +  if (m_panel.setting == SET_WIIMENU)
 +  {
 +    static const char* const REGIONS[] = {"USA", "EUR", "JPN", "KOR"};
@@ -13751,6 +14069,53 @@ index 0000000..f6512db
 +// Riivolution: mods as on a Wii's SD card, in User/Load/Riivolution (its riivolution folder with
 +// the XMLs, and the mod's own folders). The choices go in riivolution/config/<ID4>.xml, the file
 +// Riivolution and Dolphin on PC use; the game process applies them (MainNoGUI).
++// The list the game saved the last time it ran with RetroAchievements (PS4Achievements).
++void Menu::OpenAchievementList(const Game& game)
++{
++  m_ach_view = {};
++  PS4Achievements::Load(m_data_dir, game.id.empty() ? game.title : game.id, &m_ach_view);
++  m_panel = {};
++  m_panel.open = true;
++  m_panel.setting = SET_ACHVIEW;
++  m_panel.title = "Achievements";
++  std::vector<SettingRow> rows;
++  SettingRow summary;
++  summary.label = std::to_string(m_ach_view.unlocked) + " of " + std::to_string(m_ach_view.total) +
++                  " unlocked  -  " + std::to_string(m_ach_view.points) + " / " +
++                  std::to_string(m_ach_view.points_total) + " points" +
++                  (m_ach_view.hardcore ? "  -  Hardcore" : "");
++  summary.header = true;
++  rows.push_back(summary);
++  for (int pass = 0; pass < 2; pass++)
++  {
++    const bool unlocked = pass == 0;
++    bool any = false;
++    for (size_t i = 0; i < m_ach_view.entries.size(); i++)
++    {
++      const PS4Achievements::Entry& entry = m_ach_view.entries[i];
++      if (entry.unlocked != unlocked)
++        continue;
++      if (!any)
++      {
++        SettingRow header;
++        header.label = unlocked ? "Unlocked" : "Locked";
++        header.header = true;
++        rows.push_back(header);
++        any = true;
++      }
++      SettingRow row;
++      row.label = entry.title.size() > 40 ? entry.title.substr(0, 37) + "..." : entry.title;
++      row.value = std::to_string(entry.points) + " pts";
++      row.key = "ach:" + std::to_string(i);
++      row.note = unlocked;  // gold points: earned
++      rows.push_back(row);
++    }
++  }
++  m_panel.rows = std::move(rows);
++  m_panel.selected = 0;
++  MoveSettingRow(0);
++}
++
 +void Menu::OpenRiivolutionList(const Game& game)
 +{
 +  m_panel = {};
@@ -14339,6 +14704,13 @@ index 0000000..f6512db
 +        Play("menu");
 +        return;
 +      }
++      else if (m_panel.title == "Game" && m_panel.options[m_panel.selected] == "Achievements")
++      {
++        const Item& item = m_items[m_category][m_selected[m_category]];
++        OpenAchievementList(m_games[item.game]);
++        Play("confirm");
++        return;
++      }
 +      else if (m_panel.title == "Game" && m_panel.options[m_panel.selected] == "Riivolution Patches")
 +      {
 +        const Item& item = m_items[m_category][m_selected[m_category]];
@@ -14493,6 +14865,11 @@ index 0000000..f6512db
 +        m_panel.options.push_back("Play Online (Wiimmfi)");
 +      }
 +      m_panel.options.push_back("Controls");
++      {
++        const Game& game = m_games[items[selected].game];
++        if (PS4Achievements::Load(m_data_dir, game.id.empty() ? game.title : game.id, nullptr))
++          m_panel.options.push_back("Achievements");
++      }
 +      m_panel.options.push_back("Delete Game");
 +      Play("menu");
 +    }
@@ -15156,6 +15533,19 @@ index 0000000..f6512db
 +        help = "Applies the next time the game starts, or now from the in-game menu (L3+R3).";
 +      else if (row.key.rfind("riiv:", 0) == 0)
 +        help = "Applies the next time the game starts.";
++      else if (row.key.rfind("ach:", 0) == 0)
++      {
++        const size_t index = std::strtoul(row.key.c_str() + 4, nullptr, 10);
++        if (index < m_ach_view.entries.size())
++        {
++          const PS4Achievements::Entry& entry = m_ach_view.entries[index];
++          help = entry.description;
++          if (!entry.progress.empty())
++            help += "  (" + entry.progress + ")";
++          if (entry.unlocked && entry.unlock_time > 0)
++            help += "\nUnlocked " + DateText(entry.unlock_time);
++        }
++      }
 +      else if (row.key == "ra:info")
 +        help = "Your retroachievements.org account (free to make on the website).";
 +      else if (row.key == "ra:user")
@@ -15166,7 +15556,8 @@ index 0000000..f6512db
 +      else if (row.key == "ra:logout")
 +        help = "Forgets the login on this PS4.";
 +      else if (row.key == "ra:enabled")
-+        help = "Achievements unlock while you play (needs a logged-in account). Next game start.";
++        help = "Achievements unlock while you play (needs a logged-in account). See them with "
++               "L3+R3 in the game, or Triangle on the game. Next game start.";
 +      else if (row.key == "ra:hardcore")
 +        help = "No save states, cheats or slow motion - unlocks count double. Next game start.";
 +      else if (row.scope)

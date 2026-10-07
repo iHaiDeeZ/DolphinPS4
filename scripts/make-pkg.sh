@@ -44,8 +44,7 @@ if [ "${SFO_STYLE:-retroarch}" = retroarch ]; then
     # RetroArch for PS4's launch parameters: with the OpenOrbis sample values
     # the shell's Piglet never returns an EGL display (verified by love-ps4).
     set_entry APP_TYPE Integer 4 0
-    # 0x20: system dialogs (keyboard) confirm with the system setting (Cross), not Circle (0x2).
-    set_entry ATTRIBUTE Integer 4 0x20814034
+    set_entry ATTRIBUTE Integer 4 0x20814016
     set_entry ATTRIBUTE2 Integer 4 0x6
     set_entry CATEGORY Utf8 4 gde
     set_entry FORMAT Utf8 4 obs
@@ -53,7 +52,9 @@ if [ "${SFO_STYLE:-retroarch}" = retroarch ]; then
 else
     # Plain OpenOrbis/PSChrome values (known to launch with the default PAID).
     set_entry APP_TYPE Integer 4 1
-    set_entry ATTRIBUTE Integer 4 0
+    # 0x2: system dialogs (the keyboard) confirm with Cross. Without it they follow the
+    # console's region default, which is Circle on some consoles.
+    set_entry ATTRIBUTE Integer 4 0x2
     set_entry CATEGORY Utf8 4 gd
     set_entry SYSTEM_VER Integer 4 0
 fi
