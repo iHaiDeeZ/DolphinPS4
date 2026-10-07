@@ -1498,10 +1498,23 @@ index 9d15477..ac60cc5 100644
  
  struct WindowSystemInfo
 diff --git a/Source/Core/Core/AchievementManager.cpp b/Source/Core/Core/AchievementManager.cpp
-index ec0fee2..133c548 100644
+index ec0fee2..46c565c 100644
 --- a/Source/Core/Core/AchievementManager.cpp
 +++ b/Source/Core/Core/AchievementManager.cpp
-@@ -933,6 +933,14 @@ void AchievementManager::LoginCallback(int result, const char* error_message, rc
+@@ -50,6 +50,12 @@
+ #ifdef ANDROID
+ static const Common::HttpRequest::Headers USER_AGENT_HEADER = {
+     {"User-Agent", Common::GetUserAgentStr() + " (Android)"}};
++#elif defined(__ORBIS__)
++// The Dolphin this port is built from, as RetroAchievements knows it: upstream 2609-9 (the
++// release 2609 and 9 commits, 771fb15). The port's own tag (SCM_DESC_STR, "stable-v03.xx") read
++// as an unknown old Dolphin there, and every game's achievements were refused.
++static const Common::HttpRequest::Headers USER_AGENT_HEADER = {
++    {"User-Agent", "Dolphin/2609-9 (PS4)"}};
+ #else   // ANDROID
+ static const Common::HttpRequest::Headers USER_AGENT_HEADER = {
+     {"User-Agent", Common::GetUserAgentStr()}};
+@@ -933,6 +939,14 @@ void AchievementManager::LoginCallback(int result, const char* error_message, rc
    {
      WARN_LOG_FMT(ACHIEVEMENTS, "Failed to login {} to RetroAchievements server.",
                   Config::Get(Config::RA_USERNAME));
@@ -1516,7 +1529,7 @@ index ec0fee2..133c548 100644
      Config::SetBaseOrCurrent(Config::RA_API_TOKEN, "");
      instance.update_event.Trigger({.failed_login_code = result});
      instance.login_event.Trigger(result);
-@@ -962,6 +970,10 @@ void AchievementManager::LoginCallback(int result, const char* error_message, rc
+@@ -962,6 +976,10 @@ void AchievementManager::LoginCallback(int result, const char* error_message, rc
  
    INFO_LOG_FMT(ACHIEVEMENTS, "Successfully logged in {} to RetroAchievements server.",
                 user->username);
@@ -1527,7 +1540,23 @@ index ec0fee2..133c548 100644
    std::lock_guard lg{instance.GetLock()};
    Config::SetBaseOrCurrent(Config::RA_API_TOKEN, user->token);
    instance.FetchPlayerBadge();
-@@ -1138,10 +1150,27 @@ void AchievementManager::DisplayWelcomeMessage()
+@@ -1011,6 +1029,15 @@ void AchievementManager::LoadGameCallback(int result, const char* error_message,
+ {
+   auto& instance = AchievementManager::GetInstance();
+   instance.m_loading_volume.reset(nullptr);
++#ifdef __ORBIS__
++  if (ps4_achievement_game)
++  {
++    const rc_client_game_t* loaded = result == RC_OK ? rc_client_get_game_info(client) : nullptr;
++    ps4_achievement_game(result, loaded && loaded->title ? loaded->title :
++                                 error_message      ? error_message :
++                                                      "");
++  }
++#endif
+   if (result == RC_API_FAILURE)
+   {
+     WARN_LOG_FMT(ACHIEVEMENTS, "Load data request rejected for old Dolphin version.");
+@@ -1138,10 +1165,28 @@ void AchievementManager::DisplayWelcomeMessage()
                    OSD::Duration::VERY_LONG, color);
  }
  
@@ -1536,6 +1565,7 @@ index ec0fee2..133c548 100644
 +void (*ps4_achievement_unlocked)(u32 id, const char* title, const char* description, u32 points,
 +                                 bool hardcore) = nullptr;
 +void (*ps4_achievement_login)(int result, const char* text) = nullptr;
++void (*ps4_achievement_game)(int result, const char* text) = nullptr;
 +#endif
 +
  void AchievementManager::HandleAchievementTriggeredEvent(const rc_client_event_t* client_event)
@@ -1556,10 +1586,10 @@ index ec0fee2..133c548 100644
                                client_event->achievement->points),
                    OSD::Duration::VERY_LONG,
 diff --git a/Source/Core/Core/AchievementManager.h b/Source/Core/Core/AchievementManager.h
-index 74f26b9..72c8ed7 100644
+index 74f26b9..9c4f05b 100644
 --- a/Source/Core/Core/AchievementManager.h
 +++ b/Source/Core/Core/AchievementManager.h
-@@ -58,6 +58,16 @@ namespace ActionReplay
+@@ -58,6 +58,18 @@ namespace ActionReplay
  struct ARCode;
  }  // namespace ActionReplay
  
@@ -1571,12 +1601,14 @@ index 74f26b9..72c8ed7 100644
 +// The login at the game's start: result 0 (text: the user name) or the rcheevos error (text:
 +// its message).
 +extern void (*ps4_achievement_login)(int result, const char* text);
++// The game's achievements loaded (result 0, text: its title) or not (the rcheevos error).
++extern void (*ps4_achievement_game)(int result, const char* text);
 +#endif
 +
  class AchievementManager
  {
  public:
-@@ -157,6 +167,16 @@ public:
+@@ -157,6 +169,16 @@ public:
    rc_client_t* GetClient();
    const Badge& GetGameBadge() const;
    const Badge& GetAchievementBadge(AchievementId id, bool locked) const;
@@ -2736,7 +2768,7 @@ index 0000000..78d77cf
 +void PatchGame(Core::System& system);
 +}  // namespace HLE_PS4Games
 diff --git a/Source/Core/Core/HW/GPFifo.cpp b/Source/Core/Core/HW/GPFifo.cpp
-index 0de434b..8e0fd63 100644
+index 0de434b..77d527e 100644
 --- a/Source/Core/Core/HW/GPFifo.cpp
 +++ b/Source/Core/Core/HW/GPFifo.cpp
 @@ -16,6 +16,10 @@
@@ -2816,6 +2848,26 @@ index 0de434b..8e0fd63 100644
 +#endif
 +    memmove(m_gather_pipe, m_gather_pipe + processed, pipe_count);
    SetGatherPipeCount(pipe_count);
+ }
+ 
+@@ -126,7 +171,19 @@ void GPFifoManager::CheckGatherPipe()
+     UpdateGatherPipe();
+ 
+     // Profile where slow FIFO writes are occurring.
++#ifdef __ORBIS__
++    // Once per store: looking the same store up at every full pipe cost 3% of Metroid Prime's
++    // CPU thread (the store is in the set after the first time).
++    static u32 s_last_pc = 0;
++    const u32 pc = m_system.GetPPCState().pc;
++    if (pc != s_last_pc)
++    {
++      s_last_pc = pc;
++      m_system.GetJitInterface().CompileExceptionCheck(JitInterface::ExceptionType::FIFOWrite);
++    }
++#else
+     m_system.GetJitInterface().CompileExceptionCheck(JitInterface::ExceptionType::FIFOWrite);
++#endif
+   }
  }
  
 diff --git a/Source/Core/Core/HW/Memmap.cpp b/Source/Core/Core/HW/Memmap.cpp
@@ -8224,10 +8276,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..eb71c6d
+index 0000000..2e10fbf
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,1836 @@
+@@ -0,0 +1,2276 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -8262,6 +8314,7 @@ index 0000000..eb71c6d
 +#include "Core/HW/GCPad.h"
 +#ifdef USE_RETRO_ACHIEVEMENTS
 +#include "Core/AchievementManager.h"
++#include "Core/Config/AchievementSettings.h"
 +#endif
 +#include "DolphinNoGUI/PS4Cheats.h"
 +#include "DolphinNoGUI/PS4Controls.h"
@@ -8341,6 +8394,13 @@ index 0000000..eb71c6d
 +  bool note = false;    // value takes effect at the next start (shown in amber)
 +  int tag = 0;          // cheats: 1 = an ON tag (green), -1 = an OFF tag (red)
 +  std::string badge;    // achievements: the badge picture's key ("U12345" / "L12345")
++  // Achievements page (a tall row): description, status line, type, trophy tier, rarity.
++  std::string sub;
++  std::string status;
++  bool locked = false;
++  int ach_type = 0;
++  int tier = 0;  // 1 bronze, 2 silver, 3 gold, 4 platinum (by points)
++  float rarity = -1.0f;
 +};
 +
 +// Hint glyphs for the bottom bar.
@@ -8364,6 +8424,12 @@ index 0000000..eb71c6d
 +std::chrono::steady_clock::time_point s_ctl_capture_start;
 +std::string s_playtime;  // "Play time: 3 h 12 min" under the title (the menu's game)
 +std::string s_detail;    // Achievements page: the selected achievement's description
++bool s_tall = false;     // Achievements page: two-line rows with badges
++float s_bar = -1.0f;     // Achievements page: progress (0..1) under the title, -1: none
++std::string s_bar_text;  // "35%  -  14 / 40 unlocked  -  85 / 400 points"
++// RetroAchievements' answers at the game's start (login, the game's achievements), for the page.
++std::string s_ach_brief;    // the main page's value: "Not logged in", "Not supported", ...
++std::string s_ach_message;  // the page's text when nothing is loaded
 +// Badge pictures copied from the AchievementManager (RGBA), and their textures (video thread).
 +struct BadgePixels
 +{
@@ -8401,6 +8467,51 @@ index 0000000..eb71c6d
 +
 +// Achievements page (host thread): the running game's list, read when the menu opens.
 +PS4Achievements::List s_ach;
++bool s_ach_loaded = false;
++
++// The main page's value and the page's text when no list is loaded.
++std::string AchievementBrief(std::string* message = nullptr)
++{
++  std::string brief, text;
++#ifdef USE_RETRO_ACHIEVEMENTS
++  {
++    std::lock_guard lock(s_mutex);
++    brief = s_ach_brief;
++    text = s_ach_message;
++  }
++  if (brief.empty())
++  {
++    if (!Config::Get(Config::RA_ENABLED))
++    {
++      brief = "Off";
++      text = "RetroAchievements is off: turn it on in the game list (Settings -> "
++             "RetroAchievements -> Achievements).";
++    }
++    else if (Config::Get(Config::RA_API_TOKEN).empty())
++    {
++      brief = "Not logged in";
++      text = "Not logged in to RetroAchievements: log in from the game list (Settings -> "
++             "RetroAchievements).";
++    }
++    else
++    {
++      brief = "Loading...";
++      text = "Loading this game's achievements from RetroAchievements...";
++    }
++  }
++#else
++  brief = "Not available";
++  text = "This build has no RetroAchievements.";
++#endif
++  if (message)
++    *message = text;
++  return brief;
++}
++
++int TrophyTier(uint32_t points)
++{
++  return points >= 50 ? 4 : points >= 25 ? 3 : points >= 10 ? 2 : 1;
++}
 +
 +std::string ShortDate(int64_t when)
 +{
@@ -8419,10 +8530,125 @@ index 0000000..eb71c6d
 +  return text.size() <= max ? text : text.substr(0, max - 3) + "...";
 +}
 +
++// ---- Achievements demo (Settings -> RetroAchievements -> Demo Mode in the game list: the file
++// achievements-demo): sample achievements with drawn badges, one unlocking every 25 s of play,
++// to try the list, the pop-ups and the XMB's pages without a game RetroAchievements knows. ----
++int s_demo = -1;  // -1: not checked yet
++PS4Achievements::List s_demo_list;
++Clock::time_point s_demo_last;
++
++bool DemoMode()
++{
++  if (s_demo < 0)
++  {
++    const std::string data_dir = PS4Achievements::DataDir();
++    s_demo = !data_dir.empty() && access((data_dir + "/achievements-demo").c_str(), F_OK) == 0;
++    if (s_demo)
++    {
++      static const struct
++      {
++        const char* title;
++        const char* description;
++        uint32_t points;
++        int type;
++        float rarity;
++      } DEMO[] = {
++          {"First Steps", "Start the demo", 1, 2, 98.5f},
++          {"Warming Up", "Play for 25 seconds", 5, 0, 81.2f},
++          {"Collector", "Find 10 hidden orbs", 10, 0, 45.0f, },
++          {"Sharpshooter", "Hit 50 targets in a row", 10, 0, 23.4f},
++          {"Speed Runner", "Finish a stage in under 2 minutes", 25, 0, 8.7f},
++          {"Don't Look Back", "Open the sealed door before it closes for good", 10, 1, 12.1f},
++          {"Halfway There", "Reach the middle of the adventure", 10, 2, 40.3f},
++          {"Untouchable", "Beat a boss without taking damage", 25, 0, 4.2f},
++          {"Treasure Hunter", "Open every chest", 25, 0, 2.9f},
++          {"The End", "Finish the adventure", 25, 3, 18.6f},
++          {"Completionist", "Unlock everything else", 50, 0, 0.8f},
++          {"Thank You", "Watch the credits to the end", 5, 0, 15.0f},
++      };
++      s_demo_list = {};
++      s_demo_list.game = "Achievement Demo";
++      s_demo_list.badge = "demo";
++      int id = 1;
++      for (const auto& d : DEMO)
++      {
++        PS4Achievements::Entry entry;
++        entry.title = d.title;
++        entry.description = d.description;
++        entry.points = d.points;
++        entry.type = d.type;
++        entry.rarity = d.rarity;
++        entry.id = static_cast<uint32_t>(900000 + id);
++        entry.badge = "demo" + std::to_string(id);
++        entry.unlocked = id <= 2;
++        entry.unlock_time = entry.unlocked ? static_cast<int64_t>(std::time(nullptr)) : 0;
++        if (id == 3)
++          entry.progress = "3/10";
++        s_demo_list.entries.push_back(std::move(entry));
++        id++;
++      }
++      s_demo_last = Clock::now();
++      ps4_boot_trace("achievements: demo mode");
++    }
++  }
++  return s_demo > 0;
++}
++
++// The demo's badges: a coloured disc with a star (grey when locked).
++BadgePixels DemoBadge(uint32_t id, bool locked)
++{
++  static const u32 COLOURS[] = {0x3C8CFF, 0xFFB43C, 0x50C878, 0xE05A5A, 0xA06CFF, 0x3CC8C8};
++  const u32 c = COLOURS[id % std::size(COLOURS)];
++  BadgePixels p;
++  p.width = p.height = 64;
++  p.rgba.resize(64 * 64 * 4);
++  for (int y = 0; y < 64; y++)
++  {
++    for (int x = 0; x < 64; x++)
++    {
++      const float dx = (x - 31.5f) / 31.5f, dy = (y - 31.5f) / 31.5f;
++      const float r = std::sqrt(dx * dx + dy * dy);
++      const float angle = std::atan2(dy, dx);
++      const float star = 0.38f + 0.2f * std::cos(5.0f * angle + 1.5708f);
++      float k = r > 1.0f ? 0.0f : 1.0f - 0.35f * r;
++      if (r < star)
++        k = 1.25f;
++      int rr = static_cast<int>(((c >> 16) & 0xFF) * k), g = static_cast<int>(((c >> 8) & 0xFF) * k),
++          b = static_cast<int>((c & 0xFF) * k);
++      if (locked)
++        rr = g = b = (rr * 30 + g * 59 + b * 11) / 140;
++      u8* out = &p.rgba[(y * 64 + x) * 4];
++      out[0] = static_cast<u8>(std::min(rr, 255));
++      out[1] = static_cast<u8>(std::min(g, 255));
++      out[2] = static_cast<u8>(std::min(b, 255));
++      out[3] = r > 1.0f ? 0 : 255;
++    }
++  }
++  return p;
++}
++
 +// The game's achievements from RetroAchievements (false: none loaded - not logged in, or a game
 +// RetroAchievements doesn't know).
 +bool CaptureAchievements(PS4Achievements::List* out)
 +{
++  if (DemoMode())
++  {
++    PS4Achievements::List list = s_demo_list;
++    list.total = static_cast<uint32_t>(list.entries.size());
++    list.unlocked = 0;
++    list.points = list.points_total = 0;
++    for (const PS4Achievements::Entry& entry : list.entries)
++    {
++      list.points_total += entry.points;
++      if (entry.unlocked)
++      {
++        list.unlocked++;
++        list.points += entry.points;
++      }
++    }
++    *out = std::move(list);
++    return true;
++  }
 +#ifdef USE_RETRO_ACHIEVEMENTS
 +  auto& manager = AchievementManager::GetInstance();
 +  std::lock_guard lock(manager.GetLock());
@@ -8459,6 +8685,8 @@ index 0000000..eb71c6d
 +        entry.unlock_time = static_cast<int64_t>(a->unlock_time);
 +        entry.badge = a->badge_name;
 +        entry.id = a->id;
++        entry.type = a->type;
++        entry.rarity = list.hardcore ? a->rarity_hardcore : a->rarity;
 +        list.entries.push_back(std::move(entry));
 +      }
 +    }
@@ -8500,6 +8728,17 @@ index 0000000..eb71c6d
 +// The page's badges (host thread): copied for the video thread to draw.
 +void CopyPageBadges()
 +{
++  if (DemoMode())
++  {
++    std::lock_guard lock(s_mutex);
++    for (const PS4Achievements::Entry& entry : s_ach.entries)
++    {
++      const std::string key = (entry.unlocked ? "U" : "L") + std::to_string(entry.id);
++      if (!s_badge_pixels.contains(key))
++        s_badge_pixels[key] = DemoBadge(entry.id, !entry.unlocked);
++    }
++    return;
++  }
 +#ifdef USE_RETRO_ACHIEVEMENTS
 +  auto& manager = AchievementManager::GetInstance();
 +  std::lock_guard lock(manager.GetLock());
@@ -8519,6 +8758,26 @@ index 0000000..eb71c6d
 +  PS4Achievements::List list;
 +  if (!CaptureAchievements(&list))
 +    return;
++  if (DemoMode())
++  {
++    PS4Achievements::Save("DEMO", list);
++    const std::string data_dir = PS4Achievements::DataDir();
++    mkdir((data_dir + "/achievements/badges").c_str(), 0777);
++    const auto save = [](const std::string& path, const BadgePixels& p) {
++      if (!path.empty() && access(path.c_str(), F_OK) != 0)
++      {
++        Common::SavePNG(path, p.rgba.data(), Common::ImageByteFormat::RGBA, p.width, p.height,
++                        p.width * 4);
++      }
++    };
++    save(PS4Achievements::GameBadgePath(data_dir, list.badge), DemoBadge(0, false));
++    for (const PS4Achievements::Entry& entry : list.entries)
++    {
++      save(PS4Achievements::BadgePath(data_dir, entry.badge, false), DemoBadge(entry.id, false));
++      save(PS4Achievements::BadgePath(data_dir, entry.badge, true), DemoBadge(entry.id, true));
++    }
++    return;
++  }
 +  PS4Achievements::Save(PlayKey(), list);
 +#ifdef USE_RETRO_ACHIEVEMENTS
 +  const std::string data_dir = PS4Achievements::DataDir();
@@ -8565,6 +8824,64 @@ index 0000000..eb71c6d
 +  Log(message + " [" + std::to_string(result) + "]");
 +}
 +
++// RetroAchievements' answer for the game's achievements (its network thread).
++void OnAchievementGame(int result, const char* text)
++{
++  std::string brief, message;
++  if (result == 0)
++  {
++    Toast(std::string("RetroAchievements: ") + text + " - achievements ready", 5000);
++  }
++  else if (result == RC_API_FAILURE)
++  {
++    brief = "Version refused";
++    message = "RetroAchievements didn't accept this Dolphin version for achievements.";
++  }
++  else if (result == RC_LOGIN_REQUIRED || result == RC_INVALID_CREDENTIALS ||
++           result == RC_EXPIRED_TOKEN)
++  {
++    brief = "Log in again";
++    message = "The RetroAchievements login expired: log in again in the game list "
++              "(Settings -> RetroAchievements).";
++  }
++  else
++  {
++    brief = "Not supported";
++    message = "RetroAchievements has no achievements for this game" +
++              (text && *text ? std::string(" (") + text + ")." : std::string("."));
++  }
++  if (!message.empty())
++    Toast("RetroAchievements: " + brief, 5000);
++  {
++    std::lock_guard lock(s_mutex);
++    s_ach_brief = brief;
++    s_ach_message = message;
++  }
++  Log("achievements: game " + std::to_string(result) + " " + (text ? text : ""));
++}
++#endif
++
++// A demo achievement unlocks (host thread, while the game runs).
++void DemoUnlockNext()
++{
++  for (PS4Achievements::Entry& entry : s_demo_list.entries)
++  {
++    if (entry.unlocked)
++      continue;
++    entry.unlocked = true;
++    entry.unlock_time = static_cast<int64_t>(std::time(nullptr));
++    entry.progress.clear();
++    const std::string key = "U" + std::to_string(entry.id);
++    std::lock_guard lock(s_mutex);
++    s_badge_pixels[key] = DemoBadge(entry.id, false);
++    s_badge_textures.erase(key);
++    s_popups.push_back({entry.title, entry.description, key, entry.points, false});
++    break;
++  }
++  s_ach_dirty = true;
++}
++
++#ifdef USE_RETRO_ACHIEVEMENTS
 +// CPU thread, the AchievementManager's lock held.
 +void OnAchievementUnlocked(u32 id, const char* title, const char* description, u32 points,
 +                           bool hardcore)
@@ -8700,6 +9017,9 @@ index 0000000..eb71c6d
 +  std::vector<std::pair<Glyph, std::string>> hints;
 +  int selected;
 +  std::string subtitle;
++  bool tall = false;
++  float bar = -1.0f;
++  std::string bar_text;
 +  if (s_page == Page::Main)
 +  {
 +    const std::string slot = SlotLabel(s_slot);
@@ -8736,7 +9056,9 @@ index 0000000..eb71c6d
 +        break;
 +      case MAIN_ACHIEVEMENTS:
 +        rows.push_back({"Achievements",
-+                        std::to_string(s_ach.unlocked) + " / " + std::to_string(s_ach.total)});
++                        s_ach_loaded ?
++                            std::to_string(s_ach.unlocked) + " / " + std::to_string(s_ach.total) :
++                            AchievementBrief()});
 +        break;
 +      case MAIN_RESTART:
 +        rows.push_back({"Restart Game"});
@@ -8787,38 +9109,50 @@ index 0000000..eb71c6d
 +  }
 +  else if (s_page == Page::Achievements)
 +  {
-+    rows.push_back({std::to_string(s_ach.unlocked) + " of " + std::to_string(s_ach.total) +
-+                        " unlocked  -  " + std::to_string(s_ach.points) + " / " +
-+                        std::to_string(s_ach.points_total) + " points" +
-+                        (s_ach.hardcore ? "  -  Hardcore" : ""),
-+                    "", true});
-+    keys.push_back("");
-+    for (int pass = 0; pass < 2; pass++)
++    tall = true;
++    if (!s_ach_loaded)
 +    {
-+      const bool unlocked = pass == 0;
-+      bool any = false;
++      std::string message;
++      AchievementBrief(&message);
++      rows.push_back({message, "", true});
++      keys.push_back("");
++    }
++    else
++    {
 +      for (size_t i = 0; i < s_ach.entries.size(); i++)
 +      {
 +        const PS4Achievements::Entry& entry = s_ach.entries[i];
-+        if (entry.unlocked != unlocked)
-+          continue;
-+        if (!any)
++        Row row{entry.title, std::to_string(entry.points) + " pts"};
++        row.sub = entry.description;
++        row.locked = !entry.unlocked;
++        row.ach_type = entry.type;
++        row.tier = TrophyTier(entry.points);
++        row.rarity = entry.rarity;
++        if (entry.unlocked)
 +        {
-+          rows.push_back({unlocked ? "Unlocked" : "Locked", "", true});
-+          keys.push_back("");
-+          any = true;
++          row.status = entry.unlock_time > 0 ? "Unlocked " + ShortDate(entry.unlock_time) :
++                                               std::string("Unlocked");
 +        }
-+        Row row{FitText(entry.title, 30), std::to_string(entry.points) + " pts"};
-+        row.note = unlocked;  // gold points: earned
-+        row.badge = (unlocked ? "U" : "L") + std::to_string(entry.id);
++        else
++        {
++          row.status = entry.progress.empty() ? std::string("Locked") :
++                                                "Locked  -  " + entry.progress;
++        }
++        row.badge = (entry.unlocked ? "U" : "L") + std::to_string(entry.id);
 +        rows.push_back(row);
 +        keys.push_back("ach:" + std::to_string(i));
 +      }
-+    }
-+    if (s_ach.entries.empty())
-+    {
-+      rows.push_back({"No achievements for this game", "", true});
-+      keys.push_back("");
++      if (s_ach.entries.empty())
++      {
++        rows.push_back({"No achievements for this game", "", true});
++        keys.push_back("");
++      }
++      const uint32_t percent = s_ach.total ? s_ach.unlocked * 100 / s_ach.total : 0;
++      bar = s_ach.total ? static_cast<float>(s_ach.unlocked) / static_cast<float>(s_ach.total) : 0.0f;
++      bar_text = std::to_string(percent) + "%   " + std::to_string(s_ach.unlocked) + " / " +
++                 std::to_string(s_ach.total) + " unlocked   " + std::to_string(s_ach.points) +
++                 " / " + std::to_string(s_ach.points_total) + " points" +
++                 (s_ach.hardcore ? "   Hardcore" : "");
 +    }
 +    selected = s_settings_selected;
 +    subtitle = "ACHIEVEMENTS";
@@ -8892,16 +9226,35 @@ index 0000000..eb71c6d
 +    if (index < s_ach.entries.size())
 +    {
 +      const PS4Achievements::Entry& entry = s_ach.entries[index];
-+      detail = entry.title + ": " + entry.description;
-+      if (!entry.progress.empty())
-+        detail += "  (" + entry.progress + ")";
-+      if (entry.unlocked && entry.unlock_time > 0)
-+        detail += "  -  Unlocked " + ShortDate(entry.unlock_time);
++      detail = entry.description;
++      switch (entry.type)
++      {
++      case 1:
++        detail += "  -  Missable: can be missed for good in a playthrough.";
++        break;
++      case 2:
++        detail += "  -  Progression: earned along the way to the end.";
++        break;
++      case 3:
++        detail += "  -  Win Condition: earned for finishing the game.";
++        break;
++      default:
++        break;
++      }
++      if (entry.rarity >= 0.0f)
++      {
++        char rarity[64];
++        snprintf(rarity, sizeof(rarity), "  %.1f%% of players have it.", entry.rarity);
++        detail += rarity;
++      }
 +    }
 +  }
 +  s_row_keys = std::move(keys);
 +  std::lock_guard lock(s_mutex);
 +  s_detail = std::move(detail);
++  s_tall = tall;
++  s_bar = bar;
++  s_bar_text = std::move(bar_text);
 +  s_rows = std::move(rows);
 +  s_selected = selected;
 +  s_subtitle = subtitle;
@@ -8945,11 +9298,15 @@ index 0000000..eb71c6d
 +  }
 +  s_main_items.insert(s_main_items.end(), {MAIN_CONTROLS, MAIN_SETTINGS, MAIN_CHEATS});
 +  s_ach = {};
-+  if (CaptureAchievements(&s_ach))
-+  {
++  s_ach_loaded = CaptureAchievements(&s_ach);
++  if (s_ach_loaded)
++    SaveAchievements();
++#ifdef USE_RETRO_ACHIEVEMENTS
++  s_main_items.push_back(MAIN_ACHIEVEMENTS);
++#else
++  if (s_ach_loaded)
 +    s_main_items.push_back(MAIN_ACHIEVEMENTS);
-+    PS4Achievements::Save(PlayKey(), s_ach);
-+  }
++#endif
 +  s_main_items.insert(s_main_items.end(), {MAIN_RESTART, MAIN_QUIT});
 +  BuildRows();
 +  FlushPlayTime();
@@ -9187,7 +9544,8 @@ index 0000000..eb71c6d
 +  // Skip category headers (row 0, "Apply To", is selectable).
 +  while (row > 0 && row < count && s_row_keys[row].empty())
 +    row += direction;
-+  if (row >= 0 && row < count && (row > 0 || s_page == Page::Settings))
++  if (row >= 0 && row < count &&
++      (row > 0 || s_page == Page::Settings || s_page == Page::Achievements))
 +    s_settings_selected = row;
 +}
 +
@@ -9441,13 +9799,10 @@ index 0000000..eb71c6d
 +    break;
 +  case MAIN_ACHIEVEMENTS:
 +    s_page = Page::Achievements;
-+    CaptureAchievements(&s_ach);
-+    CopyPageBadges();
++    s_ach_loaded = CaptureAchievements(&s_ach);
++    if (s_ach_loaded)
++      CopyPageBadges();
 +    s_settings_selected = 0;
-+    BuildRows();
-+    SelectableMove(1);
-+    if (!s_row_keys.empty() && s_row_keys[s_settings_selected].empty())
-+      s_settings_selected = 0;
 +    break;
 +  case MAIN_CHEATS:
 +    s_page = Page::Cheats;
@@ -9493,6 +9848,102 @@ index 0000000..eb71c6d
 +  AbstractTexture* result = texture.get();
 +  s_badge_textures[key] = std::move(texture);
 +  return result;
++}
++
++// A trophy cup (the achievement's points: bronze, silver, gold, platinum).
++void DrawTrophy(ImDrawList* dl, ImVec2 c, float s, ImU32 color)
++{
++  const float r = s * 0.5f;
++  const float w = r * 0.56f, top = c.y - r * 0.78f, mid = c.y - r * 0.3f;
++  dl->PathArcTo(ImVec2(c.x, mid), w, 0.0f, 3.14159265f, 20);
++  dl->PathLineTo(ImVec2(c.x - w, top));
++  dl->PathLineTo(ImVec2(c.x + w, top));
++  dl->PathFillConvex(color);
++  dl->AddCircle(ImVec2(c.x - w, c.y - r * 0.5f), r * 0.24f, color, 16, r * 0.1f);
++  dl->AddCircle(ImVec2(c.x + w, c.y - r * 0.5f), r * 0.24f, color, 16, r * 0.1f);
++  dl->AddRectFilled(ImVec2(c.x - r * 0.09f, c.y + r * 0.2f), ImVec2(c.x + r * 0.09f, c.y + r * 0.6f),
++                    color);
++  dl->AddRectFilled(ImVec2(c.x - r * 0.42f, c.y + r * 0.58f), ImVec2(c.x + r * 0.42f, c.y + r * 0.82f),
++                    color, r * 0.08f);
++}
++
++// The text cut to a width, with "...".
++std::string Ellipsize(ImFont* font, float size, const std::string& text, float width)
++{
++  if (font->CalcTextSizeA(size, FLT_MAX, 0, text.c_str()).x <= width)
++    return text;
++  std::string cut = text;
++  while (!cut.empty() && font->CalcTextSizeA(size, FLT_MAX, 0, (cut + "...").c_str()).x > width)
++  {
++    cut.pop_back();
++    while (!cut.empty() && (static_cast<unsigned char>(cut.back()) & 0xC0) == 0x80)
++      cut.pop_back();  // a whole UTF-8 character
++  }
++  return cut + "...";
++}
++
++// An achievement as on the PS3's trophy list: badge, name, description, status, type, trophy.
++void DrawAchievementRow(ImDrawList* dl, const Row& row, float x0, float y, float panel_w, float s,
++                        float a, bool sel, ImFont* bold, ImFont* regular)
++{
++  const int alpha = static_cast<int>(255 * a);
++  const float b = 84 * s;
++  float tx = x0 + 60 * s;
++  if (AbstractTexture* badge = BadgeTexture(row.badge))
++  {
++    dl->AddImageRounded(ImTextureRef(*badge), ImVec2(tx, y + 6 * s), ImVec2(tx + b, y + 6 * s + b),
++                        ImVec2(0, 0), ImVec2(1, 1),
++                        IM_COL32(255, 255, 255, row.locked ? alpha * 3 / 4 : alpha), 8 * s);
++  }
++  else
++  {
++    dl->AddRectFilled(ImVec2(tx, y + 6 * s), ImVec2(tx + b, y + 6 * s + b),
++                      IM_COL32(40, 50, 70, alpha), 8 * s);
++  }
++  tx += b + 20 * s;
++  const float right = x0 + panel_w - 130 * s;
++  const float width = right - tx;
++  const ImU32 white = IM_COL32(255, 255, 255, row.locked ? alpha * 7 / 10 : alpha);
++  const ImU32 dim = IM_COL32(255, 255, 255, static_cast<int>(150 * a));
++  dl->AddText(bold, (sel ? 31 : 29) * s, ImVec2(tx, y + 6 * s), white,
++              Ellipsize(bold, (sel ? 31 : 29) * s, row.label, width).c_str());
++  dl->AddText(regular, 22 * s, ImVec2(tx, y + 42 * s), dim,
++              Ellipsize(regular, 22 * s, row.sub, width).c_str());
++  // Status, then the type and rarity tags.
++  const ImU32 gold = IM_COL32(255, 200, 70, alpha);
++  float sx = tx;
++  const float ss = 21 * s, sy = y + 70 * s;
++  dl->AddText(regular, ss, ImVec2(sx, sy), row.locked ? dim : gold, row.status.c_str());
++  sx += regular->CalcTextSizeA(ss, FLT_MAX, 0, row.status.c_str()).x + 16 * s;
++  const char* type = PS4Achievements::TypeName(row.ach_type);
++  if (*type)
++  {
++    const ImU32 fill = row.ach_type == 1 ? IM_COL32(200, 60, 70, static_cast<int>(220 * a)) :
++                       row.ach_type == 3 ? IM_COL32(200, 150, 30, static_cast<int>(220 * a)) :
++                                           IM_COL32(50, 120, 220, static_cast<int>(220 * a));
++    const float tw = bold->CalcTextSizeA(18 * s, FLT_MAX, 0, type).x;
++    dl->AddRectFilled(ImVec2(sx, sy), ImVec2(sx + tw + 18 * s, sy + 24 * s), fill, 12 * s);
++    dl->AddText(bold, 18 * s, ImVec2(sx + 9 * s, sy + 3 * s), IM_COL32(255, 255, 255, alpha), type);
++    sx += tw + 30 * s;
++  }
++  if (row.rarity >= 0.0f && sx < right - 60 * s)
++  {
++    char rarity[32];
++    snprintf(rarity, sizeof(rarity), "%.1f%%", row.rarity);
++    dl->AddText(regular, ss, ImVec2(sx, sy), dim, rarity);
++  }
++  // The trophy and the points.
++  static const ImU32 TIERS[] = {IM_COL32(205, 127, 50, 255), IM_COL32(205, 127, 50, 255),
++                                IM_COL32(200, 205, 215, 255), IM_COL32(255, 200, 70, 255),
++                                IM_COL32(170, 215, 255, 255)};
++  ImU32 tier = TIERS[std::clamp(row.tier, 0, 4)];
++  const int tier_alpha = row.locked ? static_cast<int>(90 * a) : alpha;
++  tier = (tier & 0x00FFFFFF) | (static_cast<ImU32>(tier_alpha) << 24);
++  const float cx = x0 + panel_w - 85 * s;
++  DrawTrophy(dl, ImVec2(cx, y + 34 * s), 46 * s, tier);
++  const float pw = regular->CalcTextSizeA(22 * s, FLT_MAX, 0, row.value.c_str()).x;
++  dl->AddText(regular, 22 * s, ImVec2(cx - pw * 0.5f, y + 66 * s), row.locked ? dim : white,
++              row.value.c_str());
 +}
 +
 +// The unlock pop-up: slides in at the top right, stays 5 s, slides out; the next one follows.
@@ -9661,13 +10112,30 @@ index 0000000..eb71c6d
 +    dl->AddText(regular, 26 * s, ImVec2(x0 + 70 * s, 90 * s), accent, PS4Lang::T(s_subtitle).c_str());
 +    dl->AddText(bold, 40 * s, ImVec2(x0 + 70 * s, 122 * s), white, s_title.c_str(), nullptr,
 +                panel_w - 120 * s);
-+    if (!s_playtime.empty())
++    if (s_bar >= 0.0f)
++    {
++      // Achievements: how far along, as on the PS3's trophy list.
++      dl->AddText(regular, 22 * s, ImVec2(x0 + 70 * s, 168 * s),
++                  IM_COL32(255, 200, 70, static_cast<int>(255 * a)), s_bar_text.c_str());
++      const float bx0 = x0 + 70 * s, bx1 = x0 + panel_w - 70 * s, by = 200 * s;
++      dl->AddRectFilled(ImVec2(bx0, by), ImVec2(bx1, by + 10 * s),
++                        IM_COL32(255, 255, 255, static_cast<int>(40 * a)), 5 * s);
++      if (s_bar > 0.0f)
++      {
++        dl->AddRectFilled(ImVec2(bx0, by), ImVec2(bx0 + (bx1 - bx0) * std::min(s_bar, 1.0f), by + 10 * s),
++                          IM_COL32(255, 200, 70, static_cast<int>(255 * a)), 5 * s);
++      }
++    }
++    else if (!s_playtime.empty())
++    {
 +      dl->AddText(regular, 24 * s, ImVec2(x0 + 70 * s, 172 * s), dim,
 +                  PS4Lang::T(s_playtime).c_str());
++    }
 +
 +    // The list scrolls to keep the selection in view.
-+    const float row_h = 62.0f * s;
-+    const float top = 220.0f * s, bottom = size.y - (s_detail.empty() ? 160.0f : 280.0f) * s;
++    const float row_h = (s_tall ? 108.0f : 62.0f) * s;
++    const float top = (s_tall ? 232.0f : 220.0f) * s,
++                bottom = size.y - (s_detail.empty() ? 160.0f : 280.0f) * s;
 +    const float visible = (bottom - top) / row_h;
 +    const float target = std::clamp(static_cast<float>(s_selected) - visible * 0.5f + 1.0f, 0.0f,
 +                                    std::max(0.0f, static_cast<float>(s_rows.size()) - visible));
@@ -9679,6 +10147,24 @@ index 0000000..eb71c6d
 +      const float y = top + (static_cast<float>(i) - s_scroll) * row_h;
 +      if (y < top - row_h || y > bottom)
 +        continue;
++      if (row.header && s_tall)
++      {
++        // The Achievements page's message (not logged in, not supported, ...).
++        dl->AddText(regular, 28 * s, ImVec2(x0 + 70 * s, y + 10 * s), dim,
++                    PS4Lang::T(row.label).c_str(), nullptr, panel_w - 140 * s);
++        continue;
++      }
++      if (s_tall)
++      {
++        const bool sel_row = static_cast<int>(i) == s_selected;
++        if (sel_row)
++        {
++          dl->AddRectFilled(ImVec2(x0 + 40 * s, y - 2 * s), ImVec2(x0 + panel_w - 40 * s, y + 100 * s),
++                            IM_COL32(91, 184, 255, static_cast<int>(70 * a)), 12 * s);
++        }
++        DrawAchievementRow(dl, row, x0, y, panel_w, s, a, sel_row, bold, regular);
++        continue;
++      }
 +      if (row.header)
 +      {
 +        dl->AddText(bold, 26 * s, ImVec2(x0 + 70 * s, y + 16 * s), accent, PS4Lang::T(row.label).c_str());
@@ -9816,6 +10302,7 @@ index 0000000..eb71c6d
 +#ifdef USE_RETRO_ACHIEVEMENTS
 +  ps4_achievement_unlocked = OnAchievementUnlocked;
 +  ps4_achievement_login = OnAchievementLogin;
++  ps4_achievement_game = OnAchievementGame;
 +#endif
 +  State::PS4SetLoadResultCallback([](State::PS4Slot result, const std::string& made_by) {
 +    {
@@ -9935,6 +10422,11 @@ index 0000000..eb71c6d
 +      s_play_pending += std::min(0.5, std::chrono::duration<double>(now - s_play_last).count());
 +    }
 +    s_play_last = now;
++    if (DemoMode() && now - s_demo_last > std::chrono::seconds(25))
++    {
++      s_demo_last = now;
++      DemoUnlockNext();
++    }
 +    if (s_ach_dirty.exchange(false))
 +      SaveAchievements();
 +    if (now - s_play_flushed > std::chrono::seconds(60))
@@ -11016,10 +11508,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..a198171
+index 0000000..fb450d7
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,927 @@
+@@ -0,0 +1,948 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11790,6 +12282,21 @@ index 0000000..a198171
 +  return name;
 +}
 +
++const char* TypeName(int type)
++{
++  switch (type)
++  {
++  case 1:
++    return "Missable";
++  case 2:
++    return "Progression";
++  case 3:
++    return "Win Condition";
++  default:
++    return "";
++  }
++}
++
 +std::string DataDir()
 +{
 +  std::lock_guard lock(PS4Settings::s_mutex);
@@ -11883,7 +12390,8 @@ index 0000000..a198171
 +    {
 +      file << "a\t" << (entry.unlocked ? 1 : 0) << '\t' << entry.points << '\t' << entry.unlock_time
 +           << '\t' << Clean(entry.title) << '\t' << Clean(entry.description) << '\t'
-+           << Clean(entry.progress) << '\t' << Clean(entry.badge) << '\t' << entry.id << '\n';
++           << Clean(entry.progress) << '\t' << Clean(entry.badge) << '\t' << entry.id << '\t'
++           << entry.type << '\t' << entry.rarity << '\n';
 +    }
 +  }
 +  const int fd = open(temp.c_str(), O_RDONLY);
@@ -11939,6 +12447,11 @@ index 0000000..a198171
 +        entry.badge = f[7];
 +        entry.id = static_cast<uint32_t>(std::atol(f[8].c_str()));
 +      }
++      if (f.size() >= 11)
++      {
++        entry.type = std::atoi(f[9].c_str());
++        entry.rarity = static_cast<float>(std::atof(f[10].c_str()));
++      }
 +      result.entries.push_back(std::move(entry));
 +    }
 +  }
@@ -11949,10 +12462,10 @@ index 0000000..a198171
 +}  // namespace PS4Achievements
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.h b/Source/Core/DolphinNoGUI/PS4Settings.h
 new file mode 100755
-index 0000000..f382f5d
+index 0000000..a1db2f7
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.h
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,141 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -12063,6 +12576,8 @@ index 0000000..f382f5d
 +  std::string progress;  // "3/10" for measured achievements
 +  std::string badge;     // RetroAchievements badge name (badges/<badge>.png, <badge>_lock.png)
 +  uint32_t id = 0;
++  int type = 0;          // 0 standard, 1 missable, 2 progression, 3 win condition
++  float rarity = -1.0f;  // % of players who have it (-1: unknown)
 +  uint32_t points = 0;
 +  bool unlocked = false;
 +  int64_t unlock_time = 0;
@@ -12089,6 +12604,8 @@ index 0000000..f382f5d
 +std::string GameBadgePath(const std::string& data_dir, const std::string& badge);
 +// The settings' data folder (the game process).
 +std::string DataDir();
++// "Progression", "Win Condition", "Missable" ("" for a standard one).
++const char* TypeName(int type);
 +}  // namespace PS4Achievements
 diff --git a/Source/Core/DolphinNoGUI/PS4Updater.cpp b/Source/Core/DolphinNoGUI/PS4Updater.cpp
 new file mode 100755
@@ -12528,10 +13045,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..1291576
+index 0000000..379b44d
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5791 @@
+@@ -0,0 +1,5820 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -14310,6 +14827,21 @@ index 0000000..1291576
 +      m_ra_status = "Logged out";
 +      Log("retroachievements: logged out");
 +      BuildItems();
++    }
++    else if (key == "ra:demo")
++    {
++      const std::string flag = m_data_dir + "/achievements-demo";
++      if (std::filesystem::exists(flag))
++      {
++        std::error_code error;
++        std::filesystem::remove(flag, error);
++      }
++      else
++      {
++        File::WriteStringToFile(flag, "Achievements demo mode (Settings -> RetroAchievements)\n");
++      }
++      Log(std::string("retroachievements: demo mode ") +
++          (std::filesystem::exists(flag) ? "on" : "off"));
 +    }
 +    else if (key == "ra:enabled")
 +    {
@@ -16127,6 +16659,14 @@ index 0000000..1291576
 +          help = entry.description;
 +          if (!entry.progress.empty())
 +            help += "  (" + entry.progress + ")";
++          if (*PS4Achievements::TypeName(entry.type))
++            help += std::string("  -  ") + PS4Achievements::TypeName(entry.type);
++          if (entry.rarity >= 0.0f)
++          {
++            char rarity[48];
++            snprintf(rarity, sizeof(rarity), "  -  %.1f%% of players", entry.rarity);
++            help += rarity;
++          }
 +          if (entry.unlocked && entry.unlock_time > 0)
 +            help += "\nUnlocked " + DateText(entry.unlock_time);
 +        }
@@ -16143,6 +16683,9 @@ index 0000000..1291576
 +      else if (row.key == "ra:enabled")
 +        help = "Achievements unlock while you play (needs a logged-in account). See them with "
 +               "L3+R3 in the game, or Triangle on the game. Next game start.";
++      else if (row.key == "ra:demo")
++        help = "Sample achievements in every game, one unlocking every 25 seconds: to try the list "
++               "(L3+R3), the pop-ups and the Achievements pages. Next game start.";
 +      else if (row.key == "ra:hardcore")
 +        help = "No save states, cheats or slow motion - unlocks count double. Next game start.";
 +      else if (row.scope)
@@ -17306,6 +17849,9 @@ index 0000000..1291576
 +  rows.push_back({"Achievements", RaGet("Enabled") == "True" ? "On" : "Off", "ra:enabled"});
 +  rows.push_back({"Hardcore Mode", RaGet("HardcoreEnabled") == "True" ? "On" : "Off",
 +                  "ra:hardcore"});
++  rows.push_back({"Demo Mode",
++                  std::filesystem::exists(m_data_dir + "/achievements-demo") ? "On" : "Off",
++                  "ra:demo"});
 +  m_panel.rows = std::move(rows);
 +  m_panel.lines = {"Achievements unlock while you play (retroachievements.org account).",
 +                   "Hardcore: no save states, cheats or slow motion - unlocks count double."};
