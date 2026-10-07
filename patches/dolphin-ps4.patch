@@ -11761,10 +11761,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..ca894dc
+index 0000000..2b2cdb1
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5505 @@
+@@ -0,0 +1,5518 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -12467,6 +12467,7 @@ index 0000000..ca894dc
 +  void RaSet(const std::string& key, const std::string& value);
 +  int m_user_id = 0;
 +  int m_ime_purpose = 0;  // 1: username, 2: password (the keyboard is open)
++  int m_ime_last_status = -1;  // the keyboard's last status (logged when it changes)
 +  bool m_ime_loaded = false;
 +  char16_t m_ime_text[130] = {};
 +  char16_t m_ime_title[64] = {};
@@ -16369,21 +16370,33 @@ index 0000000..ca894dc
 +    return;
 +  }
 +  m_ime_purpose = purpose;
++  m_ime_last_status = -1;
 +}
 +
 +void Menu::UpdateKeyboard()
 +{
 +  if (!m_ime_purpose)
 +    return;
-+  if (sceImeDialogGetStatus() == ORBIS_DIALOG_STATUS_RUNNING)
++  // Only a finished keyboard (2) or a gone one (0) ends it: anything else (it reports other
++  // states while typing) is still open - ending it then closed it after the first letter.
++  const int status = static_cast<int>(sceImeDialogGetStatus());
++  if (status != m_ime_last_status)
++  {
++    Log("ime dialog status: " + std::to_string(status));
++    m_ime_last_status = status;
++  }
++  if (status != ORBIS_DIALOG_STATUS_STOPPED && status != ORBIS_DIALOG_STATUS_NONE)
 +    return;
 +  OrbisDialogResult result{};
-+  sceImeDialogGetResult(&result);
-+  sceImeDialogTerm();
++  const int got = sceImeDialogGetResult(&result);
++  if (status == ORBIS_DIALOG_STATUS_STOPPED)
++    sceImeDialogTerm();
 +  const int purpose = m_ime_purpose;
 +  m_ime_purpose = 0;
 +  m_input.Poll(0.0f);  // the keyboard's own presses don't reach the menu
-+  if (result.endstatus == ORBIS_DIALOG_OK)
++  Log("ime dialog result: " + std::to_string(got) + ", end " +
++      std::to_string(static_cast<int>(result.endstatus)));
++  if (got >= 0 && result.endstatus == ORBIS_DIALOG_OK)
 +  {
 +    const std::string text = Utf8(m_ime_text);
 +    std::fill(std::begin(m_ime_text), std::end(m_ime_text), u'\0');
