@@ -6996,10 +6996,10 @@ index 0000000..276a9b6
 +}  // namespace PS4Cheats
 diff --git a/Source/Core/DolphinNoGUI/PS4Controls.cpp b/Source/Core/DolphinNoGUI/PS4Controls.cpp
 new file mode 100755
-index 0000000..69e2480
+index 0000000..ee730ae
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Controls.cpp
-@@ -0,0 +1,722 @@
+@@ -0,0 +1,738 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -7547,13 +7547,29 @@ index 0000000..69e2480
 +  SyncPlayers(device);
 +}
 +
-+void SetWiiAttachment(const std::string& extension, bool sideways)
++void SetWiiAttachment(const std::string& extension, bool sideways, bool upright)
 +{
 +  Common::IniFile ini;
 +  ini.Load(Path(Device::Wii));
 +  Common::IniFile::Section* section = ini.GetOrCreateSection(Section(Device::Wii));
 +  section->Set("Extension", std::string(extension == "none" ? "None" : "Nunchuk"));
 +  section->Set("Options/Sideways Wiimote", std::string(sideways ? "True" : "False"));
++  // Dolphin turns the Wii Remote's motion (the DualShock 4's sensors included) by these two:
++  // Sideways and Upright together hold it like a steering wheel.
++  section->Set("Options/Upright Wiimote", std::string(upright ? "True" : "False"));
++  // Without a Nunchuk the left stick is free: it tilts the Wii Remote (steering in Mario Kart
++  // Wii, also for controllers without motion sensors). A tilt the player set is kept; with a
++  // Nunchuk the stick is the Nunchuk's again.
++  constexpr const char* TILT[][2] = {{"Tilt/Left", "`Left X-`"}, {"Tilt/Right", "`Left X+`"}};
++  for (const auto& [key, stick] : TILT)
++  {
++    std::string value;
++    section->Get(key, &value);
++    if (extension == "none" && value.empty())
++      section->Set(key, std::string(stick));
++    else if (extension != "none" && value == stick)
++      section->Set(key, std::string());
++  }
 +  SaveIni(ini, Path(Device::Wii));
 +  SyncPlayers(Device::Wii);
 +}
@@ -7724,7 +7740,7 @@ index 0000000..69e2480
 +}  // namespace PS4Controls
 diff --git a/Source/Core/DolphinNoGUI/PS4Controls.h b/Source/Core/DolphinNoGUI/PS4Controls.h
 new file mode 100755
-index 0000000..28bedc0
+index 0000000..9cf029c
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Controls.h
 @@ -0,0 +1,81 @@
@@ -7788,7 +7804,7 @@ index 0000000..28bedc0
 +bool UseGameProfile(const std::string& game_id);     // game process; true when it had one
 +void RestoreGlobal();
 +// The Wii Remote's extension ("nunchuk" or "none") and sideways orientation.
-+void SetWiiAttachment(const std::string& extension, bool sideways);
++void SetWiiAttachment(const std::string& extension, bool sideways, bool upright = false);
 +
 +// Settings -> System -> Wii Remote / Motion Controls, before a game starts: per player, the
 +// player's PS Move (moves[player - 1]) joins the Wii Remote (its buttons alongside the DualShock 4's,
@@ -11836,10 +11852,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..fb450d7
+index 0000000..732a4ae
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,948 @@
+@@ -0,0 +1,951 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11981,6 +11997,9 @@ index 0000000..fb450d7
 +     "What is plugged into the Wii Remote. Wii Sports and similar games need None."},
 +    {"wii_sideways", "Sideways Wii Remote", "System", {{"off", "Off"}, {"on", "On"}}, "off",
 +     false, "For games played with the Wii Remote held sideways (NSMB Wii, Mario Kart Wii)."},
++    {"wii_upright", "Upright Wii Remote", "System", {{"off", "Off"}, {"on", "On"}}, "off", false,
++     "Steering-wheel games (Mario Kart Wii), with Sideways on: the DualShock 4 held normally acts "
++     "as a Wii Remote held upright in a wheel - tilt it left and right to steer."},
 +    {"motion_controls", "Motion Controls", "System", {{"on", "On"}, {"off", "Off"}}, "on", false,
 +     "The DualShock 4's motion sensors move the Wii Remote: tilt, swing and shake it."},
 +    {"wii_pointer", "Wii Pointer", "System",
@@ -12094,7 +12113,7 @@ index 0000000..fb450d7
 +// Kept per game by the in-game menu, whether or not the game has its own settings.
 +bool AlwaysPerGame(const std::string& key)
 +{
-+  return key == "wii_extension" || key == "wii_sideways";
++  return key == "wii_extension" || key == "wii_sideways" || key == "wii_upright";
 +}
 +
 +std::string GetLocked(const std::string& key, const std::string& game_id)
@@ -13373,10 +13392,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..d1cb9f0
+index 0000000..e8a8c29
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5847 @@
+@@ -0,0 +1,5849 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -15023,7 +15042,7 @@ index 0000000..d1cb9f0
 +    }
 +  }
 +  static const std::set<std::string> WII_ONLY = {
-+      "wii_extension", "wii_sideways", "motion_controls", "wii_pointer", "wii_controller",
++      "wii_extension", "wii_sideways", "wii_upright", "motion_controls", "wii_pointer", "wii_controller",
 +      "wii_input",
 +      "sd_card",       "sd_sync",      "sd_writes",       "sd_size"};
 +  for (const char* category : PS4Settings::Categories())
@@ -18107,7 +18126,9 @@ index 0000000..d1cb9f0
 +    else if (key == "wii_extension")
 +      parts.push_back(value == "none" ? "no Nunchuk" : "Nunchuk");
 +    else if (key == "wii_sideways")
-+      parts.push_back(value == "on" ? "sideways Wii Remote" : "upright Wii Remote");
++      parts.push_back(value == "on" ? "sideways Wii Remote" : "Wii Remote pointed at the TV");
++    else if (key == "wii_upright")
++      parts.push_back(value == "on" ? "Wii Remote held like a wheel" : "Wii Remote held flat");
 +    else
 +      parts.push_back(key + " " + value);
 +  }
@@ -19930,10 +19951,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..15d8f47
+index 0000000..5731235
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1918 @@
+@@ -0,0 +1,1919 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -21769,7 +21790,8 @@ index 0000000..15d8f47
 +  if (s_wii_game)
 +  {
 +    PS4Controls::SetWiiAttachment(GetPS4Option("wii_extension", "nunchuk"),
-+                                  GetPS4Option("wii_sideways", "off") == "on");
++                                  GetPS4Option("wii_sideways", "off") == "on",
++                                  GetPS4Option("wii_upright", "off") == "on");
 +  }
 +  // PS Move controllers (players in the order PS4Pad uses: the user who started the app, then
 +  // the others) and motion controls for the Wii Remote. The Move is looked for only in Wii games
