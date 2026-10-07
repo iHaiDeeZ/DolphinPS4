@@ -5747,7 +5747,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..6d3ea9c 100644
+index 3bf40ea..a181827 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -6251,7 +6251,7 @@ index 3bf40ea..6d3ea9c 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,6 +732,34 @@ int main(const int argc, char* argv[])
+@@ -303,6 +732,46 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -6276,6 +6276,18 @@ index 3bf40ea..6d3ea9c 100644
 +    }
 +  }
 +  Platform::BootTrace("BootCore");
++#endif
++#ifdef __ORBIS__
++  // A homebrew program with a disc in the drive (launch.txt's disc= line, Play Online with
++  // Wiimmfi): Dolphin inserts the default ISO when it boots a program - for this run only.
++  {
++    const std::string disc = Platform::GetPS4Option("launch_disc", "");
++    if (!disc.empty())
++    {
++      Config::SetCurrent(Config::MAIN_DEFAULT_ISO, disc);
++      Platform::BootTrace(("disc in the drive: " + disc).c_str());
++    }
++  }
 +#endif
 +#ifdef USE_RETRO_ACHIEVEMENTS
 +  // RetroAchievements (the XMB's Settings -> RetroAchievements page saved the login token): off
@@ -11580,10 +11592,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..58d079a
+index 0000000..9ea39c7
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5211 @@
+@@ -0,0 +1,5347 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11630,6 +11642,9 @@ index 0000000..58d079a
 +#include "Common/FileSearch.h"
 +#include "Common/FileUtil.h"
 +#include "Common/HttpRequest.h"
++#include <mz.h>
++#include <mz_strm.h>
++#include "Common/MinizipUtil.h"
 +#include "Common/IniFile.h"
 +#include "DolphinNoGUI/PS4Cheats.h"
 +#include "DolphinNoGUI/PS4Controls.h"
@@ -12299,6 +12314,10 @@ index 0000000..58d079a
 +  void RemoveOldUpdates();
 +  void UpdateCapture(float dt);
 +  void UpdateComboCapture(float dt);
++  std::string WiimmfiPatcherPath() const { return m_data_dir + "/apps/wiimmfipatcher/boot.dol"; }
++  void StartWiimmfiDownload();
++  void UpdateWiimmfiDownload();
++  void LaunchWiimmfi();
 +  void LoadCovers();
 +  void BuildSettingRows();
 +  void ChangeSettingRow(int direction);
@@ -12394,6 +12413,12 @@ index 0000000..58d079a
 +  bool m_combo_armed = false;
 +  float m_combo_time = 0.0f;
 +  int m_delete_game = -1;  // the game waiting for the Delete Game answer
++  // Play Online (Wiimmfi): the game, the patcher's download, and what launch.txt gets.
++  int m_wiimmfi_game = -1;
++  std::thread m_wiimmfi_thread;
++  std::atomic<bool> m_wiimmfi_busy{false};
++  std::string m_wiimmfi_error;
++  std::string m_launch_override;
 +  bool m_capture_released = false;
 +  float m_capture_time = 0.0f;
 +  int m_capture_row = 0;
@@ -14009,6 +14034,24 @@ index 0000000..58d079a
 +        Play("confirm");
 +        return;
 +      }
++      else if (m_panel.title == "Game" &&
++               m_panel.options[m_panel.selected] == "Play Online (Wiimmfi)")
++      {
++        const Item& item = m_items[m_category][m_selected[m_category]];
++        m_wiimmfi_game = item.game;
++        if (std::filesystem::exists(WiimmfiPatcherPath()))
++        {
++          LaunchWiimmfi();
++          return;
++        }
++        m_panel = {};
++        m_panel.open = true;
++        m_panel.title = "Play Online (Wiimmfi)";
++        m_panel.lines = {"", "Downloading the Wiimmfi Patcher", "(Open Shop Channel)..."};
++        StartWiimmfiDownload();
++        Play("menu");
++        return;
++      }
 +      else if (m_panel.title == "Game" && m_panel.options[m_panel.selected] == "Delete Game")
 +      {
 +        const Item& item = m_items[m_category][m_selected[m_category]];
@@ -14174,7 +14217,10 @@ index 0000000..58d079a
 +                             "Set as Default ISO"};
 +      if (m_games[items[selected].game].wii && !m_games[items[selected].game].homebrew &&
 +          !m_games[items[selected].game].wad)
++      {
 +        m_panel.options.push_back("Riivolution Patches");
++        m_panel.options.push_back("Play Online (Wiimmfi)");
++      }
 +      m_panel.options.push_back("Controls");
 +      m_panel.options.push_back("Delete Game");
 +      Play("menu");
@@ -16175,6 +16221,105 @@ index 0000000..58d079a
 +    BuildAchievementRows();
 +}
 +
++// ---------------------------------------------------------------------------------------------
++// Play Online (Wiimmfi): the Wiimmfi Patcher (Open Shop Channel) runs with the game's disc in the
++// drive; it patches the game to use Wiimmfi's servers and starts it.
++
++void Menu::StartWiimmfiDownload()
++{
++  if (m_wiimmfi_thread.joinable())
++    return;
++  m_wiimmfi_busy = true;
++  m_wiimmfi_error.clear();
++  const std::string ca = m_assets_dir + "/xmb/cacert.pem";
++  const std::string target = WiimmfiPatcherPath();
++  m_wiimmfi_thread = std::thread([this, ca, target] {
++    std::vector<uint8_t> zip;
++    PS4Net::Request request;
++    request.url = "https://hbb1.oscwii.org/api/contents/wiimmfipatcher/wiimmfipatcher.zip";
++    request.ca_file = ca;
++    request.timeout_seconds = 60;
++    std::string error;
++    const long status = PS4Net::Get(
++        request,
++        [&](const char* data, size_t size) {
++          zip.insert(zip.end(), data, data + size);
++          return zip.size() < 16 * 1024 * 1024;
++        },
++        {}, &error);
++    std::string problem;
++    if (status != 200 || zip.empty())
++    {
++      problem = "Download failed: " + (error.empty() ? "HTTP " + std::to_string(status) : error);
++    }
++    else
++    {
++      void* reader = mz_zip_reader_create();
++      std::vector<uint8_t> dol;
++      if (mz_zip_reader_open_buffer(reader, zip.data(), static_cast<int32_t>(zip.size()), 0) ==
++              MZ_OK &&
++          mz_zip_reader_locate_entry(reader, "apps/wiimmfipatcher/boot.dol", 1) == MZ_OK)
++      {
++        mz_zip_file* info = nullptr;
++        if (mz_zip_reader_entry_get_info(reader, &info) == MZ_OK && info &&
++            info->uncompressed_size > 0 && info->uncompressed_size < 8 * 1024 * 1024)
++        {
++          dol.resize(static_cast<size_t>(info->uncompressed_size));
++          if (!Common::ReadFileFromZip(reader, &dol))
++            dol.clear();
++        }
++      }
++      mz_zip_reader_close(reader);
++      mz_zip_reader_delete(&reader);
++      if (dol.empty())
++      {
++        problem = "The download has no apps/wiimmfipatcher/boot.dol";
++      }
++      else
++      {
++        File::CreateFullPath(target);
++        if (!File::WriteStringToFile(target, std::string(dol.begin(), dol.end())))
++          problem = "Couldn't save " + target;
++      }
++    }
++    m_wiimmfi_error = problem;
++    m_wiimmfi_busy = false;
++  });
++}
++
++void Menu::UpdateWiimmfiDownload()
++{
++  if (m_wiimmfi_busy || !m_wiimmfi_thread.joinable())
++    return;
++  m_wiimmfi_thread.join();
++  Log(m_wiimmfi_error.empty() ? "wiimmfi patcher downloaded" : "wiimmfi: " + m_wiimmfi_error);
++  if (!m_wiimmfi_error.empty())
++  {
++    m_panel = {};
++    m_panel.open = true;
++    m_panel.title = "Play Online (Wiimmfi)";
++    m_panel.lines = {"", "Couldn't get the Wiimmfi Patcher.", "", m_wiimmfi_error};
++    Play("back");
++    return;
++  }
++  LaunchWiimmfi();
++}
++
++void Menu::LaunchWiimmfi()
++{
++  if (m_wiimmfi_game < 0 || m_wiimmfi_game >= static_cast<int>(m_games.size()))
++    return;
++  const Game& game = m_games[m_wiimmfi_game];
++  m_panel.open = false;
++  m_launch = m_wiimmfi_game;
++  m_launch_time = 0.0f;
++  m_launch_override = WiimmfiPatcherPath() + "\ndisc=" + game.path;
++  m_played[game.path] = static_cast<int64_t>(std::time(nullptr));
++  SavePlayed();
++  Log("play online (wiimmfi): " + game.path);
++  Play("launch");
++}
++
 +void Menu::OpenCenterPage()
 +{
 +  m_panel = {};
@@ -16715,6 +16860,7 @@ index 0000000..58d079a
 +    UpdateComboCapture(dt);
 +    UpdateKeyboard();
 +    UpdateAchievementLogin();
++    UpdateWiimmfiDownload();
 +    if (m_intro)
 +    {
 +      // Any button: straight to the dissolve.
@@ -16745,7 +16891,7 @@ index 0000000..58d079a
 +
 +    if (m_launch >= 0 && m_launch_time >= 0.75f)
 +    {
-+      result = m_games[m_launch].path;
++      result = m_launch_override.empty() ? m_games[m_launch].path : m_launch_override;
 +      break;
 +    }
 +  }
@@ -16763,6 +16909,8 @@ index 0000000..58d079a
 +    m_settings_thread.join();
 +  if (m_ra_thread.joinable())
 +    m_ra_thread.join();
++  if (m_wiimmfi_thread.joinable())
++    m_wiimmfi_thread.join();
 +  if (m_update_exit)
 +    result = EXIT_APP;
 +  if (m_update_restart)
@@ -17501,10 +17649,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..4d9b2fd
+index 0000000..bc2584a
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1794 @@
+@@ -0,0 +1,1814 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -18756,6 +18904,9 @@ index 0000000..4d9b2fd
 +// The game this process booted (its first disc). The in-game menu's Restart Game: launch.txt
 +// names it again, so the restarted app boots it the way the menu starts games.
 +std::string s_booted_game;
++// launch.txt's "disc=" line: the disc in the drive while a homebrew program runs (Play Online
++// with Wiimmfi: the Wiimmfi Patcher patches that game and starts it).
++std::string s_launch_disc;
 +extern "C" void ps4_relaunch_game()
 +{
 +  if (s_booted_game.empty())
@@ -18766,6 +18917,8 @@ index 0000000..4d9b2fd
 +  if (FILE* file = fopen((std::string(PS4_DATA_DIR_PATH) + "/launch.txt").c_str(), "w"))
 +  {
 +    fprintf(file, "%s\n", s_booted_game.c_str());
++    if (!s_launch_disc.empty())
++      fprintf(file, "disc=%s\n", s_launch_disc.c_str());
 +    fclose(file);
 +  }
 +}
@@ -19033,6 +19186,19 @@ index 0000000..4d9b2fd
 +    char line[1024] = {};
 +    if (fgets(line, sizeof(line), file))
 +      game = line;
++    char second[1024] = {};
++    if (fgets(second, sizeof(second), file))
++    {
++      std::string extra = second;
++      while (!extra.empty() && (extra.back() == '\n' || extra.back() == '\r'))
++        extra.pop_back();
++      if (extra.rfind("disc=", 0) == 0)
++      {
++        s_launch_disc = extra.substr(5);
++        s_options["launch_disc"] = s_launch_disc;
++        BootTrace(("launch disc: " + s_launch_disc).c_str());
++      }
++    }
 +    fclose(file);
 +    std::remove(launch_path.c_str());
 +    while (!game.empty() && (game.back() == '\n' || game.back() == '\r'))
@@ -19197,7 +19363,9 @@ index 0000000..4d9b2fd
 +  std::string controls_game;
 +  for (const LibraryEntry& entry : GameLibrary())
 +  {
-+    if (std::filesystem::path(entry.path) != std::filesystem::path(game))
++    if (std::filesystem::path(entry.path) != std::filesystem::path(game) &&
++        (s_launch_disc.empty() ||
++         std::filesystem::path(entry.path) != std::filesystem::path(s_launch_disc)))
 +      continue;
 +    controls_game = entry.game_id;
 +    s_wii_game = entry.wad || (entry.homebrew ? entry.wii :
