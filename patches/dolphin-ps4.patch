@@ -11592,10 +11592,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..9ea39c7
+index 0000000..ca894dc
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5347 @@
+@@ -0,0 +1,5505 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11645,6 +11645,7 @@ index 0000000..9ea39c7
 +#include <mz.h>
 +#include <mz_strm.h>
 +#include "Common/MinizipUtil.h"
++#include "Core/WiiUtils.h"
 +#include "Common/IniFile.h"
 +#include "DolphinNoGUI/PS4Cheats.h"
 +#include "DolphinNoGUI/PS4Controls.h"
@@ -12194,6 +12195,7 @@ index 0000000..9ea39c7
 +  SET_LANGUAGE,      // Language: the menus' (and games') language, a list of all of them
 +  SET_MEMCARD,       // a memory card: Slot A and the saves on it
 +  SET_ACHIEVEMENTS,  // RetroAchievements: account and options
++  SET_WIIMENU,       // Wii Menu: install it from Nintendo, start it or the Mii Channel
 +  SET_GROUP = 100,  // + index into PS4Settings::Categories(): an emulation settings list
 +};
 +
@@ -12316,6 +12318,23 @@ index 0000000..9ea39c7
 +  void UpdateComboCapture(float dt);
 +  std::string WiimmfiPatcherPath() const { return m_data_dir + "/apps/wiimmfipatcher/boot.dol"; }
 +  void StartWiimmfiDownload();
++  // Wii Menu: Dolphin's online system update (Nintendo's update servers) into the NAND.
++  void OpenWiiMenuPage();
++  void BuildWiiMenuRows();
++  void UpdateWiiMenu();
++  bool TitleInstalled(const char* path_in_title) const
++  {
++    return std::filesystem::exists(m_data_dir + "/User/Wii/title/" + path_in_title +
++                                   "/content/title.tmd");
++  }
++  std::thread m_nus_thread;
++  std::atomic<bool> m_nus_busy{false};
++  std::atomic<bool> m_nus_cancel{false};
++  std::atomic<size_t> m_nus_done{0};
++  std::atomic<size_t> m_nus_total{0};
++  std::string m_nus_result;
++  int m_nus_region = 0;  // USA, EUR, JPN, KOR
++  std::string m_direct_launch;  // "nand:<title ID>": started without a game
 +  void UpdateWiimmfiDownload();
 +  void LaunchWiimmfi();
 +  void LoadCovers();
@@ -12895,6 +12914,8 @@ index 0000000..9ea39c7
 +  settings.push_back({"Controls", "Remap the GameCube and Wii buttons", -1, -1, SET_CONTROLS});
 +  settings.push_back({"RetroAchievements", "Earn achievements (retroachievements.org)", -1, -1,
 +                      SET_ACHIEVEMENTS});
++  settings.push_back({"Wii Menu", "The Wii Menu and the Mii Channel, from Nintendo", -1, -1,
++                      SET_WIIMENU});
 +  settings.push_back({"Game Folder", GamesFolder(), -1, -1, SET_GAMES_DIR});
 +  settings.push_back({"Game Settings Center", "Recommended settings per game, from GitHub", -1, -1,
 +                      SET_CENTER});
@@ -13054,6 +13075,9 @@ index 0000000..9ea39c7
 +  case SET_ACHIEVEMENTS:
 +    OpenAchievementsPage();
 +    return;
++  case SET_WIIMENU:
++    OpenWiiMenuPage();
++    return;
 +  case SET_UPDATE_CHECK:
 +    m_panel.setting = SET_UPDATE;
 +    StartUpdateCheck(true);
@@ -13182,6 +13206,71 @@ index 0000000..9ea39c7
 +    direction = 1;
 +  if (m_panel.selected < 0 || m_panel.selected >= static_cast<int>(m_panel.rows.size()))
 +    return;
++  if (m_panel.setting == SET_WIIMENU)
++  {
++    static const char* const REGIONS[] = {"USA", "EUR", "JPN", "KOR"};
++    const std::string key = m_panel.rows[m_panel.selected].key;
++    if (key == "wm:region" && !m_nus_busy)
++    {
++      m_nus_region = (m_nus_region + (direction < 0 ? 3 : 1)) % 4;
++    }
++    else if (key == "wm:update" && !m_nus_busy && !m_nus_thread.joinable())
++    {
++      m_nus_busy = true;
++      m_nus_cancel = false;
++      m_nus_done = 0;
++      m_nus_total = 0;
++      m_nus_result.clear();
++      const std::string region = REGIONS[m_nus_region];
++      Log("wii menu: online update, region " + region);
++      m_nus_thread = std::thread([this, region] {
++        const WiiUtils::UpdateResult result = WiiUtils::DoOnlineUpdate(
++            [this](size_t done, size_t total, u64) {
++              m_nus_done = done;
++              m_nus_total = total;
++              return !m_nus_cancel.load();
++            },
++            region);
++        switch (result)
++        {
++        case WiiUtils::UpdateResult::Succeeded:
++          m_nus_result = "Installed";
++          break;
++        case WiiUtils::UpdateResult::AlreadyUpToDate:
++          m_nus_result = "Already up to date";
++          break;
++        case WiiUtils::UpdateResult::ServerFailed:
++          m_nus_result = "Nintendo's server didn't answer";
++          break;
++        case WiiUtils::UpdateResult::DownloadFailed:
++          m_nus_result = "A download failed";
++          break;
++        case WiiUtils::UpdateResult::ImportFailed:
++          m_nus_result = "Installing a title failed";
++          break;
++        case WiiUtils::UpdateResult::Cancelled:
++          m_nus_result = "Cancelled";
++          break;
++        default:
++          m_nus_result = "Failed";
++          break;
++        }
++        m_nus_busy = false;
++      });
++    }
++    else if (key == "wm:menu" && TitleInstalled("00000001/00000002"))
++    {
++      m_direct_launch = "nand:0000000100000002";
++      Play("launch");
++    }
++    else if (key == "wm:mii" && TitleInstalled("00010002/48414341"))
++    {
++      m_direct_launch = "nand:0001000248414341";
++      Play("launch");
++    }
++    BuildWiiMenuRows();
++    return;
++  }
 +  if (m_panel.setting == SET_ACHIEVEMENTS)
 +  {
 +    const std::string key = m_panel.rows[m_panel.selected].key;
@@ -16222,6 +16311,66 @@ index 0000000..9ea39c7
 +}
 +
 +// ---------------------------------------------------------------------------------------------
++// Wii Menu: the Wii's own menu and channels, downloaded from Nintendo's update servers into the
++// emulated Wii's storage (Dolphin's online system update), then started like a game.
++
++void Menu::OpenWiiMenuPage()
++{
++  m_panel = {};
++  m_panel.open = true;
++  m_panel.setting = SET_WIIMENU;
++  m_panel.title = "Wii Menu";
++  BuildWiiMenuRows();
++  m_panel.selected = 0;
++  MoveSettingRow(0);
++}
++
++void Menu::BuildWiiMenuRows()
++{
++  static const char* const REGION_NAMES[] = {"USA", "Europe", "Japan", "Korea"};
++  const bool menu = TitleInstalled("00000001/00000002");
++  const bool mii = TitleInstalled("00010002/48414341");
++  std::vector<SettingRow> rows;
++  rows.push_back({"Wii Menu", menu ? "Installed" : "Not installed", "wm:info"});
++  rows.push_back({"Region", REGION_NAMES[m_nus_region], "wm:region"});
++  std::string update;
++  if (m_nus_busy)
++  {
++    update = m_nus_total ? "Downloading " + std::to_string(m_nus_done.load()) + " / " +
++                               std::to_string(m_nus_total.load()) + "..." :
++                           "Contacting Nintendo...";
++  }
++  else
++  {
++    update = m_nus_result.empty() ? (menu ? "Update" : "Install") : m_nus_result;
++  }
++  rows.push_back({menu ? "Update from Nintendo" : "Install from Nintendo", update, "wm:update"});
++  if (menu)
++    rows.push_back({"Start Wii Menu", "", "wm:menu"});
++  if (mii)
++    rows.push_back({"Start Mii Channel", "Make and edit Miis", "wm:mii"});
++  m_panel.rows = std::move(rows);
++  m_panel.lines = {"Downloads the Wii's system software and channels from Nintendo.",
++                   "Miis you make in the Mii Channel appear in Wii games."};
++}
++
++void Menu::UpdateWiiMenu()
++{
++  if (!m_nus_thread.joinable())
++    return;
++  if (m_nus_busy)
++  {
++    if (m_panel.open && m_panel.setting == SET_WIIMENU)
++      BuildWiiMenuRows();
++    return;
++  }
++  m_nus_thread.join();
++  Log("wii menu: " + m_nus_result);
++  if (m_panel.open && m_panel.setting == SET_WIIMENU)
++    BuildWiiMenuRows();
++}
++
++// ---------------------------------------------------------------------------------------------
 +// Play Online (Wiimmfi): the Wiimmfi Patcher (Open Shop Channel) runs with the game's disc in the
 +// drive; it patches the game to use Wiimmfi's servers and starts it.
 +
@@ -16856,11 +17005,17 @@ index 0000000..9ea39c7
 +    m_time += dt;
 +    io.DeltaTime = dt > 0.0f ? dt : 1.0f / 60.0f;
 +
++    if (!m_direct_launch.empty())
++    {
++      result = m_direct_launch;
++      break;
++    }
 +    UpdateCapture(dt);
 +    UpdateComboCapture(dt);
 +    UpdateKeyboard();
 +    UpdateAchievementLogin();
 +    UpdateWiimmfiDownload();
++    UpdateWiiMenu();
 +    if (m_intro)
 +    {
 +      // Any button: straight to the dissolve.
@@ -16911,6 +17066,9 @@ index 0000000..9ea39c7
 +    m_ra_thread.join();
 +  if (m_wiimmfi_thread.joinable())
 +    m_wiimmfi_thread.join();
++  m_nus_cancel = true;
++  if (m_nus_thread.joinable())
++    m_nus_thread.join();
 +  if (m_update_exit)
 +    result = EXIT_APP;
 +  if (m_update_restart)
@@ -17649,10 +17807,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..bc2584a
+index 0000000..4ccbbed
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1814 @@
+@@ -0,0 +1,1823 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -19296,6 +19454,13 @@ index 0000000..bc2584a
 +  else
 +  {
 +    s_booted_game = game;
++    // An installed Wii title (the XMB's Wii Menu page: the Wii Menu, the Mii Channel).
++    if (game.rfind("nand:", 0) == 0)
++    {
++      BootTrace(("boot: Wii title " + game.substr(5)).c_str());
++      args.push_back("--nand_title=" + game.substr(5));
++    }
++    else
 +    for (const std::string& disc : FindAllDiscs(game))
 +    {
 +      fprintf(stderr, "[dolphin] booting %s\n", disc.c_str());
@@ -19373,6 +19538,8 @@ index 0000000..bc2584a
 +                                                    (entry.game_id[0] == 'R' || entry.game_id[0] == 'S'));
 +    break;
 +  }
++  if (game.rfind("nand:", 0) == 0)
++    s_wii_game = true;  // a Wii title: the Wii Remote settings apply
 +  BootTrace(s_wii_game ? "Wii game: Wii controller settings applied" :
 +                         "GameCube game: Wii settings left alone");
 +  // The game's own controller layout (Triangle on it -> Controls -> This Game), else the normal.
