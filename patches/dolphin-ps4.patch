@@ -7809,10 +7809,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..5afa40d
+index 0000000..22760a2
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,1223 @@
+@@ -0,0 +1,1269 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -7924,6 +7924,28 @@ index 0000000..5afa40d
 +bool s_open = false;
 +std::string s_title;
 +std::string s_subtitle;
++std::string s_playtime;  // "Play time: 3 h 12 min" under the title (the menu's game)
++
++// Play time of the running game: counted while it runs (not paused, menu closed), written to
++// playtime.ini every minute and when the game is quit.
++double s_play_pending = 0.0;
++Clock::time_point s_play_last;
++Clock::time_point s_play_flushed;
++
++std::string PlayKey()
++{
++  const std::string id = SConfig::GetInstance().GetGameID();
++  return id.empty() || id == "00000000" ? SConfig::GetInstance().GetTitleName() : id;
++}
++
++void FlushPlayTime()
++{
++  const int64_t whole = static_cast<int64_t>(s_play_pending);
++  if (whole <= 0)
++    return;
++  PS4PlayTime::Add(PlayKey(), whole);
++  s_play_pending -= static_cast<double>(whole);
++}
 +std::vector<Row> s_rows;
 +int s_selected = 0;  // index into s_rows
 +std::vector<std::pair<Glyph, std::string>> s_hints;
@@ -8191,8 +8213,11 @@ index 0000000..5afa40d
 +  }
 +  s_main_items.insert(s_main_items.end(), {MAIN_SETTINGS, MAIN_CHEATS, MAIN_RESTART, MAIN_QUIT});
 +  BuildRows();
++  FlushPlayTime();
++  const std::string played = PS4PlayTime::Text(PS4PlayTime::Seconds(PlayKey()));
 +  {
 +    std::lock_guard lock(s_mutex);
++    s_playtime = played.empty() ? std::string() : "Play time: " + played;
 +    s_title = std::move(title);
 +    s_open = true;
 +  }
@@ -8346,6 +8371,7 @@ index 0000000..5afa40d
 +// A clean stop writes the memory cards; the app then restarts into the XMB (PlatformPS4).
 +void QuitToXMB(Core::System& system, const char* why)
 +{
++  FlushPlayTime();
 +  Log(why);
 +  s_quit = true;
 +  s_quit_time = Clock::now();
@@ -8677,6 +8703,9 @@ index 0000000..5afa40d
 +    dl->AddText(regular, 26 * s, ImVec2(x0 + 70 * s, 90 * s), accent, PS4Lang::T(s_subtitle).c_str());
 +    dl->AddText(bold, 40 * s, ImVec2(x0 + 70 * s, 122 * s), white, s_title.c_str(), nullptr,
 +                panel_w - 120 * s);
++    if (!s_playtime.empty())
++      dl->AddText(regular, 24 * s, ImVec2(x0 + 70 * s, 172 * s), dim,
++                  PS4Lang::T(s_playtime).c_str());
 +
 +    // The list scrolls to keep the selection in view.
 +    const float row_h = 62.0f * s;
@@ -8921,6 +8950,23 @@ index 0000000..5afa40d
 +    std::lock_guard lock(s_mutex);
 +    open = s_open;
 +  }
++  // Play time: running with the menu closed (at most half a second per poll, so a stall or a
++  // console sleep adds nothing), written every minute.
++  {
++    const Clock::time_point now = Clock::now();
++    if (s_play_last != Clock::time_point{} && !open &&
++        Core::GetState(system) == Core::State::Running)
++    {
++      s_play_pending += std::min(0.5, std::chrono::duration<double>(now - s_play_last).count());
++    }
++    s_play_last = now;
++    if (now - s_play_flushed > std::chrono::seconds(60))
++    {
++      s_play_flushed = now;
++      FlushPlayTime();
++    }
++  }
++
 +  // Releasing every button ends the post-menu input block.
 +  if (ps4_pad_block && !open && held == 0)
 +    ps4_pad_block = 0;
@@ -9967,10 +10013,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..7970255
+index 0000000..f288cd9
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,663 @@
+@@ -0,0 +1,751 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -9981,6 +10027,10 @@ index 0000000..7970255
 +#include <fstream>
 +#include <map>
 +#include <mutex>
++
++#include <cstdio>
++#include <fcntl.h>
++#include <unistd.h>
 +
 +#include "Common/Config/Config.h"
 +#include "Common/Logging/LogManager.h"
@@ -10276,9 +10326,13 @@ index 0000000..7970255
 +  return nullptr;
 +}
 +
++// The data folder (settings.ini's), for playtime.ini.
++static std::string s_data_dir;
++
 +void Load(const std::string& data_dir)
 +{
 +  std::lock_guard lock(s_mutex);
++  s_data_dir = data_dir;
 +  s_path = data_dir + "/settings.ini";
 +  s_sections.clear();
 +  std::ifstream file(s_path);
@@ -10634,12 +10688,92 @@ index 0000000..7970255
 +    Config::SetBase(Config::MAIN_AUDIO_VOLUME, std::clamp(std::atoi(value.c_str()), 0, 100));
 +}
 +}  // namespace PS4Settings
++
++namespace PS4PlayTime
++{
++namespace
++{
++std::mutex s_play_mutex;
++
++std::string PlayTimePath()
++{
++  std::lock_guard lock(PS4Settings::s_mutex);
++  return PS4Settings::s_data_dir.empty() ? std::string() : PS4Settings::s_data_dir + "/playtime.ini";
++}
++
++std::map<std::string, int64_t> ReadAll(const std::string& path)
++{
++  std::map<std::string, int64_t> times;
++  std::ifstream file(path);
++  std::string line;
++  while (std::getline(file, line))
++  {
++    while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
++      line.pop_back();
++    const size_t space = line.find(' ');
++    if (space != std::string::npos && space > 0)
++      times[line.substr(space + 1)] = std::atoll(line.c_str());
++  }
++  return times;
++}
++}  // namespace
++
++int64_t Seconds(const std::string& game)
++{
++  if (game.empty())
++    return 0;
++  std::lock_guard lock(s_play_mutex);
++  const auto times = ReadAll(PlayTimePath());
++  const auto it = times.find(game);
++  return it == times.end() ? 0 : it->second;
++}
++
++void Add(const std::string& game, int64_t seconds)
++{
++  if (game.empty() || seconds <= 0)
++    return;
++  std::lock_guard lock(s_play_mutex);
++  const std::string path = PlayTimePath();
++  if (path.empty())
++    return;
++  auto times = ReadAll(path);
++  times[game] += seconds;
++  // Written beside it, flushed to the disc, then renamed over it: a power cut leaves the old or
++  // the new file, never an empty one.
++  const std::string temp = path + ".tmp";
++  {
++    std::ofstream file(temp, std::ios::trunc);
++    for (const auto& [name, total] : times)
++      file << total << ' ' << name << '\n';
++  }
++  const int fd = open(temp.c_str(), O_RDONLY);
++  if (fd >= 0)
++  {
++    fsync(fd);
++    close(fd);
++  }
++  std::rename(temp.c_str(), path.c_str());
++}
++
++std::string Text(int64_t seconds)
++{
++  if (seconds <= 0)
++    return {};
++  if (seconds < 60)
++    return "Less than a minute";
++  const int64_t minutes = seconds / 60;
++  if (minutes < 60)
++    return std::to_string(minutes) + " min";
++  const int64_t hours = minutes / 60;
++  return std::to_string(hours) + " h" + (minutes % 60 ? " " + std::to_string(minutes % 60) + " min" : "");
++}
++}  // namespace PS4PlayTime
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.h b/Source/Core/DolphinNoGUI/PS4Settings.h
 new file mode 100755
-index 0000000..321720c
+index 0000000..036b351
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.h
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,98 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10728,6 +10862,16 @@ index 0000000..321720c
 +// A Diagnostics switch as applied (its own value and All Diagnostics), after ApplyLive.
 +bool DiagnosticOn(const std::string& key);
 +}  // namespace PS4Settings
++
++// Total play time per game: data_dir/playtime.ini, "<seconds> <game ID>" per line (the file path
++// for a game without an ID). Counted while a game runs, not paused and not in the in-game menu.
++namespace PS4PlayTime
++{
++int64_t Seconds(const std::string& game);
++void Add(const std::string& game, int64_t seconds);
++// "3 h 12 min", "12 min", "Less than a minute"; empty for 0.
++std::string Text(int64_t seconds);
++}  // namespace PS4PlayTime
 diff --git a/Source/Core/DolphinNoGUI/PS4Updater.cpp b/Source/Core/DolphinNoGUI/PS4Updater.cpp
 new file mode 100755
 index 0000000..56e00cd
@@ -11166,10 +11310,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..62c1994
+index 0000000..3120cf2
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,4845 @@
+@@ -0,0 +1,4875 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11872,6 +12016,27 @@ index 0000000..62c1994
 +  int LibraryTab() const;
 +  void LoadPlayed();
 +  void SavePlayed() const;
++  // Total play time (playtime.ini, by game ID; read once per menu start).
++  int64_t PlayTime(const Game& game) const
++  {
++    if (m_playtime_cache.empty())
++    {
++      std::ifstream file(m_data_dir + "/playtime.ini");
++      std::string line;
++      while (std::getline(file, line))
++      {
++        while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
++          line.pop_back();
++        const size_t space = line.find(' ');
++        if (space != std::string::npos && space > 0)
++          m_playtime_cache[line.substr(space + 1)] = std::atoll(line.c_str());
++      }
++      m_playtime_cache[""] = 0;  // read
++    }
++    const auto it = m_playtime_cache.find(game.id.empty() ? game.title : game.id);
++    return it == m_playtime_cache.end() ? 0 : it->second;
++  }
++  mutable std::map<std::string, int64_t> m_playtime_cache;
 +  int64_t Played(const std::string& path) const
 +  {
 +    const auto it = m_played.find(path);
@@ -12438,6 +12603,9 @@ index 0000000..62c1994
 +  {
 +    const Game& game = m_games[i];
 +    std::string detail = game.id;
++    const std::string played = PS4PlayTime::Text(PlayTime(game));
++    if (!played.empty())
++      detail += (detail.empty() ? "" : "  -  ") + played;
 +    if (game.discs > 1)
 +      detail += "  -  " + std::to_string(game.discs) + " discs";
 +    if (!m_prefs.default_game.empty() && game.path == m_prefs.default_game)
@@ -13565,6 +13733,9 @@ index 0000000..62c1994
 +                                              "GameCube"),
 +                         "Game ID: " + game.id,
 +                         "Discs: " + std::to_string(game.discs),
++                         "Play time: " + (PS4PlayTime::Text(PlayTime(game)).empty() ?
++                                              std::string("None yet") :
++                                              PS4PlayTime::Text(PlayTime(game))),
 +                         "File: " + std::filesystem::path(game.path).filename().string()};
 +        Play("confirm");
 +        return;
@@ -14964,6 +15135,9 @@ index 0000000..62c1994
 +  const float tw = TextWidth(m_bold, title_size, game.title);
 +  Text(dl, m_bold, title_size, ImVec2(W * 0.5f - tw * 0.5f, 800), Rgba(theme.text, alpha), game.title);
 +  std::string info = std::string(game.wii ? "Wii" : "GameCube") + "  -  " + PlayedText(Played(game.path));
++  const std::string played = PS4PlayTime::Text(PlayTime(game));
++  if (!played.empty())
++    info += "  -  " + played;
 +  if (game.discs > 1)
 +    info += "  -  " + std::to_string(game.discs) + " discs";
 +  if (!m_prefs.default_game.empty() && game.path == m_prefs.default_game)
