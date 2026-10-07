@@ -3039,6 +3039,47 @@ index ed320f5..e6f93a5 100644
  }
  
  NetKDRequestDevice::~NetKDRequestDevice()
+diff --git a/Source/Core/Core/IOS/STM/STM.cpp b/Source/Core/Core/IOS/STM/STM.cpp
+index e262fc4..ab8cf7c 100644
+--- a/Source/Core/Core/IOS/STM/STM.cpp
++++ b/Source/Core/Core/IOS/STM/STM.cpp
+@@ -12,6 +12,10 @@
+ #include "Core/HW/Memmap.h"
+ #include "Core/System.h"
+ 
++#ifdef __ORBIS__
++extern "C" void ps4_request_quit_to_menu();  // DolphinNoGUI/PS4IngameMenu.cpp
++#endif
++
+ namespace IOS::HLE
+ {
+ static std::unique_ptr<IOCtlRequest> s_event_hook_request;
+@@ -27,7 +31,13 @@ std::optional<IPCReply> STMImmediateDevice::IOCtl(const IOCtlRequest& request)
+   case IOCTL_STM_IDLE:
+   case IOCTL_STM_SHUTDOWN:
+     NOTICE_LOG_FMT(IOS_STM, "IOCTL_STM_IDLE or IOCTL_STM_SHUTDOWN received, shutting down");
++#ifdef __ORBIS__
++    // PS4 port: the HOME Menu's power off goes back to the game list, as Quit Game does (a
++    // plain stop read as the game stopping by itself).
++    ps4_request_quit_to_menu();
++#else
+     Core::QueueHostJob(&Core::Stop, false);
++#endif
+     break;
+ 
+   case IOCTL_STM_RELEASE_EH:
+@@ -44,6 +54,11 @@ std::optional<IPCReply> STMImmediateDevice::IOCtl(const IOCtlRequest& request)
+   case IOCTL_STM_HOTRESET:
+     INFO_LOG_FMT(IOS_STM, "{} - IOCtl:", GetDeviceName());
+     INFO_LOG_FMT(IOS_STM, "    IOCTL_STM_HOTRESET");
++#ifdef __ORBIS__
++    // PS4 port: a reset into the Wii Menu (the HOME Menu's "Wii Menu" when the game found no
++    // Wii Menu installed, Mario Kart Wii) left the game drawing nothing: back to the game list.
++    ps4_request_quit_to_menu();
++#endif
+     break;
+ 
+   case IOCTL_STM_VIDIMMING:  // (Input: 20 bytes, Output: 20 bytes)
 diff --git a/Source/Core/Core/MemTools.cpp b/Source/Core/Core/MemTools.cpp
 index a7919fb..8de7f4d 100644
 --- a/Source/Core/Core/MemTools.cpp
@@ -8466,10 +8507,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..5d3799b
+index 0000000..ce689b2
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,2514 @@
+@@ -0,0 +1,2515 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10721,7 +10762,8 @@ index 0000000..5d3799b
 +}
 +}  // namespace PS4IngameMenu
 +
-+// IOS ES (Core/IOS/ES/ES.cpp), any thread: a game chose "Wii Menu" in its HOME Menu.
++// IOS ES / STM (Core/IOS/ES/ES.cpp, Core/IOS/STM/STM.cpp), any thread: a game chose "Wii Menu"
++// or power off in its HOME Menu.
 +extern "C" void ps4_request_quit_to_menu()
 +{
 +  PS4IngameMenu::s_quit_requested = true;
@@ -10778,7 +10820,7 @@ index 0000000..5d3799b
 +    return;
 +  }
 +  if (s_quit_requested.exchange(false) && !s_quit)
-+    QuitToXMB(system, "the game asked for the Wii Menu: quit to the XMB");
++    QuitToXMB(system, "the game asked for the Wii Menu, a reset or power off: quit to the XMB");
 +  if (s_quit)
 +  {
 +    // The clean stop normally ends the main loop quickly; don't wait forever on it.
