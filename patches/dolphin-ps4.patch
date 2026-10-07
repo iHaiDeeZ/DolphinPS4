@@ -4702,7 +4702,7 @@ index 34c327d..2003140 100644
    {
      Gen::XEmitter emit(location, location + 5);
 diff --git a/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.cpp b/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
-index 1019aa7..fdc51e6 100644
+index 1019aa7..6a1b53e 100644
 --- a/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 +++ b/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 @@ -3,6 +3,7 @@
@@ -4885,7 +4885,7 @@ index 1019aa7..fdc51e6 100644
    // In the case of Jit64AsmCommon routines, the state we want to store here isn't known
    // when compiling the routine, so the caller has to store it themselves.
    if (!(flags & SAFE_LOADSTORE_NO_UPDATE_PC))
-@@ -569,6 +707,68 @@ void EmuCodeBlock::SafeWriteRegToReg(OpArg reg_value, X64Reg reg_addr, int acces
+@@ -569,6 +707,75 @@ void EmuCodeBlock::SafeWriteRegToReg(OpArg reg_value, X64Reg reg_addr, int acces
      FlushPCBeforeSlowAccess();
    }
  
@@ -4942,7 +4942,14 @@ index 1019aa7..fdc51e6 100644
 +      CMP(64, R(tmp), Imm8(GPFifo::GATHER_PIPE_SIZE));
 +      gp_written = J_CC(CC_B, Jump::Near);
 +      ABI_PushRegistersAndAdjustStack(registersInUse, gp_alignment);
-+      ABI_CallFunctionP(GPFifo::CheckGatherPipe, &m_jit.m_system.GetGPFifo());
++      // A store already known as a gather pipe write (its block was recompiled with the
++      // exception check after it) only sends the burst; the others are recorded once
++      // (CheckGatherPipe -> CompileExceptionCheck). Looking the store up at every burst cost
++      // 3.4% of Metroid Prime's CPU thread.
++      if (m_jit.js.fifoWriteAddresses.contains(m_jit.js.compilerPC))
++        ABI_CallFunctionP(GPFifo::UpdateGatherPipe, &m_jit.m_system.GetGPFifo());
++      else
++        ABI_CallFunctionP(GPFifo::CheckGatherPipe, &m_jit.m_system.GetGPFifo());
 +      ABI_PopRegistersAndAdjustStack(registersInUse, gp_alignment);
 +      gp_burst_done = J(Jump::Near);
 +      SetJumpTarget(below);
@@ -4954,7 +4961,7 @@ index 1019aa7..fdc51e6 100644
    size_t rsp_alignment = (flags & SAFE_LOADSTORE_NO_PROLOG) ? 8 : 0;
    ABI_PushRegistersAndAdjustStack(registersInUse, rsp_alignment);
  
-@@ -605,6 +805,15 @@ void EmuCodeBlock::SafeWriteRegToReg(OpArg reg_value, X64Reg reg_addr, int acces
+@@ -605,6 +812,15 @@ void EmuCodeBlock::SafeWriteRegToReg(OpArg reg_value, X64Reg reg_addr, int acces
    ABI_PopRegistersAndAdjustStack(registersInUse, rsp_alignment);
  
    MemoryExceptionCheck();
@@ -4970,7 +4977,7 @@ index 1019aa7..fdc51e6 100644
  
    if (fast_check_address)
    {
-@@ -647,6 +856,18 @@ bool EmuCodeBlock::WriteToConstAddress(int accessSize, OpArg arg, u32 address,
+@@ -647,6 +863,18 @@ bool EmuCodeBlock::WriteToConstAddress(int accessSize, OpArg arg, u32 address,
        MOV(accessSize, R(arg_reg), arg);
  
      // And store it in the gather pipe
