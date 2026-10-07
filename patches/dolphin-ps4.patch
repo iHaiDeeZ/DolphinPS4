@@ -7809,10 +7809,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..6673fb7
+index 0000000..5afa40d
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,1087 @@
+@@ -0,0 +1,1223 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -8357,10 +8357,138 @@ index 0000000..6673fb7
 +  Core::Stop(system);
 +}
 +
++// Hotkey capture (Settings -> Hotkeys, Cross): the buttons held together, taken when they are
++// all released; Circle alone cancels.
++std::string s_capture_key;
++uint32_t s_capture_seen = 0;
++bool s_capture_armed = false;
++Clock::time_point s_capture_start;
++
++void StartCapture(const std::string& key)
++{
++  s_capture_key = key;
++  s_capture_seen = 0;
++  s_capture_armed = false;
++  s_capture_start = Clock::now();
++  Toast("Hold the buttons together, then let go", 8000);
++}
++
++void UpdateCapture(uint32_t held)
++{
++  held &= PS4Settings::HotkeyButtons();
++  if (!s_capture_armed)
++  {
++    s_capture_armed = held == 0;  // Cross, which started this, released first
++    return;
++  }
++  if (Clock::now() - s_capture_start > std::chrono::seconds(10))
++  {
++    s_capture_key.clear();
++    Toast("Hotkey unchanged");
++    return;
++  }
++  if (held)
++  {
++    s_capture_seen |= held;
++    return;
++  }
++  if (!s_capture_seen)
++    return;
++  const uint32_t mask = s_capture_seen;
++  s_capture_seen = 0;
++  if (mask == ORBIS_PAD_BUTTON_CIRCLE)
++  {
++    s_capture_key.clear();
++    Toast("Hotkey unchanged");
++    return;
++  }
++  if (__builtin_popcount(mask) < 2)
++  {
++    s_capture_start = Clock::now();
++    Toast("Two or more buttons together", 4000);
++    return;
++  }
++  if (mask == (ORBIS_PAD_BUTTON_L3 | ORBIS_PAD_BUTTON_R3))
++  {
++    s_capture_start = Clock::now();
++    Toast("L3 + R3 opens this menu: try other buttons", 4000);
++    return;
++  }
++  const std::string name = PS4Settings::HotkeyName(mask);
++  PS4Settings::Set(s_capture_key, name, {});
++  const PS4Settings::Setting* setting = PS4Settings::Find(s_capture_key);
++  Toast((setting ? std::string(setting->label) : s_capture_key) + ": " + name);
++  Log("hotkey " + s_capture_key + "=" + name);
++  s_capture_key.clear();
++  BuildRows();
++}
++
++// While a game runs (menu closed): Save State / Load State on their hotkeys, current slot.
++void CheckHotkeys(Core::System& system, uint32_t held, uint32_t pressed)
++{
++  static std::string s_save_text, s_load_text;
++  static uint32_t s_save_mask = 0, s_load_mask = 0;
++  const std::string save = PS4Settings::Get("hotkey_save");
++  const std::string load = PS4Settings::Get("hotkey_load");
++  if (save != s_save_text)
++  {
++    s_save_text = save;
++    s_save_mask = PS4Settings::HotkeyMask(save);
++  }
++  if (load != s_load_text)
++  {
++    s_load_text = load;
++    s_load_mask = PS4Settings::HotkeyMask(load);
++  }
++  const auto fired = [&](uint32_t mask) {
++    return __builtin_popcount(mask) >= 2 && (held & mask) == mask && (pressed & mask);
++  };
++  if (fired(s_save_mask))
++  {
++    ps4_pad_block = 1;  // the game sees a neutral pad until the buttons are released
++    if (ps4_state_busy > 0)
++    {
++      Toast("Still saving, please wait...");
++      return;
++    }
++    Log("hotkey: saving state " + std::to_string(s_slot));
++    s_saving_slot = s_slot;
++    State::Save(system, static_cast<u32>(s_slot));
++    Toast("Saving to slot " + std::to_string(s_slot) + "...");
++  }
++  else if (fired(s_load_mask))
++  {
++    ps4_pad_block = 1;
++    if (ps4_state_busy > 0)
++    {
++      Toast("Still saving, please wait...");
++      return;
++    }
++    std::string made_by;
++    const State::PS4Slot status = State::PS4CheckSlot(static_cast<u32>(s_slot), &made_by);
++    if (status != State::PS4Slot::Ready)
++    {
++      Toast(SlotProblem(s_slot, status, made_by), 4500);
++      return;
++    }
++    Log("hotkey: loading state " + std::to_string(s_slot));
++    s_loading_slot = s_slot;
++    State::Load(system, static_cast<u32>(s_slot));
++    Toast("Loading slot " + std::to_string(s_slot) + "...");
++  }
++}
++
 +void Activate(Core::System& system)
 +{
 +  if (s_page != Page::Main)
 +  {
++    if (s_page == Page::Settings && s_settings_selected >= 0 &&
++        s_settings_selected < static_cast<int>(s_row_keys.size()) &&
++        PS4Settings::IsHotkey(s_row_keys[s_settings_selected]))
++    {
++      StartCapture(s_row_keys[s_settings_selected]);
++      return;
++    }
 +    ChangeSetting(s_settings_selected, 1);
 +    return;
 +  }
@@ -8806,6 +8934,14 @@ index 0000000..6673fb7
 +      s_last_action = "open";
 +      Open(system);
 +    }
++    else if (!ps4_pad_block && Core::GetState(system) == Core::State::Running)
++    {
++      CheckHotkeys(system, held, pressed);
++    }
++  }
++  else if (!s_capture_key.empty())
++  {
++    UpdateCapture(held);
 +  }
 +  else
 +  {
@@ -9831,10 +9967,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..0597c5e
+index 0000000..7970255
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,571 @@
+@@ -0,0 +1,663 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10006,10 +10142,48 @@ index 0000000..0597c5e
 +     "Dolphin's own messages (dolphin.log)."},
 +    {"profile", "Profiler", "Diagnostics", {{"off", "Off"}, {"on", "On"}}, "off", true,
 +     "Records where the time goes (samples.log). Costs speed - only for diagnosing slow games."},
++    // Hotkeys (the same for every game)
++    {"hotkey_save", "Save State", "Hotkeys",
++     {{"off", "Off"},
++      {"Touchpad + L1", "Touchpad + L1"},
++      {"Touchpad + R1", "Touchpad + R1"},
++      {"L3 + Left", "L3 + Left"},
++      {"L3 + Right", "L3 + Right"},
++      {"R3 + Left", "R3 + Left"},
++      {"R3 + Right", "R3 + Right"},
++      {"L1 + R1 + Square", "L1 + R1 + Square"},
++      {"L1 + R1 + Triangle", "L1 + R1 + Triangle"},
++      {"Options + L1", "Options + L1"},
++      {"Options + R1", "Options + R1"}},
++     "off", true,
++     "Buttons pressed together save to the current slot while you play. Cross: press your own."},
++    {"hotkey_load", "Load State", "Hotkeys",
++     {{"off", "Off"},
++      {"Touchpad + L1", "Touchpad + L1"},
++      {"Touchpad + R1", "Touchpad + R1"},
++      {"L3 + Left", "L3 + Left"},
++      {"L3 + Right", "L3 + Right"},
++      {"R3 + Left", "R3 + Left"},
++      {"R3 + Right", "R3 + Right"},
++      {"L1 + R1 + Square", "L1 + R1 + Square"},
++      {"L1 + R1 + Triangle", "L1 + R1 + Triangle"},
++      {"Options + L1", "Options + L1"},
++      {"Options + R1", "Options + R1"}},
++     "off", true,
++     "Buttons pressed together load the current slot while you play. Cross: press your own."},
 +};
 +
 +const std::vector<const char*> CATEGORIES = {"Video", "Graphics", "Performance", "System",
-+                                             "Diagnostics"};
++                                             "Diagnostics", "Hotkeys"};
++
++// Hotkey buttons and their names in settings.ini ("L1 + Square"); ORBIS_PAD_BUTTON_* values.
++constexpr std::pair<uint32_t, const char*> HOTKEY_BUTTONS[] = {
++    {0x00000400, "L1"},       {0x00000800, "R1"},     {0x00000100, "L2"},
++    {0x00000200, "R2"},       {0x00000002, "L3"},     {0x00000004, "R3"},
++    {0x00004000, "Cross"},    {0x00002000, "Circle"}, {0x00008000, "Square"},
++    {0x00001000, "Triangle"}, {0x00000010, "Up"},     {0x00000040, "Down"},
++    {0x00000080, "Left"},     {0x00000020, "Right"},  {0x00000008, "Options"},
++    {0x00100000, "Touchpad"}};
 +
 +std::mutex s_mutex;
 +std::string s_path;
@@ -10162,14 +10336,14 @@ index 0000000..0597c5e
 +std::string Get(const std::string& key, const std::string& game_id)
 +{
 +  std::lock_guard lock(s_mutex);
-+  return GetLocked(key, game_id);
++  return GetLocked(key, IsHotkey(key) ? std::string() : game_id);
 +}
 +
 +void Set(const std::string& key, const std::string& value, const std::string& game_id)
 +{
 +  {
 +    std::lock_guard lock(s_mutex);
-+    s_sections[game_id.empty() ? "global" : game_id][key] = value;
++    s_sections[game_id.empty() || IsHotkey(key) ? "global" : game_id][key] = value;
 +  }
 +  Save();
 +}
@@ -10270,6 +10444,60 @@ index 0000000..0597c5e
 +      return choice.label;
 +  }
 +  return value;
++}
++
++bool IsHotkey(const std::string& key)
++{
++  return key.rfind("hotkey_", 0) == 0;
++}
++
++uint32_t HotkeyButtons()
++{
++  uint32_t all = 0;
++  for (const auto& [bit, name] : HOTKEY_BUTTONS)
++    all |= bit;
++  return all;
++}
++
++uint32_t HotkeyMask(const std::string& value)
++{
++  uint32_t mask = 0;
++  size_t start = 0;
++  while (start < value.size())
++  {
++    size_t end = value.find('+', start);
++    if (end == std::string::npos)
++      end = value.size();
++    std::string part = value.substr(start, end - start);
++    while (!part.empty() && part.front() == ' ')
++      part.erase(part.begin());
++    while (!part.empty() && part.back() == ' ')
++      part.pop_back();
++    bool known = false;
++    for (const auto& [bit, name] : HOTKEY_BUTTONS)
++    {
++      if (part == name)
++      {
++        mask |= bit;
++        known = true;
++      }
++    }
++    if (!known)
++      return 0;  // "off", or something this version doesn't know
++    start = end + 1;
++  }
++  return mask;
++}
++
++std::string HotkeyName(uint32_t mask)
++{
++  std::string name;
++  for (const auto& [bit, button] : HOTKEY_BUTTONS)
++  {
++    if (mask & bit)
++      name += (name.empty() ? "" : " + ") + std::string(button);
++  }
++  return name.empty() ? "off" : name;
 +}
 +
 +std::string Step(const Setting& setting, const std::string& value, int direction)
@@ -10408,10 +10636,10 @@ index 0000000..0597c5e
 +}  // namespace PS4Settings
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.h b/Source/Core/DolphinNoGUI/PS4Settings.h
 new file mode 100755
-index 0000000..a668b6a
+index 0000000..321720c
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.h
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,88 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10487,6 +10715,13 @@ index 0000000..a668b6a
 +std::string LabelOf(const Setting& setting, const std::string& value);
 +// Next / previous choice (wrapping).
 +std::string Step(const Setting& setting, const std::string& value, int direction);
++
++// Hotkeys: two or more DualShock 4 buttons pressed together ("L1 + Square"), the same for every
++// game. Mask of ORBIS_PAD_BUTTON_* (0 for Off or an unreadable value), and back.
++bool IsHotkey(const std::string& key);
++uint32_t HotkeyMask(const std::string& value);
++std::string HotkeyName(uint32_t mask);
++uint32_t HotkeyButtons();
 +
 +// Game process only: applies a live setting to the running emulator (Config / port globals).
 +void ApplyLive(const std::string& key, const std::string& value);
@@ -10931,10 +11166,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..2a0cae6
+index 0000000..62c1994
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,4706 @@
+@@ -0,0 +1,4845 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11622,6 +11857,7 @@ index 0000000..2a0cae6
 +  void ShowUpdatePanel();
 +  void RemoveOldUpdates();
 +  void UpdateCapture(float dt);
++  void UpdateComboCapture(float dt);
 +  void LoadCovers();
 +  void BuildSettingRows();
 +  void ChangeSettingRow(int direction);
@@ -11690,6 +11926,12 @@ index 0000000..2a0cae6
 +  int m_controls_device = -1;  // PS4Controls::Device, or -1
 +  std::string m_controls_game;  // Controls opened from a game (Triangle): its ID, else empty
 +  bool m_capture = false;
++  // Settings -> Hotkeys: buttons held together, taken when released (UpdateComboCapture).
++  std::string m_combo_key;
++  uint32_t m_combo_seen = 0;
++  bool m_combo_armed = false;
++  float m_combo_time = 0.0f;
++  int m_delete_game = -1;  // the game waiting for the Delete Game answer
 +  bool m_capture_released = false;
 +  float m_capture_time = 0.0f;
 +  int m_capture_row = 0;
@@ -12438,6 +12680,10 @@ index 0000000..2a0cae6
 +
 +void Menu::ChangeSettingRow(int direction)
 +{
++  // 2: Cross (a capture on Hotkeys rows), otherwise the same as Right.
++  const bool cross = direction == 2;
++  if (cross)
++    direction = 1;
 +  if (m_panel.selected < 0 || m_panel.selected >= static_cast<int>(m_panel.rows.size()))
 +    return;
 +  const SettingRow& row = m_panel.rows[m_panel.selected];
@@ -12632,8 +12878,17 @@ index 0000000..2a0cae6
 +    const PS4Settings::Setting* setting = PS4Settings::Find(row.key);
 +    if (!setting)
 +      return;
-+    // A game following the global settings: changing one of its values makes it custom.
-+    if (!game.empty() && !PS4Settings::IsCustom(game))
++    if (PS4Settings::IsHotkey(row.key) && cross)
++    {
++      m_combo_key = row.key;
++      m_combo_seen = 0;
++      m_combo_armed = false;
++      m_combo_time = 0.0f;
++      return;
++    }
++    // A game following the global settings: changing one of its values makes it custom
++    // (hotkeys are the same for every game).
++    if (!game.empty() && !PS4Settings::IsCustom(game) && !PS4Settings::IsHotkey(row.key))
 +      PS4Settings::SetCustom(game, true);
 +    PS4Settings::Set(row.key, PS4Settings::Step(*setting, PS4Settings::Get(row.key, game), direction),
 +                     game);
@@ -12876,6 +13131,58 @@ index 0000000..2a0cae6
 +  Play("confirm");
 +}
 +
++// Settings -> Hotkeys capture: waits for the pad at rest, then takes the buttons held together
++// once they are all released (two or more; Circle alone cancels; 10 s without: cancel).
++void Menu::UpdateComboCapture(float dt)
++{
++  if (m_combo_key.empty())
++    return;
++  m_combo_time += dt;
++  OrbisPadData data = {};
++  if (!m_input.Raw(&data))
++    return;
++  const uint32_t held = data.buttons & PS4Settings::HotkeyButtons();
++  if (!m_combo_armed)
++  {
++    m_combo_armed = held == 0;
++    return;
++  }
++  if (m_combo_time > 10.0f)
++  {
++    m_combo_key.clear();
++    Play("back");
++    return;
++  }
++  if (held)
++  {
++    m_combo_seen |= held;
++    return;
++  }
++  if (!m_combo_seen)
++    return;
++  const uint32_t mask = m_combo_seen;
++  m_combo_seen = 0;
++  if (mask == ORBIS_PAD_BUTTON_CIRCLE)
++  {
++    m_combo_key.clear();
++    m_input.Poll(0.0f);
++    Play("back");
++    return;
++  }
++  if (__builtin_popcount(mask) < 2 || mask == (ORBIS_PAD_BUTTON_L3 | ORBIS_PAD_BUTTON_R3))
++  {
++    m_combo_time = 0.0f;  // not usable (one button, or the in-game menu's L3 + R3): again
++    Play("back");
++    return;
++  }
++  PS4Settings::Set(m_combo_key, PS4Settings::HotkeyName(mask), {});
++  Log("hotkey " + m_combo_key + "=" + PS4Settings::HotkeyName(mask));
++  m_combo_key.clear();
++  BuildSettingRows();
++  m_input.Poll(0.0f);  // swallow the release
++  Play("confirm");
++}
++
 +void Menu::StartCoverDownload()
 +{
 +  if (m_cover_thread.joinable())
@@ -13008,8 +13315,8 @@ index 0000000..2a0cae6
 +  if (m_launch >= 0 || pressed == 0)
 +    return;
 +
-+  if (m_capture)
-+    return;  // a button capture takes the pad (UpdateCapture)
++  if (m_capture || !m_combo_key.empty())
++    return;  // a button capture takes the pad (UpdateCapture, UpdateComboCapture)
 +  if (m_panel.open)
 +  {
 +    if (pressed & BTN_CIRCLE)
@@ -13043,7 +13350,7 @@ index 0000000..2a0cae6
 +      }
 +      if (pressed & (BTN_LEFT | BTN_RIGHT | BTN_CROSS))
 +      {
-+        ChangeSettingRow((pressed & BTN_LEFT) ? -1 : 1);
++        ChangeSettingRow((pressed & BTN_LEFT) ? -1 : (pressed & BTN_CROSS) ? 2 : 1);
 +        Play("category");
 +      }
 +      return;
@@ -13067,6 +13374,52 @@ index 0000000..2a0cae6
 +    {
 +      m_panel.selected++;
 +      Play("move");
++    }
++    if ((pressed & BTN_CROSS) && m_panel.title == "Delete Game" && m_delete_game >= 0 &&
++        m_delete_game < static_cast<int>(m_games.size()))
++    {
++      const Game game = m_games[m_delete_game];
++      m_delete_game = -1;
++      if (m_panel.options[m_panel.selected] != "Yes")
++      {
++        m_panel.open = false;
++        Play("back");
++        return;
++      }
++      // Every disc of the game (the list shows one entry for all of them).
++      std::vector<std::string> paths;
++      for (const auto& disc : m_scan(GamesFolder()))
++      {
++        if (game.id.empty() ? disc.path == game.path :
++                              disc.game_id == game.id && disc.revision == game.revision)
++          paths.push_back(disc.path);
++      }
++      if (paths.empty())
++        paths.push_back(game.path);
++      std::string failed;
++      for (const std::string& path : paths)
++      {
++        std::error_code ec;
++        if (std::filesystem::remove(path, ec) && !ec)
++          Log("deleted " + path);
++        else
++          failed = std::filesystem::path(path).filename().string() + ": " + ec.message();
++      }
++      if (m_prefs.default_game == game.path)
++      {
++        m_prefs.default_game.clear();
++        m_prefs.Save(m_data_dir + "/xmb.ini");
++      }
++      RefreshGames();
++      m_panel = {};
++      m_panel.open = true;
++      m_panel.title = "Delete Game";
++      if (failed.empty())
++        m_panel.lines = {"", game.title, "", "Deleted."};
++      else
++        m_panel.lines = {"", "Couldn't delete", failed};
++      Play(failed.empty() ? "confirm" : "back");
++      return;
 +    }
 +    if ((pressed & BTN_CROSS) && m_panel.title == "Recommended Settings" &&
 +        m_center_ask_game >= 0 && m_center_ask_game < static_cast<int>(m_games.size()))
@@ -13152,6 +13505,22 @@ index 0000000..2a0cae6
 +        const Game& game = m_games[item.game];
 +        OpenControlsList(game.wii ? PS4Controls::Device::Wii : PS4Controls::Device::GameCube, game.id);
 +        Play("confirm");
++        return;
++      }
++      else if (m_panel.title == "Game" && m_panel.options[m_panel.selected] == "Delete Game")
++      {
++        const Item& item = m_items[m_category][m_selected[m_category]];
++        const Game& game = m_games[item.game];
++        m_delete_game = item.game;
++        m_panel = {};
++        m_panel.open = true;
++        m_panel.title = "Delete Game";
++        m_panel.lines = {"", game.title, "",
++                         game.discs > 1 ? std::to_string(game.discs) + " discs" :
++                                          std::filesystem::path(game.path).filename().string(),
++                         "", "Delete it from the console?", "This can't be undone."};
++        m_panel.options = {"No", "Yes"};
++        Play("menu");
 +        return;
 +      }
 +      else if (m_panel.title == "Game" && m_panel.options[m_panel.selected] == "Riivolution Patches")
@@ -13302,6 +13671,7 @@ index 0000000..2a0cae6
 +          !m_games[items[selected].game].wad)
 +        m_panel.options.push_back("Riivolution Patches");
 +      m_panel.options.push_back("Controls");
++      m_panel.options.push_back("Delete Game");
 +      Play("menu");
 +    }
 +  }
@@ -13913,6 +14283,9 @@ index 0000000..2a0cae6
 +      std::string help;
 +      if (m_capture)
 +        help = "Press the DualShock 4 button for " + row.label + "...  (5 s: cancel)";
++      else if (!m_combo_key.empty())
++        help = "Hold the buttons for " + row.label + " together, then let go (two or more; "
++               "Circle alone: cancel)";
 +      else if (row.key.rfind("ctl:", 0) == 0)
 +        help = "Cross: press a new button for it. Sticks: Left/Right to choose.";
 +      else if (row.key == "__ctlreset__")
@@ -15563,6 +15936,7 @@ index 0000000..2a0cae6
 +    io.DeltaTime = dt > 0.0f ? dt : 1.0f / 60.0f;
 +
 +    UpdateCapture(dt);
++    UpdateComboCapture(dt);
 +    if (m_intro)
 +    {
 +      // Any button: straight to the dissolve.
