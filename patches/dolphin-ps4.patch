@@ -5704,10 +5704,10 @@ index cd35ea1..aecce41 100644
 +#endif
  }  // namespace State
 diff --git a/Source/Core/DolphinNoGUI/CMakeLists.txt b/Source/Core/DolphinNoGUI/CMakeLists.txt
-index 51c3fff..07e988f 100644
+index 51c3fff..b8dfe84 100644
 --- a/Source/Core/DolphinNoGUI/CMakeLists.txt
 +++ b/Source/Core/DolphinNoGUI/CMakeLists.txt
-@@ -23,6 +23,29 @@ if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
+@@ -23,6 +23,30 @@ if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
    target_sources(dolphin-nogui PRIVATE PlatformFBDev.cpp)
  endif()
  
@@ -5727,7 +5727,8 @@ index 51c3fff..07e988f 100644
 +    ${CMAKE_SOURCE_DIR}/Externals/VulkanMemoryAllocator/include)
 +  target_link_libraries(dolphin-nogui PRIVATE imgui discio videovulkan CURL::libcurl)
 +  target_link_libraries(dolphin-nogui PRIVATE
-+    SceSysmodule SceSystemService SceUserService SceVideoOut SceAudioOut ScePad SceNet SceMove)
++    SceSysmodule SceSystemService SceUserService SceVideoOut SceAudioOut ScePad SceNet SceMove
++    SceImeDialog)
 +  if(ENABLE_VULKAN)
 +    # The Vulkan backend runs on Mesa's RADV on GNM, linked in (no Vulkan loader on the PS4).
 +    ps4_link_mesa(dolphin-nogui)
@@ -5737,7 +5738,7 @@ index 51c3fff..07e988f 100644
  if (WIN32)
    target_sources(dolphin-nogui PRIVATE DolphinNoGUI.exe.manifest DolphinNoGUI.rc)
  
-@@ -68,3 +91,7 @@ set(CPACK_PACKAGE_EXECUTABLES ${CPACK_PACKAGE_EXECUTABLES} dolphin-nogui)
+@@ -68,3 +92,7 @@ set(CPACK_PACKAGE_EXECUTABLES ${CPACK_PACKAGE_EXECUTABLES} dolphin-nogui)
  if (NOT WIN32)
    install(TARGETS dolphin-nogui RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
  endif()
@@ -5746,7 +5747,7 @@ index 51c3fff..07e988f 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..d5b429a 100644
+index 3bf40ea..6d3ea9c 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -5767,7 +5768,7 @@ index 3bf40ea..d5b429a 100644
  #include <string>
  #include <vector>
  
-@@ -15,14 +22,26 @@
+@@ -15,14 +22,29 @@
  #include <windows.h>
  #endif
  
@@ -5781,6 +5782,9 @@ index 3bf40ea..d5b429a 100644
 +#include "Core/Config/MainSettings.h"
 +#include "Core/PowerPC/PowerPC.h"
  #include "Core/Boot/Boot.h"
++#ifdef USE_RETRO_ACHIEVEMENTS
++#include "Core/AchievementManager.h"
++#endif
 +#include "DiscIO/Enums.h"
 +#include "DiscIO/RiivolutionParser.h"
 +#include "DiscIO/VolumeDisc.h"
@@ -5794,7 +5798,7 @@ index 3bf40ea..d5b429a 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +50,50 @@
+@@ -31,6 +53,50 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -5845,7 +5849,7 @@ index 3bf40ea..d5b429a 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +236,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +239,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -5856,7 +5860,7 @@ index 3bf40ea..d5b429a 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +251,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +254,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -5875,7 +5879,7 @@ index 3bf40ea..d5b429a 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +283,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +286,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -5886,7 +5890,7 @@ index 3bf40ea..d5b429a 100644
  #endif
        });
  
-@@ -270,7 +350,347 @@ int main(const int argc, char* argv[])
+@@ -270,7 +353,347 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -6234,7 +6238,7 @@ index 3bf40ea..d5b429a 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +704,12 @@ int main(const int argc, char* argv[])
+@@ -284,6 +707,12 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -6247,7 +6251,7 @@ index 3bf40ea..d5b429a 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,6 +729,28 @@ int main(const int argc, char* argv[])
+@@ -303,6 +732,34 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -6272,6 +6276,12 @@ index 3bf40ea..d5b429a 100644
 +    }
 +  }
 +  Platform::BootTrace("BootCore");
++#endif
++#ifdef USE_RETRO_ACHIEVEMENTS
++  // RetroAchievements (the XMB's Settings -> RetroAchievements page saved the login token): off
++  // unless enabled there.
++  AchievementManager::GetInstance().Init(nullptr);
++  Common::ScopeGuard achievements_guard([] { AchievementManager::GetInstance().Shutdown(); });
 +#endif
    if (!BootManager::BootCore(Core::System::GetInstance(), std::move(boot), wsi))
    {
@@ -7887,10 +7897,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..b49e1f2
+index 0000000..2bd2b6e
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,1431 @@
+@@ -0,0 +1,1448 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -7922,6 +7932,9 @@ index 0000000..b49e1f2
 +#include "InputCommon/ControllerEmu/ControllerEmu.h"
 +#include "InputCommon/ControllerEmu/Setting/NumericSetting.h"
 +#include "Core/HW/GCPad.h"
++#ifdef USE_RETRO_ACHIEVEMENTS
++#include "Core/AchievementManager.h"
++#endif
 +#include "DolphinNoGUI/PS4Cheats.h"
 +#include "DolphinNoGUI/PS4Controls.h"
 +#include "DolphinNoGUI/PS4Lang.h"
@@ -8717,6 +8730,13 @@ index 0000000..b49e1f2
 +  else if (fired(s_load_mask))
 +  {
 +    ps4_pad_block = 1;
++#ifdef USE_RETRO_ACHIEVEMENTS
++    if (AchievementManager::GetInstance().IsHardcoreModeActive())
++    {
++      Toast("RetroAchievements Hardcore Mode: no loading of states", 4000);
++      return;
++    }
++#endif
 +    if (ps4_state_busy > 0)
 +    {
 +      Toast("Still saving, please wait...");
@@ -8776,6 +8796,13 @@ index 0000000..b49e1f2
 +      Toast("Still saving, please wait...");
 +      break;
 +    }
++#ifdef USE_RETRO_ACHIEVEMENTS
++    if (AchievementManager::GetInstance().IsHardcoreModeActive())
++    {
++      Toast("RetroAchievements Hardcore Mode: no loading of states", 4000);
++      break;
++    }
++#endif
 +    {
 +      // Only states this version can load: a refused one leaves the game as it was, and the menu
 +      // stays open with the reason.
@@ -11553,10 +11580,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..b9dafe0
+index 0000000..58d079a
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,4876 @@
+@@ -0,0 +1,5211 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11584,6 +11611,9 @@ index 0000000..b9dafe0
 +#include <imgui.h>
 +#include <imgui_internal.h>
 +#include <orbis/AudioOut.h>
++#include <orbis/ImeDialog.h>
++#include <orbis/Sysmodule.h>
++#include <picojson.h>
 +#include <orbis/Pad.h>
 +#include <orbis/SystemService.h>
 +#include <orbis/UserService.h>
@@ -11599,6 +11629,8 @@ index 0000000..b9dafe0
 +#include "DiscIO/RiivolutionParser.h"
 +#include "Common/FileSearch.h"
 +#include "Common/FileUtil.h"
++#include "Common/HttpRequest.h"
++#include "Common/IniFile.h"
 +#include "DolphinNoGUI/PS4Cheats.h"
 +#include "DolphinNoGUI/PS4Controls.h"
 +#include "DolphinNoGUI/PS4Covers.h"
@@ -12146,6 +12178,7 @@ index 0000000..b9dafe0
 +  SET_STYLE,         // Menu Style: Library or XMB
 +  SET_LANGUAGE,      // Language: the menus' (and games') language, a list of all of them
 +  SET_MEMCARD,       // a memory card: Slot A and the saves on it
++  SET_ACHIEVEMENTS,  // RetroAchievements: account and options
 +  SET_GROUP = 100,  // + index into PS4Settings::Categories(): an emulation settings list
 +};
 +
@@ -12236,6 +12269,27 @@ index 0000000..b9dafe0
 +  std::string CenterChoiceLabel(const std::string& game_id) const;
 +  void OpenCenterPage();
 +  void BuildCenterRows();
++  // RetroAchievements: the system keyboard (username, password), the login, and Dolphin's
++  // RetroAchievements.ini (Enabled, Username, ApiToken, HardcoreEnabled).
++  void OpenAchievementsPage();
++  void BuildAchievementRows();
++  void StartKeyboard(int purpose, const char* title, const std::string& initial, bool password);
++  void UpdateKeyboard();
++  void StartAchievementLogin(const std::string& user, const std::string& password);
++  void UpdateAchievementLogin();
++  std::string RaGet(const std::string& key) const;
++  void RaSet(const std::string& key, const std::string& value);
++  int m_user_id = 0;
++  int m_ime_purpose = 0;  // 1: username, 2: password (the keyboard is open)
++  bool m_ime_loaded = false;
++  char16_t m_ime_text[130] = {};
++  char16_t m_ime_title[64] = {};
++  std::thread m_ra_thread;
++  std::mutex m_ra_mutex;
++  std::atomic<bool> m_ra_busy{false};
++  std::string m_ra_status;       // the last login's result
++  std::string m_ra_token_found;  // from the login thread
++  std::string m_ra_user_found;
 +  void AskCenter(int game);
 +  static std::vector<std::string> WrapLines(const std::string& text, size_t width);
 +  void UpdateCenterFetch();
@@ -12814,6 +12868,8 @@ index 0000000..b9dafe0
 +  settings.push_back({"Menu Style", Library() ? "Library" : "XMB", -1, -1, SET_STYLE});
 +  settings.push_back({"Clock", m_prefs.clock ? "On" : "Off", -1, -1, SET_CLOCK});
 +  settings.push_back({"Controls", "Remap the GameCube and Wii buttons", -1, -1, SET_CONTROLS});
++  settings.push_back({"RetroAchievements", "Earn achievements (retroachievements.org)", -1, -1,
++                      SET_ACHIEVEMENTS});
 +  settings.push_back({"Game Folder", GamesFolder(), -1, -1, SET_GAMES_DIR});
 +  settings.push_back({"Game Settings Center", "Recommended settings per game, from GitHub", -1, -1,
 +                      SET_CENTER});
@@ -12970,6 +13026,9 @@ index 0000000..b9dafe0
 +  case SET_CENTER:
 +    OpenCenterPage();
 +    return;
++  case SET_ACHIEVEMENTS:
++    OpenAchievementsPage();
++    return;
 +  case SET_UPDATE_CHECK:
 +    m_panel.setting = SET_UPDATE;
 +    StartUpdateCheck(true);
@@ -13098,6 +13157,37 @@ index 0000000..b9dafe0
 +    direction = 1;
 +  if (m_panel.selected < 0 || m_panel.selected >= static_cast<int>(m_panel.rows.size()))
 +    return;
++  if (m_panel.setting == SET_ACHIEVEMENTS)
++  {
++    const std::string key = m_panel.rows[m_panel.selected].key;
++    if (key == "ra:user")
++    {
++      StartKeyboard(1, "RetroAchievements username", RaGet("Username"), false);
++    }
++    else if (key == "ra:login" && !m_ra_busy)
++    {
++      if (RaGet("Username").empty())
++        m_ra_status = "Set the username first";
++      else
++        StartKeyboard(2, "RetroAchievements password", "", true);
++    }
++    else if (key == "ra:logout")
++    {
++      RaSet("ApiToken", "");
++      m_ra_status = "Logged out";
++      Log("retroachievements: logged out");
++    }
++    else if (key == "ra:enabled")
++    {
++      RaSet("Enabled", RaGet("Enabled") == "True" ? "False" : "True");
++    }
++    else if (key == "ra:hardcore")
++    {
++      RaSet("HardcoreEnabled", RaGet("HardcoreEnabled") == "True" ? "False" : "True");
++    }
++    BuildAchievementRows();
++    return;
++  }
 +  const SettingRow& row = m_panel.rows[m_panel.selected];
 +  const std::string& game = m_panel.game_id;
 +  if (row.key == "center:update")
@@ -13727,8 +13817,8 @@ index 0000000..b9dafe0
 +  if (m_launch >= 0 || pressed == 0)
 +    return;
 +
-+  if (m_capture || !m_combo_key.empty())
-+    return;  // a button capture takes the pad (UpdateCapture, UpdateComboCapture)
++  if (m_capture || !m_combo_key.empty() || m_ime_purpose)
++    return;  // a button capture or the system keyboard takes the pad
 +  if (m_panel.open)
 +  {
 +    if (pressed & BTN_CIRCLE)
@@ -15818,6 +15908,273 @@ index 0000000..b9dafe0
 +  return choice == "no" ? "Not used" : choice == "yes" ? "Used" : "Ask at start";
 +}
 +
++// ---------------------------------------------------------------------------------------------
++// RetroAchievements.
++
++std::string Menu::RaGet(const std::string& key) const
++{
++  Common::IniFile ini;
++  ini.Load(m_data_dir + "/User/Config/RetroAchievements.ini");
++  std::string value;
++  if (const Common::IniFile::Section* section = ini.GetSection("Achievements"))
++    section->Get(key, &value);
++  return value;
++}
++
++void Menu::RaSet(const std::string& key, const std::string& value)
++{
++  const std::string path = m_data_dir + "/User/Config/RetroAchievements.ini";
++  Common::IniFile ini;
++  ini.Load(path);
++  ini.GetOrCreateSection("Achievements")->Set(key, value);
++  File::CreateFullPath(path);
++  ini.Save(path);
++}
++
++void Menu::OpenAchievementsPage()
++{
++  m_panel = {};
++  m_panel.open = true;
++  m_panel.setting = SET_ACHIEVEMENTS;
++  m_panel.title = "RetroAchievements";
++  BuildAchievementRows();
++  m_panel.selected = 0;
++  MoveSettingRow(0);
++}
++
++void Menu::BuildAchievementRows()
++{
++  const std::string user = RaGet("Username");
++  const bool logged_in = !RaGet("ApiToken").empty();
++  std::string status;
++  {
++    std::lock_guard lock(m_ra_mutex);
++    status = m_ra_status;
++  }
++  std::vector<SettingRow> rows;
++  rows.push_back({"Account", logged_in ? "Logged in as " + user : "Not logged in", "ra:info"});
++  rows.push_back({"Username", user.empty() ? "Set..." : user, "ra:user"});
++  rows.push_back({"Log In", m_ra_busy ? "Logging in..." : status.empty() ? "Password..." : status,
++                  "ra:login"});
++  if (logged_in)
++    rows.push_back({"Log Out", "", "ra:logout"});
++  rows.push_back({"Options", "", "", true});
++  rows.push_back({"Achievements", RaGet("Enabled") == "True" ? "On" : "Off", "ra:enabled"});
++  rows.push_back({"Hardcore Mode", RaGet("HardcoreEnabled") == "True" ? "On" : "Off",
++                  "ra:hardcore"});
++  m_panel.rows = std::move(rows);
++  m_panel.lines = {"Achievements unlock while you play (retroachievements.org account).",
++                   "Hardcore: no save states, cheats or slow motion - unlocks count double."};
++}
++
++namespace
++{
++std::string Utf8(const char16_t* text)
++{
++  std::string out;
++  for (; *text; text++)
++  {
++    uint32_t c = *text;
++    if (c >= 0xD800 && c < 0xDC00 && text[1] >= 0xDC00 && text[1] < 0xE000)
++    {
++      c = 0x10000 + ((c - 0xD800) << 10) + (text[1] - 0xDC00);
++      text++;
++    }
++    if (c < 0x80)
++    {
++      out += static_cast<char>(c);
++    }
++    else if (c < 0x800)
++    {
++      out += static_cast<char>(0xC0 | (c >> 6));
++      out += static_cast<char>(0x80 | (c & 0x3F));
++    }
++    else if (c < 0x10000)
++    {
++      out += static_cast<char>(0xE0 | (c >> 12));
++      out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
++      out += static_cast<char>(0x80 | (c & 0x3F));
++    }
++    else
++    {
++      out += static_cast<char>(0xF0 | (c >> 18));
++      out += static_cast<char>(0x80 | ((c >> 12) & 0x3F));
++      out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
++      out += static_cast<char>(0x80 | (c & 0x3F));
++    }
++  }
++  return out;
++}
++
++std::string UrlEncode(const std::string& text)
++{
++  static const char* HEX = "0123456789ABCDEF";
++  std::string out;
++  for (const unsigned char c : text)
++  {
++    if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~')
++    {
++      out += static_cast<char>(c);
++    }
++    else
++    {
++      out += '%';
++      out += HEX[c >> 4];
++      out += HEX[c & 15];
++    }
++  }
++  return out;
++}
++}  // namespace
++
++// The system keyboard over the menu (the PS4 draws it; the menu keeps running underneath).
++void Menu::StartKeyboard(int purpose, const char* title, const std::string& initial, bool password)
++{
++  if (!m_ime_loaded)
++  {
++    const int loaded = sceSysmoduleLoadModule(ORBIS_SYSMODULE_IME_DIALOG);
++    Log("ime dialog module: " + std::to_string(loaded));
++    m_ime_loaded = true;
++  }
++  std::fill(std::begin(m_ime_text), std::end(m_ime_text), u'\0');
++  std::fill(std::begin(m_ime_title), std::end(m_ime_title), u'\0');
++  for (size_t i = 0; i < initial.size() && i < 128; i++)
++    m_ime_text[i] = static_cast<unsigned char>(initial[i]);
++  for (size_t i = 0; title[i] && i < 63; i++)
++    m_ime_title[i] = static_cast<unsigned char>(title[i]);
++  OrbisImeDialogSetting setting{};
++  setting.userId = static_cast<uint32_t>(m_user_id);
++  setting.type = ORBIS_TYPE_BASIC_LATIN;
++  setting.enterLabel = ORBIS_BUTTON_LABEL_DEFAULT;
++  setting.inputMethod = ORBIS__DEFAULT;
++  // 2: no auto-capitalization, 4: password (dots). The keyboard uses UTF-16 text.
++  setting.option = password ? 0x6 : 0x2;
++  setting.maxTextLength = 128;
++  setting.inputTextBuffer = reinterpret_cast<wchar_t*>(m_ime_text);
++  setting.posx = 1920.0f / 2;
++  setting.posy = 1080.0f / 2;
++  setting.horizontalAlignment = ORBIS_H_CENTER;
++  setting.verticalAlignment = ORBIS_V_CENTER;
++  setting.title = reinterpret_cast<const wchar_t*>(m_ime_title);
++  const int result = sceImeDialogInit(&setting, nullptr);
++  if (result < 0)
++  {
++    Log("ime dialog init failed: " + std::to_string(result));
++    std::lock_guard lock(m_ra_mutex);
++    m_ra_status = "The keyboard didn't open";
++    return;
++  }
++  m_ime_purpose = purpose;
++}
++
++void Menu::UpdateKeyboard()
++{
++  if (!m_ime_purpose)
++    return;
++  if (sceImeDialogGetStatus() == ORBIS_DIALOG_STATUS_RUNNING)
++    return;
++  OrbisDialogResult result{};
++  sceImeDialogGetResult(&result);
++  sceImeDialogTerm();
++  const int purpose = m_ime_purpose;
++  m_ime_purpose = 0;
++  m_input.Poll(0.0f);  // the keyboard's own presses don't reach the menu
++  if (result.endstatus == ORBIS_DIALOG_OK)
++  {
++    const std::string text = Utf8(m_ime_text);
++    std::fill(std::begin(m_ime_text), std::end(m_ime_text), u'\0');
++    if (purpose == 1)
++    {
++      RaSet("Username", text);
++      Log("retroachievements: username " + text);
++    }
++    else if (purpose == 2 && !text.empty())
++    {
++      StartAchievementLogin(RaGet("Username"), text);
++    }
++  }
++  if (m_panel.open && m_panel.setting == SET_ACHIEVEMENTS)
++    BuildAchievementRows();
++}
++
++// The password goes to retroachievements.org once; only the token it answers with is kept.
++void Menu::StartAchievementLogin(const std::string& user, const std::string& password)
++{
++  if (m_ra_thread.joinable())
++    m_ra_thread.join();
++  m_ra_busy = true;
++  m_ra_thread = std::thread([this, user, password] {
++    Common::HttpRequest http{std::chrono::seconds{20}};
++    const std::string body = "r=login2&u=" + UrlEncode(user) + "&p=" + UrlEncode(password);
++    const auto response =
++        http.Post("https://retroachievements.org/dorequest.php", body,
++                  {{"Content-Type", "application/x-www-form-urlencoded"},
++                   {"User-Agent", "Dolphin-PS4/1.0"}},
++                  Common::HttpRequest::AllowedReturnCodes::All);
++    std::string status, token, name;
++    if (!response)
++    {
++      status = "No connection to retroachievements.org";
++    }
++    else
++    {
++      picojson::value json;
++      const std::string error = picojson::parse(json, std::string(response->begin(), response->end()));
++      if (!error.empty() || !json.is<picojson::object>())
++      {
++        status = "Unexpected answer from the server";
++      }
++      else
++      {
++        const auto& object = json.get<picojson::object>();
++        const auto success = object.find("Success");
++        if (success != object.end() && success->second.is<bool>() && success->second.get<bool>())
++        {
++          const auto t = object.find("Token");
++          const auto u = object.find("User");
++          token = t != object.end() ? t->second.to_str() : std::string();
++          name = u != object.end() ? u->second.to_str() : user;
++          status = token.empty() ? "No token in the answer" : "Logged in as " + name;
++        }
++        else
++        {
++          const auto e = object.find("Error");
++          status = e != object.end() && e->second.is<std::string>() ? e->second.get<std::string>() :
++                                                                     "Login failed";
++        }
++      }
++    }
++    std::lock_guard lock(m_ra_mutex);
++    m_ra_status = status;
++    m_ra_token_found = token;
++    m_ra_user_found = name;
++    m_ra_busy = false;
++  });
++}
++
++void Menu::UpdateAchievementLogin()
++{
++  if (m_ra_busy || !m_ra_thread.joinable())
++    return;
++  m_ra_thread.join();
++  std::string token, name, status;
++  {
++    std::lock_guard lock(m_ra_mutex);
++    token = std::move(m_ra_token_found);
++    name = std::move(m_ra_user_found);
++    status = m_ra_status;
++  }
++  Log("retroachievements: " + status);
++  if (!token.empty())
++  {
++    RaSet("Username", name);
++    RaSet("ApiToken", token);
++    RaSet("Enabled", "True");
++  }
++  if (m_panel.open && m_panel.setting == SET_ACHIEVEMENTS)
++    BuildAchievementRows();
++}
++
 +void Menu::OpenCenterPage()
 +{
 +  m_panel = {};
@@ -16274,6 +16631,7 @@ index 0000000..b9dafe0
 +    ImGui::DestroyContext();
 +    return {};
 +  }
++  m_user_id = user;
 +  m_audio.Start(user);
 +  m_input.Open(user);
 +  LoadAssets();
@@ -16355,6 +16713,8 @@ index 0000000..b9dafe0
 +
 +    UpdateCapture(dt);
 +    UpdateComboCapture(dt);
++    UpdateKeyboard();
++    UpdateAchievementLogin();
 +    if (m_intro)
 +    {
 +      // Any button: straight to the dissolve.
@@ -16401,6 +16761,8 @@ index 0000000..b9dafe0
 +    m_cheat_dl_thread.join();
 +  if (m_settings_thread.joinable())
 +    m_settings_thread.join();
++  if (m_ra_thread.joinable())
++    m_ra_thread.join();
 +  if (m_update_exit)
 +    result = EXIT_APP;
 +  if (m_update_restart)
