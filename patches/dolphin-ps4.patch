@@ -911,21 +911,22 @@ index 0000000..90decba
 +  void* m_context = nullptr;
 +};
 diff --git a/Source/Core/Common/HttpRequest.cpp b/Source/Core/Common/HttpRequest.cpp
-index 94a4664..c152f31 100644
+index 94a4664..156c10d 100644
 --- a/Source/Core/Common/HttpRequest.cpp
 +++ b/Source/Core/Common/HttpRequest.cpp
-@@ -13,6 +13,10 @@
+@@ -13,6 +13,11 @@
  #include "Common/ScopeGuard.h"
  #include "Common/StringUtil.h"
  
 +#ifdef __ORBIS__
 +extern "C" const char* ps4_assets_dir();  // DolphinNoGUI/PlatformPS4.cpp
++extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
 +#endif
 +
  namespace Common
  {
  class HttpRequest::Impl final
-@@ -147,6 +151,14 @@ HttpRequest::Impl::Impl(std::chrono::milliseconds timeout_ms, ProgressCallback c
+@@ -147,6 +152,14 @@ HttpRequest::Impl::Impl(std::chrono::milliseconds timeout_ms, ProgressCallback c
        m_curl.get(), CURLOPT_LOW_SPEED_TIME,
        static_cast<long>(std::chrono::duration_cast<std::chrono::seconds>(timeout_ms).count()));
    curl_easy_setopt(m_curl.get(), CURLOPT_LOW_SPEED_LIMIT, 1);
@@ -940,6 +941,17 @@ index 94a4664..c152f31 100644
  }
  
  bool HttpRequest::Impl::IsValid() const
+@@ -281,6 +294,10 @@ HttpRequest::Response HttpRequest::Impl::Fetch(const std::string& url, Method me
+   if (res != CURLE_OK)
+   {
+     ERROR_LOG_FMT(COMMON, "Failed to {} {}: {}", type, url, m_error_string);
++#ifdef __ORBIS__
++    // In the trace too (RetroAchievements, Wii Menu downloads): a wrong PS4 clock shows up here.
++    ps4_boot_trace(fmt::format("http: {} {} failed: {}", type, url, m_error_string.c_str()).c_str());
++#endif
+     return {};
+   }
+ 
 diff --git a/Source/Core/Common/LinearDiskCache.h b/Source/Core/Common/LinearDiskCache.h
 index 061f7d4..bde3303 100644
 --- a/Source/Core/Common/LinearDiskCache.h
@@ -11761,10 +11773,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..2b2cdb1
+index 0000000..f6512db
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5518 @@
+@@ -0,0 +1,5537 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -15013,7 +15025,7 @@ index 0000000..2b2cdb1
 +      Text(dl, sel ? m_bold : m_font, 34, ImVec2(x0 + 60, y), text, m_panel.options[i]);
 +    }
 +  }
-+  for (const std::string& line : m_panel.lines)
++  for (const std::string& line : m_panel.rows.empty() ? m_panel.lines : std::vector<std::string>{})
 +  {
 +    Text(dl, m_font, 28, ImVec2(x0 + 50, y), text, line);
 +    y += 42;
@@ -15144,10 +15156,29 @@ index 0000000..2b2cdb1
 +        help = "Applies the next time the game starts, or now from the in-game menu (L3+R3).";
 +      else if (row.key.rfind("riiv:", 0) == 0)
 +        help = "Applies the next time the game starts.";
++      else if (row.key == "ra:info")
++        help = "Your retroachievements.org account (free to make on the website).";
++      else if (row.key == "ra:user")
++        help = "Cross: type your retroachievements.org username.";
++      else if (row.key == "ra:login")
++        help = "Cross: type your password. It is sent once; only the login token is kept. "
++               "No connection? Check the PS4's date and time.";
++      else if (row.key == "ra:logout")
++        help = "Forgets the login on this PS4.";
++      else if (row.key == "ra:enabled")
++        help = "Achievements unlock while you play (needs a logged-in account). Next game start.";
++      else if (row.key == "ra:hardcore")
++        help = "No save states, cheats or slow motion - unlocks count double. Next game start.";
 +      else if (row.scope)
 +        help = "All Games: this game follows the global settings. This Game: its own.";
 +      else if (const PS4Settings::Setting* setting = PS4Settings::Find(row.key))
 +        help = std::string(setting->help) + (setting->live ? "" : " (Next game start.)");
++      if (help.empty())
++      {
++        // Pages with their own description (Wii Menu): shown here, under the list.
++        for (const std::string& line : m_panel.lines)
++          help += (help.empty() ? "" : " ") + line;
++      }
 +      const std::string wrapped = WrapText(m_font, 25, PS4Lang::T(help), width - 100);
 +      dl->AddText(m_font, 25, ImVec2(x0 + 50, bottom + 24), Rgba(theme.text, 0.8f * m_panel.slide),
 +                  wrapped.c_str());
@@ -16431,7 +16462,7 @@ index 0000000..2b2cdb1
 +    std::string status, token, name;
 +    if (!response)
 +    {
-+      status = "No connection to retroachievements.org";
++      status = "No connection (PS4 date and time?)";
 +    }
 +    else
 +    {

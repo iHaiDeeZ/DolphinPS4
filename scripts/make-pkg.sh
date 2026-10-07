@@ -44,7 +44,8 @@ if [ "${SFO_STYLE:-retroarch}" = retroarch ]; then
     # RetroArch for PS4's launch parameters: with the OpenOrbis sample values
     # the shell's Piglet never returns an EGL display (verified by love-ps4).
     set_entry APP_TYPE Integer 4 0
-    set_entry ATTRIBUTE Integer 4 0x20814016
+    # 0x20: system dialogs (keyboard) confirm with the system setting (Cross), not Circle (0x2).
+    set_entry ATTRIBUTE Integer 4 0x20814034
     set_entry ATTRIBUTE2 Integer 4 0x6
     set_entry CATEGORY Utf8 4 gde
     set_entry FORMAT Utf8 4 obs
