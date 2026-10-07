@@ -245,6 +245,13 @@ bool isReadable(uint64_t address, uint64_t size) {
            (protection & 1) && address + size <= reinterpret_cast<uintptr_t>(end);
 }
 
+// The game is stopping (ps4_sampler_shutdown): no more snapshots of its memory, which is about to
+// be released. g_sampler_dumping is set before g_sampler_stopping is checked, and the shutdown
+// sets g_sampler_stopping before it waits on g_sampler_dumping, so a snapshot either sees the stop
+// or is waited for (a copy of MEM1 during Quit Game crashed the app in v50.32).
+std::atomic<bool> g_sampler_stopping{false};
+std::atomic<bool> g_sampler_dumping{false};
+
 // jitcode.bin: records of {u64 address, u64 size, bytes}. Copied through a buffer first so the
 // kernel never reads JIT memory for the file write.
 void dumpJitCode() {
@@ -267,6 +274,8 @@ void dumpJitCode() {
         if (ram >= 0) {
             static uint8_t copy[0x100000];
             for (uint32_t offset = 0; offset < ps4_profile_guest_ram_size; offset += sizeof(copy)) {
+                if (g_sampler_stopping.load())
+                    break;
                 const uint32_t size =
                     std::min<uint32_t>(sizeof(copy), ps4_profile_guest_ram_size - offset);
                 memcpy(copy, static_cast<const uint8_t*>(ps4_profile_guest_ram) + offset, size);
@@ -288,6 +297,8 @@ void* samplerThread(void*) {
     double window_start = start, last_dump = start;
     const timespec period = {0, 1000000}, paused = {0, 100000000};
     for (;;) {
+        if (g_sampler_stopping.load())
+            return nullptr;
         // Profiler switched off in the menus: no signals, no new windows until it is back on.
         if (!g_sampler_on.load(std::memory_order_relaxed)) {
             nanosleep(&paused, nullptr);
@@ -304,7 +315,10 @@ void* samplerThread(void*) {
                 report(fd, g_threads[i], window_start - start);
             window_start = now();
             if (window_start - last_dump >= 60.0) {
-                dumpJitCode();
+                g_sampler_dumping.store(true);
+                if (!g_sampler_stopping.load())
+                    dumpJitCode();
+                g_sampler_dumping.store(false);
                 last_dump = window_start = now();
                 writeLine(fd, "(jitcode.bin and mem1.bin updated)\n");
             }
@@ -568,6 +582,15 @@ extern "C" void ps4_sampler_start() {
     pthread_t thread;
     if (pthread_create(&thread, nullptr, samplerThread, nullptr) == 0)
         ps4_boot_trace(("sampler: started, writing " + profilePath("samples", "log") + " every 10 s").c_str());
+}
+
+// The game is stopping (MainNoGUI's core state callback, PlatformPS4's exit): the sampler stops
+// for good, after a snapshot of the game's memory in progress.
+extern "C" void ps4_sampler_shutdown() {
+    g_sampler_stopping.store(true);
+    g_sampler_on.store(false);
+    for (int i = 0; i < 300 && g_sampler_dumping.load(); i++)
+        usleep(10000);
 }
 
 // The menus' Profiler switch: starts the sampler the first time, then pauses / resumes it.
