@@ -1498,7 +1498,7 @@ index 9d15477..ac60cc5 100644
  
  struct WindowSystemInfo
 diff --git a/Source/Core/Core/AchievementManager.cpp b/Source/Core/Core/AchievementManager.cpp
-index ec0fee2..46c565c 100644
+index ec0fee2..e84f26c 100644
 --- a/Source/Core/Core/AchievementManager.cpp
 +++ b/Source/Core/Core/AchievementManager.cpp
 @@ -50,6 +50,12 @@
@@ -1556,7 +1556,19 @@ index ec0fee2..46c565c 100644
    if (result == RC_API_FAILURE)
    {
      WARN_LOG_FMT(ACHIEVEMENTS, "Load data request rejected for old Dolphin version.");
-@@ -1138,10 +1165,28 @@ void AchievementManager::DisplayWelcomeMessage()
+@@ -1107,6 +1134,11 @@ void AchievementManager::DisplayWelcomeMessage()
+ {
+   std::lock_guard lg{m_lock};
+   m_display_welcome_message = false;
++#ifdef __ORBIS__
++  // The PS4 port shows the game and its progress in its own banner (PS4IngameMenu.cpp), not as
++  // on-screen messages in the top left corner.
++  return;
++#endif
+   const u32 color =
+       rc_client_get_hardcore_enabled(m_client) ? OSD::Color::YELLOW : OSD::Color::CYAN;
+ 
+@@ -1138,10 +1170,28 @@ void AchievementManager::DisplayWelcomeMessage()
                    OSD::Duration::VERY_LONG, color);
  }
  
@@ -1656,6 +1668,26 @@ index 56c8dba..e4ff037 100644
    target_sources(core PRIVATE
      HW/EXI/BBA/TAP_Unix.cpp
    )
+diff --git a/Source/Core/Core/Config/AchievementSettings.cpp b/Source/Core/Core/Config/AchievementSettings.cpp
+index 538461e..34e61e8 100644
+--- a/Source/Core/Core/Config/AchievementSettings.cpp
++++ b/Source/Core/Core/Config/AchievementSettings.cpp
+@@ -13,8 +13,15 @@ const Info<bool> RA_ENABLED{{System::Achievements, "Achievements", "Enabled"}, f
+ const Info<std::string> RA_HOST_URL{{System::Achievements, "Achievements", "HostUrl"}, ""};
+ const Info<std::string> RA_USERNAME{{System::Achievements, "Achievements", "Username"}, ""};
+ const Info<std::string> RA_API_TOKEN{{System::Achievements, "Achievements", "ApiToken"}, ""};
++#ifdef __ORBIS__
++// PS4: off unless turned on (Settings -> RetroAchievements in the game list shows it as Off when
++// it was never set; with Dolphin's default the game refused every state load without a word).
++const Info<bool> RA_HARDCORE_ENABLED{{System::Achievements, "Achievements", "HardcoreEnabled"},
++                                     false};
++#else
+ const Info<bool> RA_HARDCORE_ENABLED{{System::Achievements, "Achievements", "HardcoreEnabled"},
+                                      true};
++#endif
+ const Info<bool> RA_UNOFFICIAL_ENABLED{{System::Achievements, "Achievements", "UnofficialEnabled"},
+                                        false};
+ const Info<bool> RA_ENCORE_ENABLED{{System::Achievements, "Achievements", "EncoreEnabled"}, false};
 diff --git a/Source/Core/Core/Config/MainSettings.h b/Source/Core/Core/Config/MainSettings.h
 index 16cae73..0e59ae9 100644
 --- a/Source/Core/Core/Config/MainSettings.h
@@ -8378,10 +8410,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..dfd0596
+index 0000000..84467b5
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,2455 @@
+@@ -0,0 +1,2459 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -9864,7 +9896,9 @@ index 0000000..dfd0596
 +#ifdef USE_RETRO_ACHIEVEMENTS
 +    if (AchievementManager::GetInstance().IsHardcoreModeActive())
 +    {
-+      Toast("RetroAchievements Hardcore Mode: no loading of states", 4000);
++      Toast("Hardcore Mode is on: no loading states. Turn it off in the game list: Settings -> "
++            "RetroAchievements",
++            6000);
 +      return;
 +    }
 +#endif
@@ -9930,7 +9964,9 @@ index 0000000..dfd0596
 +#ifdef USE_RETRO_ACHIEVEMENTS
 +    if (AchievementManager::GetInstance().IsHardcoreModeActive())
 +    {
-+      Toast("RetroAchievements Hardcore Mode: no loading of states", 4000);
++      Toast("Hardcore Mode is on: no loading states. Turn it off in the game list: Settings -> "
++            "RetroAchievements",
++            6000);
 +      break;
 +    }
 +#endif
