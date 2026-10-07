@@ -1873,7 +1873,7 @@ index fc614fd..75657a7 100644
    {
      system.GetPowerPC().SetMode(PowerPC::CoreMode::JIT);
 diff --git a/Source/Core/Core/CoreTiming.cpp b/Source/Core/Core/CoreTiming.cpp
-index 1fa39d7..92334cb 100644
+index 1fa39d7..6bd677b 100644
 --- a/Source/Core/Core/CoreTiming.cpp
 +++ b/Source/Core/Core/CoreTiming.cpp
 @@ -21,6 +21,7 @@
@@ -1913,6 +1913,33 @@ index 1fa39d7..92334cb 100644
    CPUThreadConfigCallback::CheckForConfigChanges();
  
    MoveEvents();
+@@ -571,6 +587,12 @@ void CoreTimingManager::AdjustEventQueueTimes(u32 new_ppc_clock, u32 old_ppc_clo
+   }
+ }
+ 
++#ifdef __ORBIS__
++// ps4.ini sync_on_idle=frame (DolphinNoGUI/MainNoGUI.cpp): FifoManager::PS4FlushGpuToPreviousIdle.
++extern "C" int ps4_sync_idle_frame;
++int ps4_sync_idle_frame = 0;
++#endif
++
+ void CoreTimingManager::Idle()
+ {
+   if (m_config_sync_on_skip_idle)
+@@ -578,7 +600,12 @@ void CoreTimingManager::Idle()
+     // When the FIFO is processing data we must not advance because in this way
+     // the VI will be desynchronized. So, We are waiting until the FIFO finish and
+     // while we process only the events required by the FIFO.
+-    m_system.GetFifo().FlushGpu();
++#ifdef __ORBIS__
++    if (ps4_sync_idle_frame)
++      m_system.GetFifo().PS4FlushGpuToPreviousIdle();
++    else
++#endif
++      m_system.GetFifo().FlushGpu();
+   }
+ 
+   auto& ppc_state = m_system.GetPPCState();
 diff --git a/Source/Core/Core/HLE/HLE.cpp b/Source/Core/Core/HLE/HLE.cpp
 index 31b6c2d..f31ddbd 100644
 --- a/Source/Core/Core/HLE/HLE.cpp
@@ -6275,7 +6302,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..823ed9a 100644
+index 3bf40ea..5ec8ad6 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -6326,7 +6353,7 @@ index 3bf40ea..823ed9a 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,53 @@
+@@ -31,6 +53,54 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -6349,6 +6376,7 @@ index 3bf40ea..823ed9a 100644
 +extern "C" int ps4_jit_lazy_pc;          // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_unroll;           // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_gp_dynamic;       // Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
++extern "C" int ps4_sync_idle_frame;      // Core/CoreTiming.cpp
 +extern "C" int ps4_shader_dump;          // VideoCommon/ShaderCache.cpp
 +extern "C" int ps4_tev_ras_float;        // VideoCommon/PixelShaderGen.cpp
 +extern "C" int ps4_vk_dynamic_vertex_loader;
@@ -6380,7 +6408,7 @@ index 3bf40ea..823ed9a 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +242,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +243,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -6391,7 +6419,7 @@ index 3bf40ea..823ed9a 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +257,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +258,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -6410,7 +6438,7 @@ index 3bf40ea..823ed9a 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +289,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +290,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -6421,7 +6449,7 @@ index 3bf40ea..823ed9a 100644
  #endif
        });
  
-@@ -270,7 +356,351 @@ int main(const int argc, char* argv[])
+@@ -270,7 +357,353 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -6660,6 +6688,8 @@ index 3bf40ea..823ed9a 100644
 +    // finish everything first (Dolphin's SyncOnSkipIdle) - the two keep overlapping.
 +    Config::SetBase(Config::MAIN_SYNC_ON_SKIP_IDLE,
 +                    Platform::GetPS4Option("sync_on_idle", "on") != "off");
++    // sync_on_idle=frame: the GPU thread may stay one idle step behind (CoreTiming::Idle).
++    ps4_sync_idle_frame = Platform::GetPS4Option("sync_on_idle", "on") == "frame";
 +    // aspect=wide: Dolphin's "Force 16:9" (games with their own 16:9 mode); aspect=stretch.
 +    {
 +      const std::string aspect = Platform::GetPS4Option("aspect", "auto");
@@ -6773,7 +6803,7 @@ index 3bf40ea..823ed9a 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +714,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +717,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -6789,7 +6819,7 @@ index 3bf40ea..823ed9a 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,6 +742,46 @@ int main(const int argc, char* argv[])
+@@ -303,6 +745,46 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -13523,10 +13553,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..b84f674
+index 0000000..cd001fa
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5854 @@
+@@ -0,0 +1,5856 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -18240,7 +18270,9 @@ index 0000000..b84f674
 +      }
 +    }
 +    else if (key == "sync_on_idle")
-+      parts.push_back(value == "off" ? "idle sync off" : "idle sync on");
++      parts.push_back(value == "off"   ? "idle sync off" :
++                      value == "frame" ? "idle sync one frame behind" :
++                                         "idle sync on");
 +    else if (key == "cpu_clock_min")
 +      parts.push_back("clock floor " + value + "%");
 +    else if (key == "cpu_clock")
@@ -27085,10 +27117,20 @@ index 83eaa2e..a3988e0 100644
    // Initialize worker thread with backend-specific method.
    if (!WorkerThreadInitWorkerThread(param))
 diff --git a/Source/Core/VideoCommon/CommandProcessor.cpp b/Source/Core/VideoCommon/CommandProcessor.cpp
-index 1dbf466..b66cbac 100644
+index 1dbf466..4b1b09a 100644
 --- a/Source/Core/VideoCommon/CommandProcessor.cpp
 +++ b/Source/Core/VideoCommon/CommandProcessor.cpp
-@@ -406,6 +406,46 @@ void CommandProcessorManager::GatherPipeBursted()
+@@ -384,6 +384,9 @@ void CommandProcessorManager::GatherPipeBursted()
+     m_system.GetCoreTiming().ForceExceptionCheck(0);
+ 
+   m_fifo.CPReadWriteDistance.fetch_add(GPFifo::GATHER_PIPE_SIZE, std::memory_order_seq_cst);
++#ifdef __ORBIS__
++  m_system.GetFifo().PS4AddWritten(GPFifo::GATHER_PIPE_SIZE);
++#endif
+ 
+   m_system.GetFifo().RunGpu();
+ 
+@@ -406,6 +409,49 @@ void CommandProcessorManager::GatherPipeBursted()
               "FIFOs linked but out of sync");
  }
  
@@ -27127,6 +27169,9 @@ index 1dbf466..b66cbac 100644
 +
 +  m_fifo.CPReadWriteDistance.fetch_add(GPFifo::GATHER_PIPE_SIZE * bursts,
 +                                       std::memory_order_seq_cst);
++#ifdef __ORBIS__
++  m_system.GetFifo().PS4AddWritten(GPFifo::GATHER_PIPE_SIZE * bursts);
++#endif
 +
 +  m_system.GetFifo().RunGpu();
 +}
@@ -27135,7 +27180,7 @@ index 1dbf466..b66cbac 100644
  void CommandProcessorManager::UpdateInterrupts(u64 userdata)
  {
    if (userdata)
-@@ -476,12 +516,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
+@@ -476,12 +522,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
    }
  
    // overflow & underflow check
@@ -27162,7 +27207,7 @@ index 1dbf466..b66cbac 100644
  
    bool bpInt = m_fifo.bFF_Breakpoint.load(std::memory_order_relaxed) &&
                 m_fifo.bFF_BPInt.load(std::memory_order_relaxed);
-@@ -514,12 +568,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
+@@ -514,12 +574,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
  void CommandProcessorManager::SetCPStatusFromCPU()
  {
    // overflow & underflow check
@@ -27206,18 +27251,21 @@ index 976592c..a20137f 100644
    void UpdateInterruptsFromVideoBackend(u64 userdata);
  
 diff --git a/Source/Core/VideoCommon/Fifo.cpp b/Source/Core/VideoCommon/Fifo.cpp
-index f183c93..b422c42 100644
+index f183c93..cae8a3b 100644
 --- a/Source/Core/VideoCommon/Fifo.cpp
 +++ b/Source/Core/VideoCommon/Fifo.cpp
-@@ -2,6 +2,7 @@
- // SPDX-License-Identifier: GPL-2.0-or-later
+@@ -3,6 +3,10 @@
  
  #include "VideoCommon/Fifo.h"
-+#include "VideoCommon/PS4Profile.h"
  
++#include <chrono>
++#include <thread>
++#include "VideoCommon/PS4Profile.h"
++
  #include <atomic>
  #include <cstring>
-@@ -28,6 +29,7 @@
+ 
+@@ -28,6 +32,7 @@
  #include "VideoCommon/DataReader.h"
  #include "VideoCommon/FramebufferManager.h"
  #include "VideoCommon/OpcodeDecoding.h"
@@ -27225,7 +27273,7 @@ index f183c93..b422c42 100644
  #include "VideoCommon/VertexLoaderManager.h"
  #include "VideoCommon/VertexManagerBase.h"
  #include "VideoCommon/VideoBackendBase.h"
-@@ -230,8 +232,24 @@ void FifoManager::ReadDataFromFifo(u32 read_ptr)
+@@ -230,8 +235,24 @@ void FifoManager::ReadDataFromFifo(u32 read_ptr)
    }
    // Copy new video instructions to m_video_buffer for future use in rendering the new picture
    auto& memory = m_system.GetMemory();
@@ -27251,7 +27299,7 @@ index f183c93..b422c42 100644
  }
  
  // The deterministic_gpu_thread version.
-@@ -283,16 +301,70 @@ void FifoManager::ResetVideoBuffer()
+@@ -283,16 +304,70 @@ void FifoManager::ResetVideoBuffer()
  
  // Description: Main FIFO update loop
  // Purpose: Keep the Core HW updated about the CPU-GPU distance
@@ -27322,7 +27370,7 @@ index f183c93..b422c42 100644
  
          if (m_use_deterministic_gpu_thread)
          {
-@@ -302,6 +374,7 @@ void FifoManager::RunGpuLoop()
+@@ -302,6 +377,7 @@ void FifoManager::RunGpuLoop()
            // See comment in SyncGPU
            if (write_ptr > seen_ptr)
            {
@@ -27330,7 +27378,7 @@ index f183c93..b422c42 100644
              m_video_buffer_read_ptr =
                  OpcodeDecoder::RunFifo(DataReader(m_video_buffer_read_ptr, write_ptr), nullptr);
              m_video_buffer_seen_ptr = write_ptr;
-@@ -312,6 +385,9 @@ void FifoManager::RunGpuLoop()
+@@ -312,6 +388,9 @@ void FifoManager::RunGpuLoop()
            auto& command_processor = m_system.GetCommandProcessor();
            auto& fifo = command_processor.GetFifo();
            command_processor.SetCPStatusFromGPU();
@@ -27340,7 +27388,7 @@ index f183c93..b422c42 100644
  
            // check if we are able to run this buffer
            while (!command_processor.IsInterruptWaiting() &&
-@@ -323,28 +399,60 @@ void FifoManager::RunGpuLoop()
+@@ -323,28 +402,60 @@ void FifoManager::RunGpuLoop()
                break;
  
              u32 cyclesExecuted = 0;
@@ -27410,7 +27458,7 @@ index f183c93..b422c42 100644
              if ((write_ptr - m_video_buffer_read_ptr) == 0)
              {
                fifo.SafeCPReadPointer.store(fifo.CPReadPointer.load(std::memory_order_relaxed),
-@@ -381,8 +489,34 @@ void FifoManager::RunGpuLoop()
+@@ -381,8 +492,34 @@ void FifoManager::RunGpuLoop()
  
            // The fifo is empty and it's unlikely we will get any more work in the near future.
            // Make sure VertexManager finishes drawing any primitives it has stored in it's buffer.
@@ -27445,7 +27493,7 @@ index f183c93..b422c42 100644
          }
        },
        100);
-@@ -393,7 +527,16 @@ void FifoManager::FlushGpu()
+@@ -393,9 +530,58 @@ void FifoManager::FlushGpu()
    if (!m_system.IsDualCoreMode() || m_use_deterministic_gpu_thread)
      return;
  
@@ -27453,16 +27501,58 @@ index f183c93..b422c42 100644
 +  // Time the CPU thread waits for the GPU thread (monitor: "waits").
 +  timespec t0, t1;
 +  clock_gettime(CLOCK_MONOTONIC, &t0);
-+  m_gpu_mainloop.Wait();
+   m_gpu_mainloop.Wait();
 +  clock_gettime(CLOCK_MONOTONIC, &t1);
 +  ps4_wait_add(0, (t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
 +#else
-   m_gpu_mainloop.Wait();
++  m_gpu_mainloop.Wait();
 +#endif
  }
  
++#ifdef __ORBIS__
++void FifoManager::PS4FlushGpuToPreviousIdle()
++{
++  if (!m_system.IsDualCoreMode() || m_use_deterministic_gpu_thread)
++    return;
++  auto& fifo = m_system.GetCommandProcessor().GetFifo();
++  // The CPU thread is the only writer: the count doesn't move while it waits here.
++  const u64 written = m_ps4_written.load(std::memory_order_relaxed);
++  const u64 target = m_ps4_idle_target;
++  m_ps4_idle_target = written;
++  const auto consumed = [&] {
++    const u64 pending = fifo.CPReadWriteDistance.load(std::memory_order_acquire);
++    return pending > written ? u64{0} : written - pending;
++  };
++  if (consumed() >= target)
++    return;
++  timespec t0, t1;
++  clock_gettime(CLOCK_MONOTONIC, &t0);
++  for (;;)
++  {
++    RunGpu();
++    std::this_thread::sleep_for(std::chrono::microseconds(50));
++    if (consumed() >= target)
++      break;
++    clock_gettime(CLOCK_MONOTONIC, &t1);
++    const long long waited =
++        (t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec);
++    // The FIFO was reset or moved (a state load, a game's own FIFO switch): the full sync.
++    if (waited > 100'000'000ll || !fifo.bFF_GPReadEnable.load(std::memory_order_relaxed))
++    {
++      m_gpu_mainloop.Wait();
++      m_ps4_idle_target = m_ps4_written.load(std::memory_order_relaxed);
++      break;
++    }
++  }
++  clock_gettime(CLOCK_MONOTONIC, &t1);
++  ps4_wait_add(0, (t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
++}
++#endif
++
  void FifoManager::GpuMaySleep()
-@@ -551,7 +694,10 @@ int FifoManager::WaitForGpuThread(int ticks)
+ {
+   m_gpu_mainloop.AllowSleep();
+@@ -551,7 +737,10 @@ int FifoManager::WaitForGpuThread(int ticks)
  
    // Wait for GPU
    if (now >= m_config_sync_gpu_max_distance)
@@ -27474,10 +27564,10 @@ index f183c93..b422c42 100644
    return GPU_TIME_SLOT_SIZE;
  }
 diff --git a/Source/Core/VideoCommon/Fifo.h b/Source/Core/VideoCommon/Fifo.h
-index 2afa110..2ef4071 100644
+index 2afa110..18cac7a 100644
 --- a/Source/Core/VideoCommon/Fifo.h
 +++ b/Source/Core/VideoCommon/Fifo.h
-@@ -64,6 +64,10 @@ public:
+@@ -64,11 +64,23 @@ public:
    // In single core mode, this runs the GPU for a single slice.
    // In dual core mode, this synchronizes with the GPU thread.
    void SyncGPUForRegisterAccess();
@@ -27488,6 +27578,30 @@ index 2afa110..2ef4071 100644
  
    void PushFifoAuxBuffer(const void* ptr, size_t size);
    void* PopFifoAuxBuffer(size_t size);
+ 
+   void FlushGpu();
++#ifdef __ORBIS__
++  // ps4.ini sync_on_idle=frame: at an idle skip, wait only until the GPU thread has processed
++  // what the CPU thread had sent by the previous idle skip - the GPU thread may run one step
++  // behind while the CPU thread goes on (sync_on_idle=on waits for everything, off for nothing).
++  void PS4FlushGpuToPreviousIdle();
++  // Bytes the CPU thread has handed to the GPU thread (CommandProcessor's bursts).
++  void PS4AddWritten(u32 bytes) { m_ps4_written.fetch_add(bytes, std::memory_order_relaxed); }
++#endif
+   void RunGpu();
+   void GpuMaySleep();
+   void RunGpuLoop();
+@@ -98,6 +110,10 @@ private:
+   // This could be in SConfig, but it depends on multiple settings
+   // and can change at runtime.
+   bool m_use_deterministic_gpu_thread = false;
++#ifdef __ORBIS__
++  std::atomic<u64> m_ps4_written{0};
++  u64 m_ps4_idle_target = 0;  // m_ps4_written at the previous idle skip (CPU thread)
++#endif
+ 
+   CoreTiming::EventType* m_event_sync_gpu = nullptr;
+ 
 diff --git a/Source/Core/VideoCommon/FramebufferManager.cpp b/Source/Core/VideoCommon/FramebufferManager.cpp
 index 6277598..f1455dc 100644
 --- a/Source/Core/VideoCommon/FramebufferManager.cpp
