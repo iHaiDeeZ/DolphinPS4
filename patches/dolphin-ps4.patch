@@ -373,6 +373,45 @@ index 97d8ad8..eec1c4a 100644
  elseif(ENABLE_X11 AND X11_FOUND)
    target_sources(common PRIVATE
      GL/GLX11Window.cpp
+diff --git a/Source/Core/Common/ChunkFile.h b/Source/Core/Common/ChunkFile.h
+index a9737c1..7ae4d7e 100644
+--- a/Source/Core/Common/ChunkFile.h
++++ b/Source/Core/Common/ChunkFile.h
+@@ -288,7 +288,7 @@ public:
+   }
+ 
+   template <typename T>
+-  void DoPointer(T*& x, T* const base)
++  bool DoPointer(T*& x, T* const base, size_t count)
+   {
+     // pointers can be more than 2^31 apart, but you're using this function wrong if you need that
+     // much range
+@@ -296,15 +296,23 @@ public:
+     Do(offset);
+     if (IsReadMode())
+     {
++      if (offset < 0 || static_cast<size_t>(offset) > count)
++      {
++        SetMeasureMode();
++        return false;
++      }
+       x = base + offset;
+     }
++    return true;
+   }
+ 
+-  void DoPointer(void*& x, void* const base)
++  bool DoPointer(void*& x, void* const base, size_t count)
+   {
+     auto* ptr = static_cast<u8*>(x);
+-    DoPointer(ptr, static_cast<u8*>(base));
++    if (!DoPointer(ptr, static_cast<u8*>(base), count))
++      return false;
+     x = ptr;
++    return true;
+   }
+ 
+   void DoMarker(const std::string& prevName, u32 arbitraryNumber = 0x42)
 diff --git a/Source/Core/Common/Event.h b/Source/Core/Common/Event.h
 index 67dbd1e..3f5baed 100644
 --- a/Source/Core/Common/Event.h
@@ -27758,7 +27797,7 @@ index 976592c..a20137f 100644
    void UpdateInterruptsFromVideoBackend(u64 userdata);
  
 diff --git a/Source/Core/VideoCommon/Fifo.cpp b/Source/Core/VideoCommon/Fifo.cpp
-index f183c93..cae8a3b 100644
+index f183c93..f127344 100644
 --- a/Source/Core/VideoCommon/Fifo.cpp
 +++ b/Source/Core/VideoCommon/Fifo.cpp
 @@ -3,6 +3,10 @@
@@ -27780,7 +27819,26 @@ index f183c93..cae8a3b 100644
  #include "VideoCommon/VertexLoaderManager.h"
  #include "VideoCommon/VertexManagerBase.h"
  #include "VideoCommon/VideoBackendBase.h"
-@@ -230,8 +235,24 @@ void FifoManager::ReadDataFromFifo(u32 read_ptr)
+@@ -54,9 +59,16 @@ void FifoManager::DoState(PointerWrap& p)
+ {
+   p.DoArray(m_video_buffer, FIFO_SIZE);
+   u8* write_ptr = m_video_buffer_write_ptr;
+-  p.DoPointer(write_ptr, m_video_buffer);
++  if (!p.DoPointer(write_ptr, m_video_buffer, FIFO_SIZE))
++    return;
+   m_video_buffer_write_ptr = write_ptr;
+-  p.DoPointer(m_video_buffer_read_ptr, m_video_buffer);
++  if (!p.DoPointer(m_video_buffer_read_ptr, m_video_buffer, FIFO_SIZE))
++    return;
++  if (p.IsReadMode() && m_video_buffer_read_ptr > write_ptr)
++  {
++    p.SetMeasureMode();
++    return;
++  }
+   if (p.IsReadMode() && m_use_deterministic_gpu_thread)
+   {
+     // We're good and paused, right?
+@@ -230,8 +242,24 @@ void FifoManager::ReadDataFromFifo(u32 read_ptr)
    }
    // Copy new video instructions to m_video_buffer for future use in rendering the new picture
    auto& memory = m_system.GetMemory();
@@ -27806,7 +27864,7 @@ index f183c93..cae8a3b 100644
  }
  
  // The deterministic_gpu_thread version.
-@@ -283,16 +304,70 @@ void FifoManager::ResetVideoBuffer()
+@@ -283,16 +311,70 @@ void FifoManager::ResetVideoBuffer()
  
  // Description: Main FIFO update loop
  // Purpose: Keep the Core HW updated about the CPU-GPU distance
@@ -27877,7 +27935,7 @@ index f183c93..cae8a3b 100644
  
          if (m_use_deterministic_gpu_thread)
          {
-@@ -302,6 +377,7 @@ void FifoManager::RunGpuLoop()
+@@ -302,6 +384,7 @@ void FifoManager::RunGpuLoop()
            // See comment in SyncGPU
            if (write_ptr > seen_ptr)
            {
@@ -27885,7 +27943,7 @@ index f183c93..cae8a3b 100644
              m_video_buffer_read_ptr =
                  OpcodeDecoder::RunFifo(DataReader(m_video_buffer_read_ptr, write_ptr), nullptr);
              m_video_buffer_seen_ptr = write_ptr;
-@@ -312,6 +388,9 @@ void FifoManager::RunGpuLoop()
+@@ -312,6 +395,9 @@ void FifoManager::RunGpuLoop()
            auto& command_processor = m_system.GetCommandProcessor();
            auto& fifo = command_processor.GetFifo();
            command_processor.SetCPStatusFromGPU();
@@ -27895,7 +27953,7 @@ index f183c93..cae8a3b 100644
  
            // check if we are able to run this buffer
            while (!command_processor.IsInterruptWaiting() &&
-@@ -323,28 +402,60 @@ void FifoManager::RunGpuLoop()
+@@ -323,28 +409,60 @@ void FifoManager::RunGpuLoop()
                break;
  
              u32 cyclesExecuted = 0;
@@ -27965,7 +28023,7 @@ index f183c93..cae8a3b 100644
              if ((write_ptr - m_video_buffer_read_ptr) == 0)
              {
                fifo.SafeCPReadPointer.store(fifo.CPReadPointer.load(std::memory_order_relaxed),
-@@ -381,8 +492,34 @@ void FifoManager::RunGpuLoop()
+@@ -381,8 +499,34 @@ void FifoManager::RunGpuLoop()
  
            // The fifo is empty and it's unlikely we will get any more work in the near future.
            // Make sure VertexManager finishes drawing any primitives it has stored in it's buffer.
@@ -28000,7 +28058,7 @@ index f183c93..cae8a3b 100644
          }
        },
        100);
-@@ -393,9 +530,58 @@ void FifoManager::FlushGpu()
+@@ -393,9 +537,58 @@ void FifoManager::FlushGpu()
    if (!m_system.IsDualCoreMode() || m_use_deterministic_gpu_thread)
      return;
  
@@ -28008,11 +28066,11 @@ index f183c93..cae8a3b 100644
 +  // Time the CPU thread waits for the GPU thread (monitor: "waits").
 +  timespec t0, t1;
 +  clock_gettime(CLOCK_MONOTONIC, &t0);
-   m_gpu_mainloop.Wait();
++  m_gpu_mainloop.Wait();
 +  clock_gettime(CLOCK_MONOTONIC, &t1);
 +  ps4_wait_add(0, (t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
 +#else
-+  m_gpu_mainloop.Wait();
+   m_gpu_mainloop.Wait();
 +#endif
  }
  
@@ -28059,7 +28117,7 @@ index f183c93..cae8a3b 100644
  void FifoManager::GpuMaySleep()
  {
    m_gpu_mainloop.AllowSleep();
-@@ -551,7 +737,10 @@ int FifoManager::WaitForGpuThread(int ticks)
+@@ -551,7 +744,10 @@ int FifoManager::WaitForGpuThread(int ticks)
  
    // Wait for GPU
    if (now >= m_config_sync_gpu_max_distance)
