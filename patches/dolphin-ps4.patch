@@ -13741,10 +13741,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..9eb8689
+index 0000000..78ad4e0
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5935 @@
+@@ -0,0 +1,5939 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -18536,6 +18536,10 @@ index 0000000..9eb8689
 +        shortcut = true;
 +      }
 +    }
++    else if (key == "flip_thread")
++      parts.push_back(value == "on" ? "frames shown from their own thread" : "frames shown by the video thread");
++    else if (key == "display_buffers")
++      parts.push_back(value + " display buffers");
 +    else if (key == "sync_on_idle")
 +      parts.push_back(value == "off"   ? "idle sync off" :
 +                      value == "frame" ? "idle sync one frame behind" :
