@@ -2248,6 +2248,32 @@ ac_ps4_submit_flip(int video, unsigned buffer, unsigned mode, int64_t arg)
    return r;
 }
 
+/* The number of the last submission (Dolphin's flip thread: the frame it shows) and a wait until
+ * the GPU has finished it - a CPU-side flip after the frame, instead of
+ * sceGnmSubmitAndFlipCommandBuffers, which waited for all the GPU's work in the submitting
+ * thread (~40% of the video thread in Mario Kart Wii). */
+uint64_t ac_ps4_last_submission(void);
+uint64_t
+ac_ps4_last_submission(void)
+{
+   ac_drm_device *dev = ps4_fault_dev;
+   if (!dev)
+      return 0;
+   simple_mtx_lock(&dev->lock);
+   const uint64_t seq = dev->last_seq;
+   simple_mtx_unlock(&dev->lock);
+   return seq;
+}
+
+void ac_ps4_wait_submission(uint64_t seq);
+void
+ac_ps4_wait_submission(uint64_t seq)
+{
+   ac_drm_device *dev = ps4_fault_dev;
+   if (dev && seq)
+      ps4_wait_seq(dev, seq, INT64_MAX);
+}
+
 /* ---------------------------------------------------------------------------------------------
  * Sync objects (DRM syncobj semantics on top of sequence numbers)
  */

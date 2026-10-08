@@ -6396,7 +6396,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..a902b7a 100644
+index 3bf40ea..2238ba7 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -6545,7 +6545,7 @@ index 3bf40ea..a902b7a 100644
  #endif
        });
  
-@@ -270,7 +359,357 @@ int main(const int argc, char* argv[])
+@@ -270,7 +359,359 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -6758,7 +6758,9 @@ index 3bf40ea..a902b7a 100644
 +    // display_buffers=2..8: VideoOut buffers in rotation; flip_async=on: the flip runs on the
 +    // Vulkan recorder thread behind the frame's submit (needs vk_thread=on).
 +    ps4_display_buffers = std::atoi(Platform::GetPS4Option("display_buffers", "3").c_str());
-+    ps4_flip_async = Platform::GetPS4Option("flip_async", "off") == "on";
++    ps4_flip_async = Platform::GetPS4Option("flip_thread", "off") == "on" ? 2 :
++                     Platform::GetPS4Option("flip_async", "off") == "on"  ? 1 :
++                                                                             0;
 +    // game_hle=off: no native versions of hot game loops (Core/HLE/HLE_PS4Games.cpp).
 +    ps4_game_hle = Platform::GetPS4Option("game_hle", "on") == "on";
 +    // zoom=letterbox: fill a 16:9 TV with a game's letterboxed 4:3 picture (VideoCommon/Present.cpp).
@@ -6903,7 +6905,7 @@ index 3bf40ea..a902b7a 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +723,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +725,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -6919,7 +6921,7 @@ index 3bf40ea..a902b7a 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +751,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +753,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -26795,7 +26797,7 @@ index 82bf1f2..0fb51d2 100644
  private:
    VkPipeline m_pipeline;
 diff --git a/Source/Core/VideoBackends/Vulkan/VKSwapChain.cpp b/Source/Core/VideoBackends/Vulkan/VKSwapChain.cpp
-index 370e22d..94fcf4b 100644
+index 370e22d..ed9b0e8 100644
 --- a/Source/Core/VideoBackends/Vulkan/VKSwapChain.cpp
 +++ b/Source/Core/VideoBackends/Vulkan/VKSwapChain.cpp
 @@ -4,14 +4,19 @@
@@ -26818,7 +26820,7 @@ index 370e22d..94fcf4b 100644
  #include "VideoBackends/Vulkan/ObjectCache.h"
  #include "VideoBackends/Vulkan/VKTexture.h"
  #include "VideoBackends/Vulkan/VulkanContext.h"
-@@ -21,8 +26,149 @@
+@@ -21,8 +26,231 @@
  #include <X11/Xlib.h>
  #endif
  
@@ -26826,6 +26828,10 @@ index 370e22d..94fcf4b 100644
 +#include <cstdio>
 +
 +#include <orbis/VideoOut.h>
++#include <condition_variable>
++#include <deque>
++#include <mutex>
++#include <thread>
 +#include <orbis/libkernel.h>
 +
 +extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
@@ -26833,6 +26839,10 @@ index 370e22d..94fcf4b 100644
 +extern "C" int ac_ps4_submit_flip(int video, unsigned buffer, unsigned mode, int64_t arg);
 +// ps4.ini display_buffers / flip_async (DolphinNoGUI/MainNoGUI.cpp).
 +extern "C" int ps4_display_buffers, ps4_flip_async;
++// port/mesa/ac_ps4_drm.c: the last GPU submission, and a wait until the GPU has finished it.
++extern "C" uint64_t ac_ps4_last_submission(void);
++extern "C" void ac_ps4_wait_submission(uint64_t seq);
++extern "C" uint64_t ac_ps4_flip_ns[3];  // the monitor line: flip thread GPU wait, flip call
 +int ps4_display_buffers = 3;
 +int ps4_flip_async = 0;
 +#endif
@@ -26893,6 +26903,62 @@ index 370e22d..94fcf4b 100644
 +// A GPU-side flip worked once: later ones may run on the recorder thread (ps4.ini flip_async).
 +static bool s_gpu_flip_works = false;
 +
++// ps4.ini flip_thread=on (ps4_flip_async == 2): a thread of its own waits until the GPU has
++// finished the frame, then flips with sceVideoOutSubmitFlip. Nobody that feeds the GPU waits.
++struct PS4PendingFlip
++{
++  u64 seq;
++  u32 image;
++  int mode;
++  s64 arg;
++};
++static std::mutex s_flip_mutex;
++static std::condition_variable s_flip_cv;
++static std::deque<PS4PendingFlip> s_flip_queue_items;
++static bool s_flip_thread_started = false;
++
++static void PS4FlipThread()
++{
++  ps4_boot_trace("display: flip thread started");
++  for (;;)
++  {
++    PS4PendingFlip flip;
++    {
++      std::unique_lock lock(s_flip_mutex);
++      s_flip_cv.wait(lock, [] { return !s_flip_queue_items.empty(); });
++      flip = s_flip_queue_items.front();
++      s_flip_queue_items.pop_front();
++    }
++    timespec t0, t1, t2;
++    clock_gettime(CLOCK_MONOTONIC, &t0);
++    ac_ps4_wait_submission(flip.seq);
++    clock_gettime(CLOCK_MONOTONIC, &t1);
++    const int r = sceVideoOutSubmitFlip(s_video, static_cast<int>(flip.image), flip.mode, flip.arg);
++    clock_gettime(CLOCK_MONOTONIC, &t2);
++    const auto ns = [](const timespec& a, const timespec& b) {
++      return static_cast<uint64_t>((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec));
++    };
++    ac_ps4_flip_ns[0] += ns(t0, t1);
++    ac_ps4_flip_ns[1] += ns(t1, t2);
++    if (r < 0)
++    {
++      static int s_logged = 0;
++      if (s_logged++ < 8)
++        ERROR_LOG_FMT(VIDEO, "flip thread: sceVideoOutSubmitFlip failed: {:#x}", static_cast<u32>(r));
++    }
++  }
++}
++
++static void PS4QueueThreadFlip(u64 image_index, u64 mode, u64 arg, u64)
++{
++  {
++    std::lock_guard lock(s_flip_mutex);
++    s_flip_queue_items.push_back({ac_ps4_last_submission(), static_cast<u32>(image_index),
++                                  static_cast<int>(mode), static_cast<s64>(arg)});
++  }
++  s_flip_cv.notify_one();
++}
++
 +// The recorder thread's flip job (flip_async): the frame's submit is right before it in the queue.
 +static void PS4AsyncFlip(u64 video, u64 image_index, u64 mode, u64 arg)
 +{
@@ -26907,9 +26973,27 @@ index 370e22d..94fcf4b 100644
 +  static int s_traced = 0;
 +  const int mode = s_vsync ? ORBIS_VIDEO_OUT_FLIP_VSYNC : ORBIS_VIDEO_OUT_FLIP_HSYNC;
 +  const s64 arg = static_cast<s64>(s_flips_submitted + 1);
++  if (ps4_flip_async == 2)
++  {
++    if (!s_flip_thread_started)
++    {
++      s_flip_thread_started = true;
++      std::thread(PS4FlipThread).detach();
++    }
++    // The frame's number is read right after its submit: on the recorder thread (queued behind
++    // the submit), or here once everything recorded has been submitted.
++    if (!PS4CommandRecorderQueueCall(&PS4QueueThreadFlip, image_index, static_cast<u64>(mode),
++                                     static_cast<u64>(arg), 0))
++    {
++      PS4CommandRecorderDrain();
++      PS4QueueThreadFlip(image_index, static_cast<u64>(mode), static_cast<u64>(arg), 0);
++    }
++    s_flips_submitted++;
++    return;
++  }
 +  // flip_async: queued behind the frame's submit; the video thread goes on to the next frame
 +  // (the flip call waited ~40% of the time in Mario Kart Wii).
-+  if (ps4_flip_async && s_gpu_flip_works &&
++  if (ps4_flip_async == 1 && s_gpu_flip_works &&
 +      PS4CommandRecorderQueueCall(&PS4AsyncFlip, static_cast<u64>(s_video), image_index,
 +                                  static_cast<u64>(mode), static_cast<u64>(arg)))
 +  {
@@ -26968,7 +27052,7 @@ index 370e22d..94fcf4b 100644
  SwapChain::SwapChain(const WindowSystemInfo& wsi, VkSurfaceKHR surface, bool vsync)
      : m_wsi(wsi), m_surface(surface), m_vsync_enabled(vsync),
        m_fullscreen_supported(g_vulkan_context->SupportsExclusiveFullscreen(wsi, surface))
-@@ -38,6 +184,11 @@ SwapChain::~SwapChain()
+@@ -38,6 +266,11 @@ SwapChain::~SwapChain()
  
  VkSurfaceKHR SwapChain::CreateVulkanSurface(VkInstance instance, const WindowSystemInfo& wsi)
  {
@@ -26980,7 +27064,7 @@ index 370e22d..94fcf4b 100644
  #if defined(VK_USE_PLATFORM_WIN32_KHR)
    if (wsi.type == WindowSystemType::Windows)
    {
-@@ -273,6 +424,18 @@ bool SwapChain::SelectPresentMode()
+@@ -273,6 +506,18 @@ bool SwapChain::SelectPresentMode()
  
  bool SwapChain::CreateSwapChain()
  {
@@ -26999,7 +27083,7 @@ index 370e22d..94fcf4b 100644
    // Look up surface properties to determine image count and dimensions
    VkSurfaceCapabilitiesKHR surface_capabilities;
    VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vulkan_context->GetPhysicalDevice(),
-@@ -407,6 +570,94 @@ bool SwapChain::CreateSwapChain()
+@@ -407,6 +652,96 @@ bool SwapChain::CreateSwapChain()
  bool SwapChain::SetupSwapChainImages()
  {
    ASSERT(m_swap_chain_images.empty());
@@ -27083,7 +27167,9 @@ index 370e22d..94fcf4b 100644
 +    {
 +      char trace[96];
 +      snprintf(trace, sizeof(trace), "display: %u buffers, flip %s", s_swap_images,
-+               ps4_flip_async ? "on the recorder thread" : "on the video thread");
++               ps4_flip_async == 2 ? "on its own thread after the GPU" :
++               ps4_flip_async == 1 ? "on the recorder thread" :
++                                     "on the video thread");
 +      ps4_boot_trace(trace);
 +    }
 +    INFO_LOG_FMT(VIDEO, "PS4 swap chain: {} images {}x{}, pitch {}", s_swap_images, m_width,
@@ -27094,7 +27180,7 @@ index 370e22d..94fcf4b 100644
  
    uint32_t image_count;
    VkResult res =
-@@ -464,6 +715,22 @@ bool SwapChain::SetupSwapChainImages()
+@@ -464,6 +799,22 @@ bool SwapChain::SetupSwapChainImages()
  
  void SwapChain::DestroySwapChainImages()
  {
@@ -27117,7 +27203,7 @@ index 370e22d..94fcf4b 100644
    for (auto& it : m_swap_chain_images)
    {
      // Images themselves are cleaned up by the swap chain object
-@@ -477,6 +744,10 @@ void SwapChain::DestroySwapChain()
+@@ -477,6 +828,10 @@ void SwapChain::DestroySwapChain()
  {
    if (m_swap_chain == VK_NULL_HANDLE)
      return;
@@ -27128,7 +27214,7 @@ index 370e22d..94fcf4b 100644
  
    // Release exclusive fullscreen before destroying.
    if (m_current_fullscreen_state)
-@@ -488,6 +759,14 @@ void SwapChain::DestroySwapChain()
+@@ -488,6 +843,14 @@ void SwapChain::DestroySwapChain()
  
  VkResult SwapChain::AcquireNextImage()
  {
@@ -27143,7 +27229,7 @@ index 370e22d..94fcf4b 100644
    VkResult res = vkAcquireNextImageKHR(g_vulkan_context->GetDevice(), m_swap_chain, UINT64_MAX,
                                         g_command_buffer_mgr->GetCurrentCommandBufferSemaphore(),
                                         VK_NULL_HANDLE, &m_current_swap_chain_image_index);
-@@ -532,6 +811,13 @@ bool SwapChain::SetVSync(bool enabled)
+@@ -532,6 +895,13 @@ bool SwapChain::SetVSync(bool enabled)
  
    // Recreate the swap chain with the new present mode.
    m_vsync_enabled = enabled;
@@ -27157,7 +27243,7 @@ index 370e22d..94fcf4b 100644
    return RecreateSwapChain();
  }
  
-@@ -612,6 +898,10 @@ bool SwapChain::RecreateSurface(void* native_handle)
+@@ -612,6 +982,10 @@ bool SwapChain::RecreateSurface(void* native_handle)
  
  void SwapChain::DestroySurface()
  {
