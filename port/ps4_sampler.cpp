@@ -45,9 +45,13 @@ constexpr int kSigProf = 27;    // FreeBSD value
 constexpr int kSaSiginfo = 0x40, kSaRestart = 0x0002;
 constexpr int kMcontextOffset = 0x40;  // measured on hardware (see ps4_crashlog.cpp)
 constexpr int kRipIndex = 20, kRspIndex = 23;
+constexpr int kRbpIndex = 9;  // mc_rbp (the order in ps4_crashlog.cpp's kRegNames)
 // Samples in system libraries (libkernel/libc at 0x800000000+) are attributed to the eboot
 // function that called into them: the first eboot code address on the stack, tagged.
 constexpr uint64_t kSystemLibs = 0x800000000ULL, kCallerTag = 1ULL << 62;
+// A system-module sample whose Dolphin caller was found on the frame-pointer chain (a build with
+// frame pointers, PS4_FRAME_POINTERS): the caller's ELF address, reported as "syscall from elf".
+constexpr uint64_t kWaitTag = 1ULL << 61;
 constexpr uintptr_t kTextWindow = 0x4000000;
 constexpr int kMaxThreads = 4;
 constexpr int kMaxSamples = 16384;  // per thread and window (10 s at 1 kHz fits)
@@ -55,6 +59,7 @@ constexpr int kMaxSamples = 16384;  // per thread and window (10 s at 1 kHz fits
 struct ThreadSamples {
     std::atomic<pthread_t> thread{};
     const char* name = nullptr;
+    uint64_t stack_top = 0;  // ps4_sampler_register_thread: the frame-pointer walk's limit
     uint64_t samples[kMaxSamples];
     std::atomic<int> count{0};
 };
@@ -77,8 +82,30 @@ void profHandler(int, siginfo_t*, void* context) {
             // top of samples.log maps it to a module offset, which the decrypted modules' symbol
             // tables name. (Blaming "the first eboot address on the stack" picked up stale
             // values and named the wrong callers.)
-            if (sample >= kSystemLibs && sample < 2 * kSystemLibs)
-                sample |= kCallerTag;
+            if (sample >= kSystemLibs && sample < 2 * kSystemLibs) {
+                // With frame pointers the chain is exact: the first eboot return address on it is
+                // the Dolphin code that waits. Every frame read stays inside this thread's stack
+                // (from the interrupted rsp up to where the thread registered).
+                const uintptr_t text = reinterpret_cast<uintptr_t>(__text_start);
+                const uint64_t sp = regs[kRspIndex];
+                const uint64_t top = t.stack_top;
+                uint64_t fp = regs[kRbpIndex];
+                uint64_t caller = 0;
+                for (int depth = 0; depth < 16 && top; depth++) {
+                    if (fp < sp || fp + 16 > top || (fp & 7))
+                        break;
+                    const uint64_t* frame = reinterpret_cast<const uint64_t*>(fp);
+                    const uint64_t ret = frame[1];
+                    if (ret >= text && ret < text + kTextWindow) {
+                        caller = ret - text;
+                        break;
+                    }
+                    if (frame[0] <= fp)
+                        break;
+                    fp = frame[0];
+                }
+                sample = caller ? (caller | kWaitTag) : (sample | kCallerTag);
+            }
             t.samples[n] = sample;
             t.count.store(n + 1, std::memory_order_release);
         }
@@ -117,6 +144,8 @@ void report(int fd, ThreadSamples& t, double window_start) {
             s[i] &= ~0xFULL;  // system module address (see the module list)
             continue;
         }
+        if (s[i] & kWaitTag)
+            continue;  // a waiting Dolphin function's return address (exact)
         const bool eboot = s[i] >= text && s[i] < text + kTextWindow;
         s[i] = eboot ? ((s[i] - text) & ~0xFULL) : (s[i] | (1ULL << 63)) & ~0xFULL;
     }
@@ -129,7 +158,7 @@ void report(int fd, ThreadSamples& t, double window_start) {
         while (j < n && s[j] == s[i])
             j++;
         entries[unique++] = {s[i], j - i};
-        if (!(s[i] >> 62))
+        if (!(s[i] >> 61))
             eboot_samples += j - i;
         i = j;
     }
@@ -153,6 +182,10 @@ void report(int fd, ThreadSamples& t, double window_start) {
             snprintf(line, sizeof(line), "  %5.1f%% sys 0x%llx\n",
                      100.0 * entries[i].count / n,
                      static_cast<unsigned long long>(entries[i].key & ~kCallerTag));
+        else if (entries[i].key & kWaitTag)
+            snprintf(line, sizeof(line), "  %5.1f%% syscall from elf 0x%llx\n",
+                     100.0 * entries[i].count / n,
+                     static_cast<unsigned long long>(entries[i].key & ~kWaitTag));
         else
             snprintf(line, sizeof(line), "  %5.1f%% elf 0x%llx\n", 100.0 * entries[i].count / n,
                      static_cast<unsigned long long>(entries[i].key));
@@ -562,6 +595,10 @@ extern "C" void ps4_sampler_register_thread(const char* name) {
     if (index >= kMaxThreads)
         return;
     g_threads[index].name = name;
+    // The stack above this point belongs to the thread: the frame-pointer walk stays below it.
+    uint64_t rsp;
+    asm volatile("mov %%rsp, %0" : "=r"(rsp));
+    g_threads[index].stack_top = rsp + 0x400;
     g_threads[index].thread.store(pthread_self());
     g_thread_count.store(index + 1, std::memory_order_release);
 }

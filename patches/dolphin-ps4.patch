@@ -1,8 +1,23 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 5ea7f8e..874f376 100644
+index 5ea7f8e..c804fdd 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -701,7 +701,8 @@ if(ENABLE_CUBEB)
+@@ -329,7 +329,13 @@ else()
+   check_and_add_flag(VISIBILITY_INLINES_HIDDEN -fvisibility-inlines-hidden)
+   check_and_add_flag(VISIBILITY_HIDDEN -fvisibility=hidden)
+ 
+-  check_and_add_flag(FOMIT_FRAME_POINTER -fomit-frame-pointer NO_DEBINFO_ONLY)
++  # PS4 profiling builds (-DPS4_FRAME_POINTERS=ON): frame pointers, so the sampler names the
++  # Dolphin function behind every wait in a system call (port/ps4_sampler.cpp).
++  if(PS4_FRAME_POINTERS)
++    add_compile_options(-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer)
++  else()
++    check_and_add_flag(FOMIT_FRAME_POINTER -fomit-frame-pointer NO_DEBINFO_ONLY)
++  endif()
+ 
+   dolphin_compile_definitions(_DEBUG DEBUG_ONLY)
+   check_and_add_flag(GGDB -ggdb DEBUG_ONLY)
+@@ -701,7 +707,8 @@ if(ENABLE_CUBEB)
    add_definitions(-DHAVE_CUBEB)
  endif()
  
@@ -12,7 +27,7 @@ index 5ea7f8e..874f376 100644
    dolphin_find_optional_system_library(LibUSB Externals/libusb)
    add_definitions(-D__LIBUSB__)
  endif()
-@@ -722,7 +723,8 @@ dolphin_find_optional_system_library(MBEDTLS Externals/mbedtls 2.28)
+@@ -722,7 +729,8 @@ dolphin_find_optional_system_library(MBEDTLS Externals/mbedtls 2.28)
  
  dolphin_find_optional_system_library(CURL Externals/curl)
  
