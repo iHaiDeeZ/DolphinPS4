@@ -8686,10 +8686,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..ce689b2
+index 0000000..b43e657
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,2515 @@
+@@ -0,0 +1,2537 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -9295,12 +9295,13 @@ index 0000000..ce689b2
 +}
 +#endif
 +
-+// The game's progress, Xbox style (host thread).
-+void ShowProgressBanner()
++// The game's progress, Xbox style (host thread). False: the game's achievements aren't loaded
++// (yet) - the caller tries again.
++bool ShowProgressBanner()
 +{
 +  PS4Achievements::List list;
 +  if (!CaptureAchievements(&list))
-+    return;
++    return false;
 +  std::string badge;
 +  if (DemoMode())
 +  {
@@ -9330,8 +9331,10 @@ index 0000000..ce689b2
 +  banner.badge = badge;
 +  banner.progress =
 +      list.total ? static_cast<float>(list.unlocked) / static_cast<float>(list.total) : 0.0f;
++  Log("achievements: banner: " + banner.title + " - " + banner.line);
 +  std::lock_guard lock(s_mutex);
 +  s_banners.push_back(std::move(banner));
++  return true;
 +}
 +
 +// A demo achievement unlocks (host thread, while the game runs).
@@ -10503,6 +10506,14 @@ index 0000000..ce689b2
 +    return !s_banners.empty();
 +  }
 +  const Banner& banner = s_banners.front();
++  {
++    static const Banner* s_logged = nullptr;
++    if (s_logged != &banner)
++    {
++      s_logged = &banner;
++      Log("achievements: banner drawn");
++    }
++  }
 +  const ImVec2 size = ImGui::GetIO().DisplaySize;
 +  const float circle = std::min(Smooth(t / 0.3f), Smooth((SHOW - t) / 0.3f));
 +  const float open = std::min(Smooth((t - 0.25f) / 0.45f), Smooth((SHOW - 0.3f - t) / 0.45f));
@@ -11042,17 +11053,28 @@ index 0000000..ce689b2
 +      // The game's progress banner: when RetroAchievements answered (the demo: at the start),
 +      // after a moment for the game's badge to download.
 +      static bool s_banner_pending = false, s_demo_banner = false;
-+      static Clock::time_point s_banner_when;
++      static Clock::time_point s_banner_when, s_banner_try;
 +      if (s_ach_game_ready.exchange(false) || (DemoMode() && !s_demo_banner))
 +      {
 +        s_demo_banner = true;
 +        s_banner_pending = true;
-+        s_banner_when = now;
++        s_banner_when = s_banner_try = now;
 +      }
-+      if (s_banner_pending && now - s_banner_when > std::chrono::milliseconds(1500))
++      // After 1.5 s (the game badge's download), then every second while RetroAchievements
++      // still reports the game as loading; given up after 15 s.
++      if (s_banner_pending && now - s_banner_when > std::chrono::milliseconds(1500) &&
++          now - s_banner_try >= std::chrono::seconds(1))
 +      {
-+        s_banner_pending = false;
-+        ShowProgressBanner();
++        s_banner_try = now;
++        if (ShowProgressBanner())
++        {
++          s_banner_pending = false;
++        }
++        else if (now - s_banner_when > std::chrono::seconds(15))
++        {
++          s_banner_pending = false;
++          Log("achievements: banner skipped: the game's achievements never finished loading");
++        }
 +      }
 +    }
 +    {
