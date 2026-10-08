@@ -6514,7 +6514,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..9d2c617 100644
+index 3bf40ea..ec2bb38 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -6565,7 +6565,7 @@ index 3bf40ea..9d2c617 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,58 @@
+@@ -31,6 +53,59 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -6574,6 +6574,7 @@ index 3bf40ea..9d2c617 100644
 +extern "C" int ps4_uniform_upload_map;  // VideoBackends/OGL/ProgramShaderCache.cpp
 +extern "C" int ps4_vertex_upload_ring;  // VideoBackends/OGL/OGLStreamBuffer.cpp
 +extern "C" int ps4_show_fps;            // VideoCommon/Present.cpp
++extern "C" int ps4_bezel_mode;          // VideoCommon/Present.cpp
 +extern "C" void ps4_boot_failed(int unreadable);  // PlatformPS4.cpp: the menu says why
 +extern "C" int ps4_cpu_thread_core, ps4_gpu_thread_core, ps4_thread_priority;  // Core/Core.cpp
 +extern "C" void ps4_sampler_start();  // DolphinPS4 port/ps4_sampler.cpp
@@ -6624,7 +6625,7 @@ index 3bf40ea..9d2c617 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +247,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +248,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -6635,7 +6636,7 @@ index 3bf40ea..9d2c617 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +262,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +263,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -6654,7 +6655,7 @@ index 3bf40ea..9d2c617 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +294,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +295,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -6665,7 +6666,7 @@ index 3bf40ea..9d2c617 100644
  #endif
        });
  
-@@ -270,7 +361,363 @@ int main(const int argc, char* argv[])
+@@ -270,7 +362,367 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -6994,6 +6995,10 @@ index 3bf40ea..9d2c617 100644
 +    }
 +    // show_fps=off hides the FPS / speed counter in the top-left corner.
 +    ps4_show_fps = Platform::GetPS4Option("show_fps", "on") == "on";
++    {
++      const std::string bezel = Platform::GetPS4Option("bezel", "off");
++      ps4_bezel_mode = bezel == "blur" ? 1 : bezel == "image" ? 2 : 0;
++    }
 +    // uniform_merge=auto|on|off: one upload for pixel + vertex constants per draw (auto: when
 +    // Piglet passes the range test at startup).
 +    {
@@ -7029,7 +7034,7 @@ index 3bf40ea..9d2c617 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +731,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +736,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -7045,7 +7050,7 @@ index 3bf40ea..9d2c617 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +759,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +764,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -8774,10 +8779,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..b43e657
+index 0000000..1db2384
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,2537 @@
+@@ -0,0 +1,2556 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10772,9 +10777,28 @@ index 0000000..b43e657
 +  }
 +}
 +
++extern "C" int ps4_bezel_area[4];  // VideoCommon/Present.cpp: the game picture beside a bezel
++
 +void Draw()
 +{
 +  s_draws++;
++  if (ps4_bezel_area[2] > ps4_bezel_area[0])
++  {
++    // The bezel's bars, a little darker than the game so the picture stands out.
++    ImDrawList* bg = ImGui::GetBackgroundDrawList();
++    const ImVec2 size = ImGui::GetIO().DisplaySize;
++    const ImU32 shade = IM_COL32(0, 0, 0, 110);
++    const float l = static_cast<float>(ps4_bezel_area[0]), t = static_cast<float>(ps4_bezel_area[1]),
++                r = static_cast<float>(ps4_bezel_area[2]), b = static_cast<float>(ps4_bezel_area[3]);
++    if (l > 0.0f)
++      bg->AddRectFilled(ImVec2(0, 0), ImVec2(l, size.y), shade);
++    if (r < size.x)
++      bg->AddRectFilled(ImVec2(r, 0), ImVec2(size.x, size.y), shade);
++    if (t > 0.0f)
++      bg->AddRectFilled(ImVec2(l, 0), ImVec2(r, t), shade);
++    if (b < size.y)
++      bg->AddRectFilled(ImVec2(l, b), ImVec2(r, size.y), shade);
++  }
 +  std::lock_guard lock(s_mutex);
 +  const auto now = Clock::now();
 +  const float dt =
@@ -12267,10 +12291,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..c9753ad
+index 0000000..3392f2d
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,956 @@
+@@ -0,0 +1,963 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -12297,6 +12321,7 @@ index 0000000..c9753ad
 +#include "VideoCommon/VideoConfig.h"
 +
 +extern "C" int ps4_show_fps;        // VideoCommon/Present.cpp
++extern "C" int ps4_bezel_mode;      // VideoCommon/Present.cpp
 +extern "C" int ps4_zoom_letterbox;  // VideoCommon/Present.cpp
 +extern "C" int ps4_fps_limit;       // VideoCommon/Present.cpp
 +extern "C" int ps4_auto_clock;      // DolphinNoGUI/PlatformPS4.cpp
@@ -12333,6 +12358,10 @@ index 0000000..c9753ad
 +     "can't (steadier than a frame rate that bounces around)."},
 +    {"vsync", "V-Sync", "Video", {{"on", "On"}, {"off", "Off"}}, "on", true,
 +     "Waits for the TV's refresh (no tearing)."},
++    {"bezel", "Bezel", "Video",
++     {{"off", "Off"}, {"blur", "Blurred Background"}, {"image", "Picture"}}, "off", true,
++     "Fills the black bars beside 4:3 games: a blurred copy of the game, or your own picture "
++     "(/data/DolphinPS4/bezels/<GAME ID>.png or default.png)."},
 +    {"show_fps", "FPS Counter", "Video", {{"on", "On"}, {"off", "Off"}}, "on", true,
 +     "Frames and emulation speed in the corner."},
 +    // Graphics
@@ -12899,6 +12928,8 @@ index 0000000..c9753ad
 +    Config::SetBase(Config::GFX_VSYNC, on);
 +  else if (key == "show_fps")
 +    ps4_show_fps = on;
++  else if (key == "bezel")
++    ps4_bezel_mode = value == "blur" ? 1 : value == "image" ? 2 : 0;
 +  else if (key == "texture_filtering")
 +  {
 +    Config::SetBase(Config::GFX_ENHANCE_FORCE_TEXTURE_FILTERING,
@@ -28738,7 +28769,7 @@ index 92f7c1f..3378a49 100644
      m_default_pixel_shader = g_gfx->CreateShaderFromSource(
          ShaderStage::Pixel, GetHeader(false) + default_pixel_shader_code + GetFooter(), nullptr,
 diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
-index 41d05f3..54b5154 100644
+index 41d05f3..bec6ed6 100644
 --- a/Source/Core/VideoCommon/Present.cpp
 +++ b/Source/Core/VideoCommon/Present.cpp
 @@ -3,6 +3,11 @@
@@ -28753,7 +28784,7 @@ index 41d05f3..54b5154 100644
  #include "Common/ChunkFile.h"
  #include "Core/Config/GraphicsSettings.h"
  #include "Core/Config/MainSettings.h"
-@@ -10,6 +15,13 @@
+@@ -10,11 +15,26 @@
  #include "Core/HW/VideoInterface.h"
  #include "Core/Host.h"
  #include "Core/System.h"
@@ -28767,7 +28798,20 @@ index 41d05f3..54b5154 100644
  
  #include "InputCommon/ControllerInterface/ControllerInterface.h"
  
-@@ -124,9 +136,16 @@ bool Presenter::Initialize()
+ #include "Present.h"
+ #include "VideoCommon/AbstractGfx.h"
++#ifdef __ORBIS__
++#include <fstream>
++#include <iterator>
++#include "Common/Image.h"
++#include "Core/ConfigManager.h"
++#include "VideoCommon/AbstractFramebuffer.h"
++#include "VideoCommon/AbstractTexture.h"
++#endif
+ #include "VideoCommon/FrameDumper.h"
+ #include "VideoCommon/FramebufferManager.h"
+ #include "VideoCommon/OnScreenUI.h"
+@@ -124,9 +144,16 @@ bool Presenter::Initialize()
      if (!m_post_processor->Initialize(m_backbuffer_format))
        return false;
  
@@ -28787,7 +28831,7 @@ index 41d05f3..54b5154 100644
  
      // Draw a blank frame (and complete OnScreenUI initialization)
      g_gfx->BindBackbuffer({{0.0f, 0.0f, 0.0f, 1.0f}});
-@@ -136,8 +155,17 @@ bool Presenter::Initialize()
+@@ -136,8 +163,17 @@ bool Presenter::Initialize()
    return true;
  }
  
@@ -28805,7 +28849,7 @@ index 41d05f3..54b5154 100644
    ReleaseXFBContentLock();
    u64 old_xfb_id = m_last_xfb_id;
  
-@@ -165,10 +193,73 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
+@@ -165,10 +201,73 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
    return old_xfb_id == m_last_xfb_id;
  }
  
@@ -28879,7 +28923,7 @@ index 41d05f3..54b5154 100644
  
    PresentInfo present_info{
        .present_count = m_present_count++,
-@@ -431,8 +522,23 @@ Presenter::ConvertStereoRectangle(const MathUtil::Rectangle<int>& rc) const
+@@ -431,8 +530,23 @@ Presenter::ConvertStereoRectangle(const MathUtil::Rectangle<int>& rc) const
    return std::make_tuple(left_rc, right_rc);
  }
  
@@ -28903,7 +28947,7 @@ index 41d05f3..54b5154 100644
    if (!g_ActiveConfig.bCropCustom)
      return MathUtil::Rectangle<int>(0, 0, 0, 0);
  
-@@ -464,7 +570,11 @@ MathUtil::Rectangle<int> Presenter::AdjustForCustomCrop(const MathUtil::Rectangl
+@@ -464,7 +578,11 @@ MathUtil::Rectangle<int> Presenter::AdjustForCustomCrop(const MathUtil::Rectangl
  
  float Presenter::AdjustAspectRatioForCustomCrop(float input_aspect_ratio) const
  {
@@ -28915,7 +28959,7 @@ index 41d05f3..54b5154 100644
      return input_aspect_ratio;
  
    const MathUtil::Rectangle<int> rect = m_xfb_rect;
-@@ -903,9 +1013,144 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
+@@ -903,9 +1021,229 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
    }
  }
  
@@ -29035,6 +29079,91 @@ index 41d05f3..54b5154 100644
 +unsigned long long ps4_present_counter = 0;
 +#endif
 +
++#ifdef __ORBIS__
++// PS4 bezel (setting "bezel"): what fills the bars beside a 4:3 picture on a 16:9 screen.
++// 0 off (black), 1 a blurred copy of the game (its frame drawn into a tiny texture, then
++// stretched over the screen), 2 a picture: /data/DolphinPS4/bezels/<game ID>.png, the 3-letter
++// ID, or default.png (the blur when there is none). The in-game overlay darkens the bars
++// (ps4_bezel_area: the game picture, empty when no bezel was drawn).
++extern "C" int ps4_bezel_mode;
++int ps4_bezel_mode = 0;
++extern "C" int ps4_bezel_area[4];
++int ps4_bezel_area[4] = {};
++
++namespace
++{
++constexpr u32 BEZEL_BLUR_W = 96, BEZEL_BLUR_H = 54;
++std::unique_ptr<AbstractTexture> s_bezel_blur;
++std::unique_ptr<AbstractFramebuffer> s_bezel_blur_fb;
++std::unique_ptr<AbstractTexture> s_bezel_image;
++std::string s_bezel_image_for = "\x01";  // the game the picture was looked up for
++
++AbstractTexture* PS4BezelImage()
++{
++  const std::string id = SConfig::GetInstance().GetGameID();
++  if (id == s_bezel_image_for)
++    return s_bezel_image.get();
++  s_bezel_image_for = id;
++  s_bezel_image.reset();
++  const std::string dir = "/data/DolphinPS4/bezels/";
++  std::vector<std::string> paths;
++  if (!id.empty())
++  {
++    paths.push_back(dir + id + ".png");
++    if (id.size() > 3)
++      paths.push_back(dir + id.substr(0, 3) + ".png");
++  }
++  paths.push_back(dir + "default.png");
++  for (const std::string& path : paths)
++  {
++    std::ifstream file(path, std::ios::binary);
++    if (!file)
++      continue;
++    const std::vector<u8> png((std::istreambuf_iterator<char>(file)),
++                              std::istreambuf_iterator<char>());
++    Common::UniqueBuffer<u8> pixels;
++    u32 width = 0, height = 0;
++    if (!Common::LoadPNG(png, &pixels, &width, &height) || width == 0 || height == 0)
++    {
++      ps4_boot_trace(("bezel: can't read " + path).c_str());
++      continue;
++    }
++    TextureConfig config(width, height, 1, 1, 1, AbstractTextureFormat::RGBA8, 0,
++                         AbstractTextureType::Texture_2DArray);
++    s_bezel_image = g_gfx->CreateTexture(config, "PS4 bezel");
++    if (!s_bezel_image)
++      break;
++    s_bezel_image->Load(0, width, height, width, pixels.data(), pixels.size());
++    ps4_boot_trace(("bezel: " + path).c_str());
++    break;
++  }
++  return s_bezel_image.get();
++}
++
++// The XFB's middle part with the screen's shape (the blur covers the whole screen).
++MathUtil::Rectangle<int> PS4FillCrop(const MathUtil::Rectangle<int>& source, int screen_w,
++                                     int screen_h)
++{
++  MathUtil::Rectangle<int> crop = source;
++  const float src_aspect = static_cast<float>(source.GetWidth()) / std::max(1, source.GetHeight());
++  const float dst_aspect = static_cast<float>(screen_w) / std::max(1, screen_h);
++  if (src_aspect < dst_aspect)
++  {
++    const int h = static_cast<int>(source.GetWidth() / dst_aspect);
++    crop.top = source.top + (source.GetHeight() - h) / 2;
++    crop.bottom = crop.top + h;
++  }
++  else
++  {
++    const int w = static_cast<int>(source.GetHeight() * dst_aspect);
++    crop.left = source.left + (source.GetWidth() - w) / 2;
++    crop.right = crop.left + w;
++  }
++  return crop;
++}
++}  // namespace
++#endif
++
  void Presenter::Present(PresentInfo* present_info)
  {
    m_present_count++;
@@ -29060,13 +29189,70 @@ index 41d05f3..54b5154 100644
  
    if (g_gfx->IsHeadless() || (!m_onscreen_ui && !m_xfb_entry))
      return;
-@@ -934,7 +1179,18 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -934,7 +1272,75 @@ void Presenter::Present(PresentInfo* present_info)
    UpdateDrawRectangle();
  
    g_gfx->BeginUtilityDrawing();
 +#ifdef __ORBIS__
++  // The bezel: only when the picture leaves bars (a 4:3 game on the 16:9 screen).
++  AbstractTexture* bezel_texture = nullptr;
++  MathUtil::Rectangle<int> bezel_source;
++  ps4_bezel_area[0] = ps4_bezel_area[2] = 0;
++  if (ps4_bezel_mode != 0 && m_xfb_entry)
++  {
++    const MathUtil::Rectangle<int> target = GetTargetRectangle();
++    if (target.GetWidth() < m_backbuffer_width - 8 || target.GetHeight() < m_backbuffer_height - 8)
++    {
++      if (ps4_bezel_mode == 2)
++      {
++        if (AbstractTexture* image = PS4BezelImage())
++        {
++          bezel_texture = image;
++          bezel_source = MathUtil::Rectangle<int>(0, 0, static_cast<int>(image->GetWidth()),
++                                                  static_cast<int>(image->GetHeight()));
++        }
++      }
++      if (!bezel_texture)
++      {
++        if (!s_bezel_blur)
++        {
++          const TextureConfig config(BEZEL_BLUR_W, BEZEL_BLUR_H, 1, 1, 1, m_backbuffer_format,
++                                     AbstractTextureFlag_RenderTarget,
++                                     AbstractTextureType::Texture_2DArray);
++          s_bezel_blur = g_gfx->CreateTexture(config, "PS4 bezel blur");
++          if (s_bezel_blur)
++            s_bezel_blur_fb = g_gfx->CreateFramebuffer(s_bezel_blur.get(), nullptr);
++          ps4_boot_trace(s_bezel_blur_fb ? "bezel: blurred background" :
++                                           "bezel: no blur texture");
++        }
++        if (s_bezel_blur_fb)
++        {
++          g_gfx->SetAndClearFramebuffer(s_bezel_blur_fb.get(), {{0.0f, 0.0f, 0.0f, 1.0f}});
++          m_post_processor->BlitFromTexture(
++              MathUtil::Rectangle<int>(0, 0, BEZEL_BLUR_W, BEZEL_BLUR_H),
++              PS4FillCrop(AdjustForCustomCrop(m_xfb_rect), m_backbuffer_width, m_backbuffer_height),
++              m_xfb_entry->texture.get(), 0);
++          // Read by the next draw: out of the render-target layout first (Vulkan).
++          s_bezel_blur->FinishedRendering();
++          bezel_texture = s_bezel_blur.get();
++          bezel_source = MathUtil::Rectangle<int>(0, 0, BEZEL_BLUR_W, BEZEL_BLUR_H);
++        }
++      }
++    }
++  }
 +  // Port diagnostics are done: black around the game image, as on other platforms.
    const bool backbuffer_bound = g_gfx->BindBackbuffer({{0.0f, 0.0f, 0.0f, 1.0f}});
++  if (backbuffer_bound && bezel_texture)
++  {
++    m_post_processor->BlitFromTexture(
++        MathUtil::Rectangle<int>(0, 0, m_backbuffer_width, m_backbuffer_height), bezel_source,
++        bezel_texture, 0);
++    const MathUtil::Rectangle<int> target = GetTargetRectangle();
++    ps4_bezel_area[0] = target.left;
++    ps4_bezel_area[1] = target.top;
++    ps4_bezel_area[2] = target.right;
++    ps4_bezel_area[3] = target.bottom;
++  }
 +  static bool s_reported_unbound = false;
 +  if (!backbuffer_bound && !s_reported_unbound)
 +  {
@@ -29079,7 +29265,7 @@ index 41d05f3..54b5154 100644
  
    // Render the XFB to the screen.
    if (backbuffer_bound && m_xfb_entry)
-@@ -945,7 +1201,52 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -945,7 +1351,52 @@ void Presenter::Present(PresentInfo* present_info)
      AdjustRectanglesToFitBounds(&render_target_rc, &render_source_rc, m_backbuffer_width,
                                  m_backbuffer_height);
      RenderXFBToScreen(render_target_rc, m_xfb_entry->texture.get(), render_source_rc);
