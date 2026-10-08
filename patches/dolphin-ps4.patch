@@ -20293,10 +20293,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..db40b6d
+index 0000000..e7e57e7
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1964 @@
+@@ -0,0 +1,1976 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -20406,6 +20406,7 @@ index 0000000..db40b6d
 +extern "C" void ps4_return_to_menu();
 +extern "C" void ps4_relaunch_game();
 +extern "C" void ps4_sampler_shutdown();  // port/ps4_sampler.cpp: the profiler stops for good
++extern "C" void ps4_log_injected_modules(const char* when);  // port/ps4_sampler.cpp
 +// The version this program was packaged as: scripts/package-dolphin.sh writes it over the
 +// "00.00" (a downloaded update must know it isn't the installed program).
 +extern "C" const char ps4_built_version[];
@@ -21005,6 +21006,15 @@ index 0000000..db40b6d
 +      const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(
 +                               std::chrono::steady_clock::now() - start)
 +                               .count();
++      // Plugins can also be loaded once the game runs: listed again after ~10 s and ~60 s.
++      {
++        static int s_module_checks = 0;
++        if ((s_module_checks == 0 && seconds >= 10) || (s_module_checks == 1 && seconds >= 60))
++        {
++          ps4_log_injected_modules(s_module_checks == 0 ? "after 10 s" : "after 60 s");
++          s_module_checks++;
++        }
++      }
 +      char line[2048];
 +      // speed: emulated time per real time; max speed: what the CPU thread could reach if it
 +      // never waited (below 100% means the emulated CPU itself is the bottleneck).
@@ -21890,6 +21900,8 @@ index 0000000..db40b6d
 +std::vector<std::string> Platform::GetPS4Arguments()
 +{
 +  BootTrace("main");
++  // GoldHEN plugins and other code loaded into the app (they can hook what Dolphin relies on).
++  ps4_log_injected_modules("at start");
 +  mkdir(PS4_DATA_DIR_PATH, 0777);
 +  mkdir((std::string(PS4_DATA_DIR_PATH) + "/games").c_str(), 0777);
 +

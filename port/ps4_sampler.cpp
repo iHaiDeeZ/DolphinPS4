@@ -259,6 +259,38 @@ void writeModuleList(int fd) {
 
 extern "C" int32_t sceKernelQueryMemoryProtection(void* address, void** start, void** end,
                                                   uint32_t* protection);
+// Modules loaded into this process that aren't the app or Sony's system libraries: GoldHEN
+// plugins and other injected code (OrbisNet, cheat menus, ...), which can hook the functions the
+// app relies on. "<when>: no injected modules" or "<when>: injected modules: A B ..." in the boot
+// trace, every time (not only when profiling).
+extern "C" void ps4_log_injected_modules(const char* when) {
+    int32_t handles[256];
+    size_t count = 0;
+    if (sceKernelGetModuleList(handles, 256, &count) != 0)
+        return;
+    char line[1024];
+    int len = snprintf(line, sizeof(line), "%s: ", when);
+    int injected = 0;
+    for (size_t m = 0; m < count && m < 256; m++) {
+        ModuleInfo info;
+        memset(&info, 0, sizeof(info));
+        info.size = sizeof(info);
+        if (sceKernelGetModuleInfo(handles[m], &info) != 0)
+            continue;
+        const char* name = info.name;
+        if (strcmp(name, "eboot.bin") == 0 || strncmp(name, "libSce", 6) == 0 ||
+            strncmp(name, "libkernel", 9) == 0 || strcmp(name, "libc.sprx") == 0 ||
+            strcmp(name, "libc.prx") == 0)
+            continue;
+        if (len < static_cast<int>(sizeof(line)) - 80)
+            len += snprintf(line + len, sizeof(line) - len, "%s%s", injected ? " " : "injected modules: ", name);
+        injected++;
+    }
+    if (!injected)
+        snprintf(line + len, sizeof(line) - len, "no injected modules (%zu system modules)", count);
+    ps4_boot_trace(line);
+}
+
 // Emulated MEM1 (set by Core/HW/Memmap.cpp), dumped with the JIT code.
 extern "C" void* ps4_profile_guest_ram;
 extern "C" uint32_t ps4_profile_guest_ram_size;
