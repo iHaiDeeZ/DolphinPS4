@@ -13676,10 +13676,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..de75e7f
+index 0000000..9eb8689
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5907 @@
+@@ -0,0 +1,5935 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -13723,6 +13723,7 @@ index 0000000..de75e7f
 +#include "DiscIO/VolumeWad.h"
 +#include "DiscIO/VolumeDisc.h"
 +#include "DiscIO/RiivolutionParser.h"
++#include "DiscIO/NANDImporter.h"
 +#include "Common/FileSearch.h"
 +#include "Common/FileUtil.h"
 +#include "Common/HttpRequest.h"
@@ -15423,6 +15424,13 @@ index 0000000..de75e7f
 +          m_nus_result = "Failed";
 +          break;
 +        }
++        if (result == WiiUtils::UpdateResult::Succeeded ||
++            result == WiiUtils::UpdateResult::AlreadyUpToDate)
++        {
++          // Online play's certificates (Wiimmfi's login), from the installed IOS13.
++          Log(std::string("wii menu: online certificates ") +
++              (DiscIO::NANDImporter().ExtractCertificates() ? "extracted" : "not found"));
++        }
 +        m_nus_busy = false;
 +      });
 +    }
@@ -16365,6 +16373,26 @@ index 0000000..de75e7f
 +      {
 +        const Item& item = m_items[m_category][m_selected[m_category]];
 +        m_wiimmfi_game = item.game;
++        // Wiimmfi's login is a secure connection with the Wii's own client certificate, which
++        // comes from the Wii system software (Settings -> Wii Menu -> Install from Nintendo).
++        const std::string wii_root = m_data_dir + "/User/Wii";
++        if (!std::filesystem::exists(wii_root + "/clientca.pem") &&
++            !DiscIO::NANDImporter().ExtractCertificates())
++        {
++          Log("play online: no online certificates (IOS13 not installed)");
++          m_panel = {};
++          m_panel.open = true;
++          m_panel.title = "Play Online (Wiimmfi)";
++          m_panel.lines = {"",
++                           "Online play needs the Wii's system software first.",
++                           "",
++                           "Go to Settings -> Wii Menu -> Install from Nintendo, wait until it "
++                           "says Installed, then choose Play Online again.",
++                           "",
++                           "Circle closes this."};
++          Play("error");
++          return;
++        }
 +        if (std::filesystem::exists(WiimmfiPatcherPath()))
 +        {
 +          LaunchWiimmfi();
@@ -20293,10 +20321,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..e7e57e7
+index 0000000..a102507
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1976 @@
+@@ -0,0 +1,1989 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -20351,6 +20379,7 @@ index 0000000..e7e57e7
 +#include "DiscIO/Blob.h"
 +#include "DiscIO/VolumeWad.h"
 +#include "DiscIO/VolumeDisc.h"
++#include "DiscIO/NANDImporter.h"
 +#include "Core/Config/MainSettings.h"
 +#include "Core/Config/WiimoteSettings.h"
 +#include "Core/HW/SI/SI_Device.h"
@@ -22177,6 +22206,18 @@ index 0000000..e7e57e7
 +    s_wii_game = true;  // a Wii title: the Wii Remote settings apply
 +  if (!s_stop_game[0] && !game.empty())
 +    SetStopGame(std::filesystem::path(game).stem().string(), {});
++  if (s_wii_game)
++  {
++    // Online play's certificates: from the installed IOS13 if they aren't there yet.
++    const std::string wii_root = std::string(PS4_DATA_DIR_PATH) + "/User/Wii";
++    if (access((wii_root + "/clientca.pem").c_str(), F_OK) != 0 &&
++        access((wii_root + "/title/00000001/0000000d/content/title.tmd").c_str(), F_OK) == 0)
++    {
++      BootTrace(DiscIO::NANDImporter().ExtractCertificates() ?
++                    "wii online: certificates extracted from IOS13" :
++                    "wii online: couldn't extract the certificates from IOS13");
++    }
++  }
 +  BootTrace(s_wii_game ? "Wii game: Wii controller settings applied" :
 +                         "GameCube game: Wii settings left alone");
 +  // The game's own controller layout (Triangle on it -> Controls -> This Game), else the normal.
