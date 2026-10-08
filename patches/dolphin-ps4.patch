@@ -20134,10 +20134,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..a5ffb68
+index 0000000..ef316bd
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1920 @@
+@@ -0,0 +1,1938 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -20236,6 +20236,7 @@ index 0000000..a5ffb68
 +#ifdef HAS_VULKAN
 +// port/mesa/ac_ps4_drm.c (RADV on GNM).
 +extern "C" void ac_ps4_get_gpu_busy(uint64_t* busy_ticks, uint64_t* span_ticks);
++extern "C" uint64_t ac_ps4_flip_ns[3];  // port/mesa/ac_ps4_drm.c: time in ac_ps4_submit_flip
 +extern "C" void ac_ps4_get_stats(uint64_t* submitted, uint64_t* completed, uint64_t* bo_bytes,
 +                                 uint64_t* bo_count);
 +#endif
@@ -20948,6 +20949,23 @@ index 0000000..a5ffb68
 +                   "compiles %lld/s %lld ms/s",
 +                   ms[0], ms[1], ms[2], ms[3], ms[5], ms[4]);
 +        }
++#ifdef HAS_VULKAN
++        {
++          // Inside the flip (the video thread): a free flip slot, the submit-and-flip system call,
++          // sceGnmSubmitDone - ms per second.
++          static uint64_t s_last_flip[3] = {};
++          long long fms[3];
++          for (int i = 0; i < 3; i++)
++          {
++            const uint64_t total = ac_ps4_flip_ns[i];
++            fms[i] = static_cast<long long>((total - s_last_flip[i]) / period / 1000000);
++            s_last_flip[i] = total;
++          }
++          const size_t usedf = strlen(line);
++          snprintf(line + usedf, sizeof(line) - usedf, ", flip ms/s: slot %lld submit %lld done %lld",
++                   fms[0], fms[1], fms[2]);
++        }
++#endif
 +        {
 +          // Monotonic clock reads served from the time stamp counter (port/ps4_runtime.cpp).
 +          static unsigned long long s_last_reads = 0;

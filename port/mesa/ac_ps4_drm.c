@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <fcntl.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -2168,6 +2169,20 @@ ac_drm_cs_submit_raw2(ac_drm_device *dev, uint32_t ctx_id, uint32_t bo_list_hand
  * submitted so far (sceGnmSubmitAndFlipCommandBuffers: the flip happens when the GPU gets there).
  * `arg` comes back in sceVideoOutGetFlipStatus().flipArg once the flip is done. */
 int ac_ps4_submit_flip(int video, unsigned buffer, unsigned mode, int64_t arg);
+
+/* Time inside ac_ps4_submit_flip, ns (Dolphin's monitor line "flip ms/s"): waiting for a free flip
+ * slot, sceGnmSubmitAndFlipCommandBuffers, sceGnmSubmitDone. */
+extern uint64_t ac_ps4_flip_ns[3];
+uint64_t ac_ps4_flip_ns[3];
+
+static uint64_t
+ps4_flip_clock(void)
+{
+   struct timespec t;
+   clock_gettime(CLOCK_MONOTONIC, &t);
+   return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
+}
+
 int
 ac_ps4_submit_flip(int video, unsigned buffer, unsigned mode, int64_t arg)
 {
@@ -2177,6 +2192,7 @@ ac_ps4_submit_flip(int video, unsigned buffer, unsigned mode, int64_t arg)
    enum { FLIP_IB_DW = 128 };
    STATIC_ASSERT(ARRAY_SIZE(dev->flip_seq) * FLIP_IB_DW * 4 <= PS4_PAGE);
 
+   const uint64_t t0 = ps4_flip_clock();
    simple_mtx_lock(&dev->lock);
    const unsigned slot = dev->flip_count % ARRAY_SIZE(dev->flip_seq);
    /* The slot's previous flip IB, and the fence IB slot for the next sequence number, must be
@@ -2191,6 +2207,7 @@ ac_ps4_submit_flip(int video, unsigned buffer, unsigned mode, int64_t arg)
       ps4_wait_seq(dev, wait, INT64_MAX);
       simple_mtx_lock(&dev->lock);
    }
+   const uint64_t t1 = ps4_flip_clock();
    const uint64_t seq = ++dev->last_seq;
    uint32_t *ib = dev->flip_ibs + slot * FLIP_IB_DW, *cs = ib;
    cs = ps4_emit_eop(cs, (uintptr_t)dev->fence, seq, dev->eop_queue != NULL);
@@ -2206,7 +2223,12 @@ ac_ps4_submit_flip(int video, unsigned buffer, unsigned mode, int64_t arg)
    void *ccb[1] = {NULL};
    uint32_t ccb_size[1] = {0};
    const int r = dev->submit_and_flip(1, dcb, dcb_size, ccb, ccb_size, video, buffer, mode, arg);
+   const uint64_t t2 = ps4_flip_clock();
    dev->submit_done();
+   const uint64_t t3 = ps4_flip_clock();
+   ac_ps4_flip_ns[0] += t1 - t0;
+   ac_ps4_flip_ns[1] += t2 - t1;
+   ac_ps4_flip_ns[2] += t3 - t2;
    if (r) {
       dev->last_seq--;
       static unsigned logged;
