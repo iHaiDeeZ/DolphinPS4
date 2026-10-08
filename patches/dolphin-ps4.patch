@@ -3063,6 +3063,85 @@ index 5366444..9518b9c 100644
      if (title_id == Titles::SYSTEM_MENU)
      {
        PanicAlertFmtT("Could not launch the Wii Menu because it is missing from the NAND.\n"
+diff --git a/Source/Core/Core/IOS/Network/IP/Top.cpp b/Source/Core/Core/IOS/Network/IP/Top.cpp
+index e38fd1d..50f9609 100644
+--- a/Source/Core/Core/IOS/Network/IP/Top.cpp
++++ b/Source/Core/Core/IOS/Network/IP/Top.cpp
+@@ -58,6 +58,74 @@
+ #include <linux/rtnetlink.h>
+ #endif
+ 
++#ifdef __ORBIS__
++// PS4: the C library's resolver doesn't work in apps (no resolver configuration), so a Wii game's
++// host names (Wiimmfi, Nintendo WFC, WiiConnect24) were never found and online play failed. They
++// are looked up with the PS4's own resolver (DolphinNoGUI/PS4Net.cpp), as Dolphin's downloads do.
++extern "C" int ps4_net_resolve(const char* host, char* address, size_t size);
++
++namespace
++{
++// The IPv4 address of a host name or dotted address, or false.
++bool PS4Resolve(const char* name, in_addr* out)
++{
++  if (name == nullptr || *name == '\0')
++    return false;
++  if (inet_pton(AF_INET, name, out) == 1)
++    return true;
++  char address[64] = {};
++  if (ps4_net_resolve(name, address, sizeof(address)) != 0)
++  {
++    INFO_LOG_FMT(IOS_NET, "PS4 resolver: {} not found", name);
++    return false;
++  }
++  INFO_LOG_FMT(IOS_NET, "PS4 resolver: {} = {}", name, address);
++  return inet_pton(AF_INET, address, out) == 1;
++}
++
++// gethostbyname's result (a static buffer, as gethostbyname's own).
++hostent* PS4GetHostByName(const char* name)
++{
++  static in_addr s_addr;
++  static char* s_list[2];
++  static char s_name[256];
++  static hostent s_host;
++  if (!PS4Resolve(name, &s_addr))
++    return nullptr;
++  snprintf(s_name, sizeof(s_name), "%s", name);
++  s_list[0] = reinterpret_cast<char*>(&s_addr);
++  s_list[1] = nullptr;
++  s_host = {};
++  s_host.h_name = s_name;
++  s_host.h_addrtype = AF_INET;
++  s_host.h_length = sizeof(in_addr);
++  s_host.h_addr_list = s_list;
++  return &s_host;
++}
++
++// getaddrinfo with the host name resolved first (then only a numeric lookup is left).
++int PS4GetAddrInfo(const char* node, const char* service, const addrinfo* hints, addrinfo** res)
++{
++  in_addr address;
++  char numeric[INET_ADDRSTRLEN] = {};
++  if (node != nullptr && PS4Resolve(node, &address))
++  {
++    inet_ntop(AF_INET, &address, numeric, sizeof(numeric));
++    addrinfo numeric_hints = hints ? *hints : addrinfo{};
++    numeric_hints.ai_flags |= AI_NUMERICHOST;
++    if (numeric_hints.ai_family == AF_UNSPEC)
++      numeric_hints.ai_family = AF_INET;
++    return getaddrinfo(numeric, service, &numeric_hints, res);
++  }
++  if (node != nullptr && inet_pton(AF_INET, node, &address) != 1)
++    return EAI_NONAME;
++  return getaddrinfo(node, service, hints, res);
++}
++}  // namespace
++#define gethostbyname PS4GetHostByName
++#define getaddrinfo PS4GetAddrInfo
++#endif
++
+ auto format_as(addrinfo hints)
+ {
+   return fmt::format("flags={}, family={}, socktype={}, protocol={}, addrlen={}", hints.ai_flags,
 diff --git a/Source/Core/Core/IOS/Network/KD/NetKDRequest.cpp b/Source/Core/Core/IOS/Network/KD/NetKDRequest.cpp
 index ed320f5..e6f93a5 100644
 --- a/Source/Core/Core/IOS/Network/KD/NetKDRequest.cpp
