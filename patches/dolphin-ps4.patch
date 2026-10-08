@@ -13132,10 +13132,10 @@ index 0000000..a1db2f7
 +}  // namespace PS4Achievements
 diff --git a/Source/Core/DolphinNoGUI/PS4Updater.cpp b/Source/Core/DolphinNoGUI/PS4Updater.cpp
 new file mode 100755
-index 0000000..56e00cd
+index 0000000..ea080cf
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Updater.cpp
-@@ -0,0 +1,366 @@
+@@ -0,0 +1,383 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -13155,15 +13155,22 @@ index 0000000..56e00cd
 +#include "DolphinNoGUI/PS4Net.h"
 +
 +extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
++extern "C" const char* ps4_app_version();     // PlatformPS4.cpp: this program's version
 +
 +namespace PS4Updater
 +{
 +namespace
 +{
-+// Dolphin Lab: the experimental channel. The newest release tagged "lab-v<version>" (published as
-+// pre-releases, never "latest"), not the stable app's v03.xx releases.
++// The releases, newest first. Dolphin Lab (versions 50.xx) follows the experimental channel - the
++// newest release tagged "lab-v<version>", published as pre-releases; the normal app (04.xx) the
++// newest release that is not a pre-release. One program serves both apps.
 +constexpr const char* LATEST_RELEASE =
 +    "https://api.github.com/repos/iHaiDeeZ/DolphinPS4/releases?per_page=40";
++
++bool LabChannel()
++{
++  return std::atof(ps4_app_version()) >= 50.0;
++}
 +
 +void Log(const std::string& text)
 +{
@@ -13227,7 +13234,8 @@ index 0000000..56e00cd
 +    Log("check failed: " + release.error + " " + parse_error);
 +    return release;
 +  }
-+  // The list (newest first): the first Lab release.
++  // The list (newest first): the first release of this app's channel.
++  const bool lab = LabChannel();
 +  const picojson::object* found = nullptr;
 +  if (json.is<picojson::array>())
 +  {
@@ -13237,8 +13245,15 @@ index 0000000..56e00cd
 +        continue;
 +      const auto& object = item.get<picojson::object>();
 +      const auto tag_it = object.find("tag_name");
-+      if (tag_it != object.end() && tag_it->second.is<std::string>() &&
-+          tag_it->second.get<std::string>().rfind("lab-v", 0) == 0)
++      if (tag_it == object.end() || !tag_it->second.is<std::string>())
++        continue;
++      const std::string& name = tag_it->second.get<std::string>();
++      const auto pre = object.find("prerelease");
++      const bool prerelease = pre != object.end() && pre->second.is<bool>() && pre->second.get<bool>();
++      const auto draft = object.find("draft");
++      if (draft != object.end() && draft->second.is<bool>() && draft->second.get<bool>())
++        continue;
++      if (lab ? name.rfind("lab-v", 0) == 0 : (!prerelease && name.rfind("v", 0) == 0))
 +      {
 +        found = &object;
 +        break;
@@ -13247,7 +13262,7 @@ index 0000000..56e00cd
 +  }
 +  if (!found)
 +  {
-+    release.error = "no Dolphin Lab release on GitHub yet";
++    release.error = lab ? "no Dolphin Lab release on GitHub yet" : "no release on GitHub yet";
 +    Log("check failed: " + release.error);
 +    return release;
 +  }
@@ -13260,6 +13275,8 @@ index 0000000..56e00cd
 +  std::string tag = text(root, "tag_name");
 +  if (tag.rfind("lab-v", 0) == 0)
 +    tag.erase(0, 5);
++  else if (tag.rfind("v", 0) == 0)
++    tag.erase(0, 1);
 +  release.version = tag;
 +  release.title = text(root, "name");
 +
