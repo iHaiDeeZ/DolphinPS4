@@ -4050,10 +4050,10 @@ index 0000000..01c97dd
 +void OnMemory(u32 address, u32 size, bool write);
 +}  // namespace ParallelismOracle
 diff --git a/Source/Core/Core/PowerPC/Jit64/Jit.cpp b/Source/Core/Core/PowerPC/Jit64/Jit.cpp
-index 1248b1a..01a71e3 100644
+index 1248b1a..234ee98 100644
 --- a/Source/Core/Core/PowerPC/Jit64/Jit.cpp
 +++ b/Source/Core/Core/PowerPC/Jit64/Jit.cpp
-@@ -49,6 +49,29 @@
+@@ -49,6 +49,31 @@
  #include "Core/System.h"
  
  using namespace Gen;
@@ -4063,6 +4063,8 @@ index 1248b1a..01a71e3 100644
 +extern "C" int ps4_fifo_defer;  // VideoCommon/Fifo.cpp (ps4.ini fifo_defer)
 +extern "C" void ps4_boot_trace(const char* line);  // DolphinPS4 port/ps4_crashlog.cpp
 +extern "C" int ps4_gp_fuse;     // ps4.ini jit_gp_fuse (DolphinNoGUI)
++extern "C" int ps4_jit_accurate_singles;  // ps4.ini jit_accurate_singles (DolphinNoGUI)
++int ps4_jit_accurate_singles = 1;
 +int ps4_gp_fuse = 1;
 +extern "C" int ps4_lazy_lfs;    // ps4.ini jit_lazy_lfs (DolphinNoGUI)
 +int ps4_lazy_lfs = 1;
@@ -4083,7 +4085,7 @@ index 1248b1a..01a71e3 100644
  using namespace PowerPC;
  
  // Dolphin's PowerPC->x86_64 JIT dynamic recompiler
-@@ -259,6 +282,17 @@ void Jit64::Init()
+@@ -259,10 +284,29 @@ void Jit64::Init()
  
    RefreshConfig();
  
@@ -4101,7 +4103,19 @@ index 1248b1a..01a71e3 100644
    EnableBlockLink();
  
    jo.optimizeGatherPipe = true;
-@@ -430,6 +464,21 @@ void Jit64::DoNothing(UGeckoInstruction _inst)
++#ifdef __ORBIS__
++  // ps4.ini jit_accurate_singles=off (per game): single-precision results are not rounded back
++  // through single precision, and multiplies skip the 25-bit operand rounding. Dolphin: "Most
++  // games don't need these. Zelda requires it" - on Jaguar each rounding is a slow
++  // cvtsd2ss/cvtss2sd round trip on the dependency chain.
++  jo.accurateSinglePrecision = ps4_jit_accurate_singles != 0;
++#else
+   jo.accurateSinglePrecision = true;
++#endif
+   js.fastmemLoadStore = nullptr;
+   js.compilerPC = 0;
+ 
+@@ -430,6 +474,21 @@ void Jit64::DoNothing(UGeckoInstruction _inst)
    // Yup, just don't do anything.
  }
  
@@ -4123,7 +4137,7 @@ index 1248b1a..01a71e3 100644
  void Jit64::ImHere(Jit64& jit)
  {
    auto& ppc_state = jit.m_ppc_state;
-@@ -453,15 +502,211 @@ void Jit64::ImHere(Jit64& jit)
+@@ -453,15 +512,211 @@ void Jit64::ImHere(Jit64& jit)
    been_here[ppc_state.pc] = 1;
  }
  
@@ -4335,7 +4349,7 @@ index 1248b1a..01a71e3 100644
      FixupBranch exit = J_CC(CC_L);
      ABI_PushRegistersAndAdjustStack({}, 0);
      ABI_CallFunctionP(GPFifo::UpdateGatherPipe, &m_system.GetGPFifo());
-@@ -600,6 +845,48 @@ void Jit64::JustWriteExit(u32 destination, bool bl, u32 after)
+@@ -600,6 +855,48 @@ void Jit64::JustWriteExit(u32 destination, bool bl, u32 after)
    linkData.linkStatus = false;
    linkData.call = bl;
  
@@ -4384,7 +4398,7 @@ index 1248b1a..01a71e3 100644
    MOV(32, PPCSTATE(pc), Imm32(destination));
  
    // Perform downcount flag check, followed by the requested exit
-@@ -647,6 +934,51 @@ void Jit64::WriteExitDestInRSCRATCH(bool bl, u32 after)
+@@ -647,6 +944,51 @@ void Jit64::WriteExitDestInRSCRATCH(bool bl, u32 after)
    }
  
    SUB(32, PPCSTATE(downcount), Imm32(js.downcountAmount));
@@ -4436,7 +4450,7 @@ index 1248b1a..01a71e3 100644
    if (bl)
    {
      CALL(asm_routines.dispatcher);
-@@ -819,6 +1151,9 @@ void Jit64::Jit(u32 em_address, bool clear_cache_and_retry_on_failure)
+@@ -819,6 +1161,9 @@ void Jit64::Jit(u32 em_address, bool clear_cache_and_retry_on_failure)
          analyzer.ClearOption(PPCAnalyst::PPCAnalyzer::OPTION_CROR_MERGE);
          analyzer.ClearOption(PPCAnalyst::PPCAnalyzer::OPTION_CARRY_MERGE);
          analyzer.ClearOption(PPCAnalyst::PPCAnalyzer::OPTION_BRANCH_FOLLOW);
@@ -4446,7 +4460,7 @@ index 1248b1a..01a71e3 100644
        }
        Trace();
      }
-@@ -992,10 +1327,21 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+@@ -992,10 +1337,21 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
      IntializeSpeculativeConstants();
    }
  
@@ -4468,7 +4482,7 @@ index 1248b1a..01a71e3 100644
  
      js.compilerPC = op.address;
      js.op = &op;
-@@ -1018,16 +1364,32 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+@@ -1018,16 +1374,32 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
        bool gatherPipeIntCheck = js.fifoWriteAddresses.contains(prev_address);
  
        // Gather pipe writes using an immediate address are explicitly tracked.
@@ -4503,7 +4517,7 @@ index 1248b1a..01a71e3 100644
        }
  
        // Gather pipe writes can generate an exception; add an exception check.
-@@ -1155,7 +1517,12 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+@@ -1155,7 +1527,12 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
              // prioritize the more important registers.
              gpr.PreloadRegisters(op.regsIn & (op.gprWillBeRead | op.gprWillBeWritten) &
                                   ~op.gprDiscardable);
@@ -4516,7 +4530,7 @@ index 1248b1a..01a71e3 100644
            }
  
            CompileInstruction(op);
-@@ -1330,6 +1697,9 @@ void Jit64::EnableOptimization()
+@@ -1330,6 +1707,9 @@ void Jit64::EnableOptimization()
    analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_CROR_MERGE);
    analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_CARRY_MERGE);
    analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_BRANCH_FOLLOW);
@@ -6471,7 +6485,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..2238ba7 100644
+index 3bf40ea..19c7339 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -6522,7 +6536,7 @@ index 3bf40ea..2238ba7 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,56 @@
+@@ -31,6 +53,57 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -6546,6 +6560,7 @@ index 3bf40ea..2238ba7 100644
 +extern "C" int ps4_jit_lazy_pc;          // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_unroll;           // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_gp_dynamic;       // Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
++extern "C" int ps4_jit_accurate_singles;  // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_sync_idle_frame;      // Core/CoreTiming.cpp
 +extern "C" int ps4_shader_dump;          // VideoCommon/ShaderCache.cpp
 +extern "C" int ps4_tev_ras_float;        // VideoCommon/PixelShaderGen.cpp
@@ -6579,7 +6594,7 @@ index 3bf40ea..2238ba7 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +245,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +246,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -6590,7 +6605,7 @@ index 3bf40ea..2238ba7 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +260,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +261,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -6609,7 +6624,7 @@ index 3bf40ea..2238ba7 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +292,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +293,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -6620,7 +6635,7 @@ index 3bf40ea..2238ba7 100644
  #endif
        });
  
-@@ -270,7 +359,359 @@ int main(const int argc, char* argv[])
+@@ -270,7 +360,361 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -6805,6 +6820,8 @@ index 3bf40ea..2238ba7 100644
 +    ps4_jit_unroll = Platform::GetPS4Option("jit_unroll", "on") == "on";
 +    // jit_gp_dynamic=off (Dolphin Lab): gather pipe writes through a pointer call MMU::Write again.
 +    ps4_jit_gp_dynamic = Platform::GetPS4Option("jit_gp_dynamic", "on") == "on";
++    // jit_accurate_singles=off (per game): no rounding to single precision after float ops.
++    ps4_jit_accurate_singles = Platform::GetPS4Option("jit_accurate_singles", "on") != "off";
 +    // shader_dump=on (Dolphin Lab): specialized shaders' source to /data/DolphinPS4/shader-dump.
 +    ps4_shader_dump = Platform::GetPS4Option("shader_dump", "off") == "on";
 +    // tev_ras_swizzle=float, vk_dynamic_vertex_loader=off (Dolphin Lab): colour tests (TMNT 2007).
@@ -6980,7 +6997,7 @@ index 3bf40ea..2238ba7 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +725,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +728,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -6996,7 +7013,7 @@ index 3bf40ea..2238ba7 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +753,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +756,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
