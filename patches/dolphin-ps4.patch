@@ -13597,10 +13597,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..cd001fa
+index 0000000..2724697
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5856 @@
+@@ -0,0 +1,5887 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -16494,9 +16494,40 @@ index 0000000..cd001fa
 +  }
 +}
 +
++// A disc image whose header couldn't be read (no game ID): damaged, incomplete or not a disc.
++static bool UnreadableDisc(const Game& game)
++{
++  if (!game.id.empty() || game.wad || game.homebrew)
++    return false;
++  std::string ext = std::filesystem::path(game.path).extension().string();
++  for (char& c : ext)
++    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++  return ext == ".iso" || ext == ".gcm" || ext == ".rvz" || ext == ".wia" || ext == ".wbfs" ||
++         ext == ".ciso" || ext == ".gcz" || ext == ".tgc";
++}
++
 +// Cross on an item (both styles).
 +void Menu::ActivateItem(const Item& item)
 +{
++  if (item.game >= 0 && UnreadableDisc(m_games[item.game]))
++  {
++    const Game& game = m_games[item.game];
++    Log("game list: unreadable game file " + game.path);
++    m_panel = {};
++    m_panel.open = true;
++    m_panel.title = "Something Is Wrong With This Game File";
++    m_panel.lines = {std::filesystem::path(game.path).filename().string(),
++                     "",
++                     "Dolphin couldn't read it. The file is damaged, incomplete,",
++                     "or not a GameCube / Wii game.",
++                     "",
++                     "Check it in PC Dolphin (right-click -> Properties -> Verify)",
++                     "or convert it again, then copy it to the PS4 again.",
++                     "",
++                     "Circle closes this."};
++    Play("error");
++    return;
++  }
 +  if (!item.ach_key.empty())
 +  {
 +    OpenAchievementKey(item.ach_key);
@@ -20163,7 +20194,7 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..476e8ee
+index 0000000..390d071
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 @@ -0,0 +1,1965 @@
@@ -21494,8 +21525,8 @@ index 0000000..476e8ee
 +  s_boot_failed = true;
 +  if (unreadable)
 +  {
-+    WriteStopNote("Game Not Started",
-+                  "Couldn't read this game file: it may be damaged, incomplete,\n"
++    WriteStopNote("Something Is Wrong With This Game File",
++                  "Dolphin couldn't read it. The file is damaged, incomplete,\n"
 +                  "or not a GameCube / Wii game.",
 +                  "Check it in PC Dolphin (right-click -> Properties -> Verify)\n"
 +                  "or convert it again, then copy it to the PS4 again.");
