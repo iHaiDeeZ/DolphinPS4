@@ -137,17 +137,27 @@ void report(int fd, ThreadSamples& t, double window_start) {
         return;
     const uintptr_t text = reinterpret_cast<uintptr_t>(__text_start);
 
-    // Eboot and JIT code: bucket by 16 bytes (eboot addresses relative to .text; JIT addresses
-    // tagged with bit 63).
+    // Eboot code: bucket by 16 bytes (addresses relative to .text). JIT code (tagged with bit 63):
+    // by 128 bytes - a game's code is spread thin over thousands of small blocks, and 16-byte
+    // buckets seen once per window were all dropped (Mario Kart Wii: 80% of its JIT time).
+    // Every sample is counted by kind first, before anything is dropped.
+    int kind_jit = 0, kind_eboot = 0, kind_sys = 0, kind_wait = 0;
     for (int i = 0; i < n; i++) {
         if (s[i] & kCallerTag) {
             s[i] &= ~0xFULL;  // system module address (see the module list)
+            kind_sys++;
             continue;
         }
-        if (s[i] & kWaitTag)
+        if (s[i] & kWaitTag) {
+            kind_wait++;
             continue;  // a waiting Dolphin function's return address (exact)
+        }
         const bool eboot = s[i] >= text && s[i] < text + kTextWindow;
-        s[i] = eboot ? ((s[i] - text) & ~0xFULL) : (s[i] | (1ULL << 63)) & ~0xFULL;
+        if (eboot)
+            kind_eboot++;
+        else
+            kind_jit++;
+        s[i] = eboot ? ((s[i] - text) & ~0xFULL) : (s[i] | (1ULL << 63)) & ~0x7FULL;
     }
     std::sort(s, s + n);
     struct Entry { uint64_t key; int count; };
@@ -168,10 +178,14 @@ void report(int fd, ThreadSamples& t, double window_start) {
     snprintf(line, sizeof(line), "== %.0f s, %s: %d samples, %d in eboot code (%.0f%%)\n",
              window_start, t.name, n, eboot_samples, 100.0 * eboot_samples / n);
     writeLine(fd, line);
+    snprintf(line, sizeof(line), "   kinds: jit %.1f%% eboot %.1f%% system %.1f%% waiting %.1f%%\n",
+             100.0 * kind_jit / n, 100.0 * kind_eboot / n, 100.0 * kind_sys / n,
+             100.0 * kind_wait / n);
+    writeLine(fd, line);
     // Every bucket seen at least twice (up to 1500): a function spread over many 16-byte buckets
     // fell below a top-60 cut, hiding about half of a busy thread. Aggregated per function
     // offline (symbolizer, JIT block map).
-    for (int i = 0; i < unique && i < 1500 && entries[i].count >= 2; i++) {
+    for (int i = 0; i < unique && i < 3000 && entries[i].count >= 2; i++) {
         if (entries[i].key >> 63) {
             const uint64_t address = entries[i].key & ~(1ULL << 63);
             snprintf(line, sizeof(line), "  %5.1f%% jit 0x%llx\n", 100.0 * entries[i].count / n,
