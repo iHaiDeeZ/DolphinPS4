@@ -4718,7 +4718,7 @@ index 4667238..6d9edba 100644
    // and an unconditional branch, we will skip the rest process.
    // Because PPCAnalyst::Flatten() merged the blocks.
 diff --git a/Source/Core/Core/PowerPC/Jit64/Jit_FloatingPoint.cpp b/Source/Core/Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
-index 86f9e49..6a1f85c 100644
+index 86f9e49..f197f0c 100644
 --- a/Source/Core/Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
 +++ b/Source/Core/Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
 @@ -7,6 +7,7 @@
@@ -4729,7 +4729,70 @@ index 86f9e49..6a1f85c 100644
  #include "Common/Assert.h"
  #include "Common/CPUDetect.h"
  #include "Common/CommonTypes.h"
-@@ -1155,6 +1156,50 @@ void Jit64::frspx(UGeckoInstruction inst)
+@@ -984,6 +985,11 @@ void Jit64::fmrx(UGeckoInstruction inst)
+   }
+ }
+ 
++#ifdef __ORBIS__
++extern "C" int ps4_jit_fcmp_merge;  // ps4.ini jit_fcmp_merge (DolphinNoGUI/MainNoGUI.cpp)
++int ps4_jit_fcmp_merge = 1;
++#endif
++
+ void Jit64::FloatCompare(UGeckoInstruction inst, bool upper)
+ {
+   bool fprf = m_fprf && js.op->wantsFPRF;
+@@ -1008,6 +1014,18 @@ void Jit64::FloatCompare(UGeckoInstruction inst, bool upper)
+     output[3 - (next.CRBB & 3)] |= 1 << dst;
+   }
+ 
++#ifdef __ORBIS__
++  // Dolphin Lab (jit_fcmp_merge, default on): fcmp followed by a bc on its CR field branches on
++  // the value just computed, like cmp + bc (DoMergedBranchCondition), instead of the bc reloading
++  // the field from ppcState. The field is still stored (it may be read after the branch). Not with
++  // FPRF (its OR changes the flags; the test below doesn't need them, but keep it simple), a
++  // merged cror (the bc is then the instruction after it), or a branch on SO (unordered: the
++  // integer merge treats SO as never set).
++  const bool merge_branch = ps4_jit_fcmp_merge && !fprf && js.skipInstructions == 0 &&
++                            CheckMergedBranch(crf) &&
++                            3 - (js.op[1].inst.BI & 3) != PowerPC::CR_SO_BIT;
++#endif
++
+   RCOpArg Ra = upper ? fpr.Bind(a, RCMode::Read) : fpr.Use(a, RCMode::Read);
+   RCX64Reg Rb = fpr.Bind(b, RCMode::Read);
+   RegCache::Realize(Ra, Rb);
+@@ -1084,6 +1102,31 @@ void Jit64::FloatCompare(UGeckoInstruction inst, bool upper)
+   }
+ 
+   MOV(64, PPCSTATE_CR(crf), R(RSCRATCH));
++
++#ifdef __ORBIS__
++  if (merge_branch)
++  {
++    // Flags as cmp leaves them for the tested bit of the internal CR value
++    // (ConditionRegister::PPCToInternal): EQ = low 32 bits zero, GT = signed value > 0,
++    // LT = bit 62 (moved to the sign bit).
++    Ra.Unlock();
++    Rb.Unlock();
++    switch (3 - (js.op[1].inst.BI & 3))
++    {
++    case PowerPC::CR_EQ_BIT:
++      TEST(32, R(RSCRATCH), R(RSCRATCH));
++      break;
++    case PowerPC::CR_GT_BIT:
++      TEST(64, R(RSCRATCH), R(RSCRATCH));
++      break;
++    default:  // CR_LT_BIT
++      SHL(64, R(RSCRATCH), Imm8(1));
++      TEST(64, R(RSCRATCH), R(RSCRATCH));
++      break;
++    }
++    DoMergedBranchCondition();
++  }
++#endif
+ }
+ 
+ void Jit64::fcmpX(UGeckoInstruction inst)
+@@ -1155,6 +1198,50 @@ void Jit64::frspx(UGeckoInstruction inst)
    FinalizeSingleResult(Rd, Rb, packed, true);
  }
  
@@ -4780,7 +4843,7 @@ index 86f9e49..6a1f85c 100644
  void Jit64::frsqrtex(UGeckoInstruction inst)
  {
    INSTRUCTION_START
-@@ -1170,7 +1215,11 @@ void Jit64::frsqrtex(UGeckoInstruction inst)
+@@ -1170,7 +1257,11 @@ void Jit64::frsqrtex(UGeckoInstruction inst)
    RegCache::Realize(scratch_guard, Rb, Rd);
  
    MOVAPD(XMM0, Rb);
@@ -6514,7 +6577,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..ec2bb38 100644
+index 3bf40ea..137e539 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -6565,7 +6628,7 @@ index 3bf40ea..ec2bb38 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,59 @@
+@@ -31,6 +53,60 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -6592,6 +6655,7 @@ index 3bf40ea..ec2bb38 100644
 +extern "C" int ps4_jit_gp_dynamic;       // Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 +extern "C" int ps4_jit_accurate_singles;  // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_follow;            // Core/PowerPC/PPCAnalyst.cpp
++extern "C" int ps4_jit_fcmp_merge;        // Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
 +extern "C" int ps4_sync_idle_frame;      // Core/CoreTiming.cpp
 +extern "C" int ps4_shader_dump;          // VideoCommon/ShaderCache.cpp
 +extern "C" int ps4_tev_ras_float;        // VideoCommon/PixelShaderGen.cpp
@@ -6625,7 +6689,7 @@ index 3bf40ea..ec2bb38 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +248,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +249,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -6636,7 +6700,7 @@ index 3bf40ea..ec2bb38 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +263,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +264,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -6655,7 +6719,7 @@ index 3bf40ea..ec2bb38 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +295,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +296,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -6666,7 +6730,7 @@ index 3bf40ea..ec2bb38 100644
  #endif
        });
  
-@@ -270,7 +362,367 @@ int main(const int argc, char* argv[])
+@@ -270,7 +363,369 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -6855,6 +6919,8 @@ index 3bf40ea..ec2bb38 100644
 +    ps4_jit_accurate_singles = Platform::GetPS4Option("jit_accurate_singles", "on") != "off";
 +    // jit_follow=N (1..16, default 2): branches/calls/returns a JIT block may follow.
 +    ps4_jit_follow = std::clamp(std::atoi(Platform::GetPS4Option("jit_follow", "2").c_str()), 1, 16);
++    // jit_fcmp_merge=off: fcmp and the bc after it compiled separately (the bc reloads the CR).
++    ps4_jit_fcmp_merge = Platform::GetPS4Option("jit_fcmp_merge", "on") != "off";
 +    // shader_dump=on (Dolphin Lab): specialized shaders' source to /data/DolphinPS4/shader-dump.
 +    ps4_shader_dump = Platform::GetPS4Option("shader_dump", "off") == "on";
 +    // tev_ras_swizzle=float, vk_dynamic_vertex_loader=off (Dolphin Lab): colour tests (TMNT 2007).
@@ -7034,7 +7100,7 @@ index 3bf40ea..ec2bb38 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +736,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +739,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -7050,7 +7116,7 @@ index 3bf40ea..ec2bb38 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +764,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +767,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -28923,7 +28989,7 @@ index 92f7c1f..3378a49 100644
      m_default_pixel_shader = g_gfx->CreateShaderFromSource(
          ShaderStage::Pixel, GetHeader(false) + default_pixel_shader_code + GetFooter(), nullptr,
 diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
-index 41d05f3..bec6ed6 100644
+index 41d05f3..e3be7d6 100644
 --- a/Source/Core/VideoCommon/Present.cpp
 +++ b/Source/Core/VideoCommon/Present.cpp
 @@ -3,6 +3,11 @@
@@ -29113,7 +29179,7 @@ index 41d05f3..bec6ed6 100644
      return input_aspect_ratio;
  
    const MathUtil::Rectangle<int> rect = m_xfb_rect;
-@@ -903,9 +1021,229 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
+@@ -903,9 +1021,233 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
    }
  }
  
@@ -29124,6 +29190,8 @@ index 41d05f3..bec6ed6 100644
 +extern "C" {
 +int ps4_perf_log = 1;
 +}
++
++extern "C" void ps4_sampler_note_hitch(const char* what, double gap_ms);  // port/ps4_sampler.cpp
 +
 +// Hitch detector (PS4 port): a gap of more than 150 ms between presented frames is logged to
 +// boot-trace.log with what happened in it - how much emulated time passed (little = the CPU
@@ -29161,6 +29229,8 @@ index 41d05f3..bec6ed6 100644
 +      }
 +    }
 +    ps4_boot_trace(line);
++    // Dolphin Lab profiling: what each thread did during the gap (hitches-<ID>.log).
++    ps4_sampler_note_hitch(line, gap_ms);
 +  }
 +  s_last = now;
 +  s_last_tsc = tsc;
@@ -29343,7 +29413,7 @@ index 41d05f3..bec6ed6 100644
  
    if (g_gfx->IsHeadless() || (!m_onscreen_ui && !m_xfb_entry))
      return;
-@@ -934,7 +1272,75 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -934,7 +1276,75 @@ void Presenter::Present(PresentInfo* present_info)
    UpdateDrawRectangle();
  
    g_gfx->BeginUtilityDrawing();
@@ -29419,7 +29489,7 @@ index 41d05f3..bec6ed6 100644
  
    // Render the XFB to the screen.
    if (backbuffer_bound && m_xfb_entry)
-@@ -945,7 +1351,52 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -945,7 +1355,52 @@ void Presenter::Present(PresentInfo* present_info)
      AdjustRectanglesToFitBounds(&render_target_rc, &render_source_rc, m_backbuffer_width,
                                  m_backbuffer_height);
      RenderXFBToScreen(render_target_rc, m_xfb_entry->texture.get(), render_source_rc);

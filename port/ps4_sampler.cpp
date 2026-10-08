@@ -62,7 +62,12 @@ struct ThreadSamples {
     uint64_t stack_top = 0;  // ps4_sampler_register_thread: the frame-pointer walk's limit
     uint64_t samples[kMaxSamples];
     std::atomic<int> count{0};
+    // The last kRing samples, across windows: what the thread did during a hitch
+    // (ps4_sampler_note_hitch).
+    uint64_t ring[4096];
+    std::atomic<uint32_t> ring_pos{0};
 };
+constexpr uint32_t kRing = 4096;
 
 ThreadSamples g_threads[kMaxThreads];
 std::atomic<int> g_thread_count{0};
@@ -76,7 +81,7 @@ void profHandler(int, siginfo_t*, void* context) {
         const auto* regs =
             reinterpret_cast<const uint64_t*>(static_cast<char*>(context) + kMcontextOffset);
         const int n = t.count.load(std::memory_order_relaxed);
-        if (n < kMaxSamples) {
+        {
             uint64_t sample = regs[kRipIndex];
             // Inside a system module: keep the exact address (tagged). The module list at the
             // top of samples.log maps it to a module offset, which the decrypted modules' symbol
@@ -106,8 +111,13 @@ void profHandler(int, siginfo_t*, void* context) {
                 }
                 sample = caller ? (caller | kWaitTag) : (sample | kCallerTag);
             }
-            t.samples[n] = sample;
-            t.count.store(n + 1, std::memory_order_release);
+            const uint32_t pos = t.ring_pos.load(std::memory_order_relaxed);
+            t.ring[pos % kRing] = sample;
+            t.ring_pos.store(pos + 1, std::memory_order_release);
+            if (n < kMaxSamples) {
+                t.samples[n] = sample;
+                t.count.store(n + 1, std::memory_order_release);
+            }
         }
         return;
     }
@@ -719,4 +729,72 @@ extern "C" void ps4_sampler_set_enabled(int on) {
         ps4_sampler_start();
     else if (g_sampler_on.exchange(false))
         ps4_boot_trace("sampler: paused");
+}
+
+// hitches-<ID>.log (VideoCommon/Present.cpp's hitch detector): for a gap between frames, what
+// each sampled thread was doing during it - its last <gap> samples (1 kHz) from the ring, grouped:
+// "jit" (game code), "elf 0x.." (Dolphin code, 16-byte buckets), "wait 0x.." (the Dolphin
+// function waiting in a system call), "sys 0x.." (system module address).
+extern "C" void ps4_sampler_note_hitch(const char* what, double gap_ms) {
+    if (!g_sampler_on.load(std::memory_order_relaxed) || g_sampler_stopping.load())
+        return;
+    const int fd = open(profilePath("hitches", "log").c_str(), O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd < 0)
+        return;
+    char line[256];
+    snprintf(line, sizeof(line), "== %.1f s %s\n", now(), what);
+    writeLine(fd, line);
+    const uintptr_t text = reinterpret_cast<uintptr_t>(__text_start);
+    static uint64_t s[kRing];
+    struct Entry { uint64_t key; int count; };
+    static Entry entries[kRing];
+    for (int i = 0; i < g_thread_count.load(std::memory_order_acquire); i++) {
+        ThreadSamples& t = g_threads[i];
+        const uint32_t pos = t.ring_pos.load(std::memory_order_acquire);
+        const uint32_t k = std::min<uint32_t>({pos, kRing, static_cast<uint32_t>(gap_ms)});
+        if (k == 0)
+            continue;
+        for (uint32_t j = 0; j < k; j++) {
+            uint64_t v = t.ring[(pos - k + j) % kRing];
+            if (v & kWaitTag)
+                v = (v & ~kWaitTag & ~0xFULL) | kWaitTag;
+            else if (v & kCallerTag)
+                v = (v & ~0xFULL);  // keeps kCallerTag
+            else if (v >= text && v < text + kTextWindow)
+                v = (v - text) & ~0xFULL;
+            else
+                v = 1ULL << 63;  // all JIT code together
+            s[j] = v;
+        }
+        std::sort(s, s + k);
+        int unique = 0;
+        for (uint32_t j = 0; j < k;) {
+            uint32_t e = j;
+            while (e < k && s[e] == s[j])
+                e++;
+            entries[unique++] = {s[j], static_cast<int>(e - j)};
+            j = e;
+        }
+        std::sort(entries, entries + unique,
+                  [](const Entry& a, const Entry& b) { return a.count > b.count; });
+        snprintf(line, sizeof(line), "  %s: %u samples\n", t.name ? t.name : "?", k);
+        writeLine(fd, line);
+        for (int j = 0; j < unique && j < 12; j++) {
+            const uint64_t key = entries[j].key;
+            const double pct = 100.0 * entries[j].count / k;
+            if (key >> 63)
+                snprintf(line, sizeof(line), "  %5.1f%% jit\n", pct);
+            else if (key & kCallerTag)
+                snprintf(line, sizeof(line), "  %5.1f%% sys 0x%llx\n", pct,
+                         static_cast<unsigned long long>(key & ~kCallerTag));
+            else if (key & kWaitTag)
+                snprintf(line, sizeof(line), "  %5.1f%% syscall from elf 0x%llx\n", pct,
+                         static_cast<unsigned long long>(key & ~kWaitTag));
+            else
+                snprintf(line, sizeof(line), "  %5.1f%% elf 0x%llx\n", pct,
+                         static_cast<unsigned long long>(key));
+            writeLine(fd, line);
+        }
+    }
+    close(fd);
 }
