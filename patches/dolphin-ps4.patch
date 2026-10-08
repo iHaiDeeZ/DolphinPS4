@@ -6317,7 +6317,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..5ec8ad6 100644
+index 3bf40ea..0fd58af 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -6368,7 +6368,7 @@ index 3bf40ea..5ec8ad6 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,54 @@
+@@ -31,6 +53,55 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -6377,6 +6377,7 @@ index 3bf40ea..5ec8ad6 100644
 +extern "C" int ps4_uniform_upload_map;  // VideoBackends/OGL/ProgramShaderCache.cpp
 +extern "C" int ps4_vertex_upload_ring;  // VideoBackends/OGL/OGLStreamBuffer.cpp
 +extern "C" int ps4_show_fps;            // VideoCommon/Present.cpp
++extern "C" void ps4_boot_failed(int unreadable);  // PlatformPS4.cpp: the menu says why
 +extern "C" int ps4_cpu_thread_core, ps4_gpu_thread_core, ps4_thread_priority;  // Core/Core.cpp
 +extern "C" void ps4_sampler_start();  // DolphinPS4 port/ps4_sampler.cpp
 +extern "C" void ps4_sampler_shutdown();  // DolphinPS4 port/ps4_sampler.cpp
@@ -6423,7 +6424,7 @@ index 3bf40ea..5ec8ad6 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +243,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +244,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -6434,7 +6435,7 @@ index 3bf40ea..5ec8ad6 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +258,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +259,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -6453,7 +6454,7 @@ index 3bf40ea..5ec8ad6 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +290,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +291,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -6464,7 +6465,7 @@ index 3bf40ea..5ec8ad6 100644
  #endif
        });
  
-@@ -270,7 +357,353 @@ int main(const int argc, char* argv[])
+@@ -270,7 +358,353 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -6818,7 +6819,7 @@ index 3bf40ea..5ec8ad6 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +717,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +718,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -6834,7 +6835,7 @@ index 3bf40ea..5ec8ad6 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,6 +745,46 @@ int main(const int argc, char* argv[])
+@@ -303,9 +746,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -6878,9 +6879,20 @@ index 3bf40ea..5ec8ad6 100644
 +  AchievementManager::GetInstance().Init(nullptr);
 +  Common::ScopeGuard achievements_guard([] { AchievementManager::GetInstance().Shutdown(); });
 +#endif
++#ifdef __ORBIS__
++  // The game file couldn't be read (damaged, incomplete, not a GameCube/Wii disc): the menu says
++  // so instead of "stopped unexpectedly".
++  const bool unreadable = !boot;
++#endif
    if (!BootManager::BootCore(Core::System::GetInstance(), std::move(boot), wsi))
    {
      fprintf(stderr, "Could not boot the specified file\n");
++#ifdef __ORBIS__
++    ps4_boot_failed(unreadable);
++#endif
+     return 1;
+   }
+ 
 diff --git a/Source/Core/DolphinNoGUI/PS4Cheats.cpp b/Source/Core/DolphinNoGUI/PS4Cheats.cpp
 new file mode 100755
 index 0000000..588b816
@@ -20151,10 +20163,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..ef316bd
+index 0000000..476e8ee
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1938 @@
+@@ -0,0 +1,1965 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -21408,6 +21420,9 @@ index 0000000..ef316bd
 +    close(menu);
 +}
 +
++// The game didn't start (MainNoGUI): its own note, kept by OnExit.
++bool s_boot_failed = false;
++
 +void OnExit()
 +{
 +  s_exiting = 1;
@@ -21423,6 +21438,11 @@ index 0000000..ef316bd
 +  if (PS4IngameMenu::ReturnToXMB())
 +  {
 +    ps4_return_to_menu();
++    sceSystemServiceLoadExec(ps4_self_path(), nullptr);
++  }
++  if (s_stop_game[0] && s_boot_failed && Platform::GetPS4Option("xmb", "on") == "on")
++  {
++    Platform::BootTrace("the game didn't start: back to the menu");
 +    sceSystemServiceLoadExec(ps4_self_path(), nullptr);
 +  }
 +  if (s_stop_game[0] && Platform::GetPS4Option("xmb", "on") == "on")
@@ -21466,6 +21486,25 @@ index 0000000..ef316bd
 +  s_fonts[bold != 0] = PS4Lang::ExtraFonts(AssetsDir(), bold != 0);
 +  return index < static_cast<int>(s_fonts[bold != 0].size()) ? s_fonts[bold != 0][index].c_str() :
 +                                                                 nullptr;
++}
++
++// MainNoGUI: the game didn't start.
++extern "C" void ps4_boot_failed(int unreadable)
++{
++  s_boot_failed = true;
++  if (unreadable)
++  {
++    WriteStopNote("Game Not Started",
++                  "Couldn't read this game file: it may be damaged, incomplete,\n"
++                  "or not a GameCube / Wii game.",
++                  "Check it in PC Dolphin (right-click -> Properties -> Verify)\n"
++                  "or convert it again, then copy it to the PS4 again.");
++  }
++  else
++  {
++    WriteStopNote("Game Not Started", "Dolphin couldn't start this game.",
++                  "Details are in dolphin.log and boot-trace.log\n(in /data/DolphinPS4).");
++  }
 +}
 +
 +// port/ps4_crashlog.cpp, after crash.log.
