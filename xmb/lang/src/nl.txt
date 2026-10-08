@@ -433,3 +433,21 @@ Nunchuk schudden
 # --- Folder browser
 Hoofdmap van de console
 Stations
+# --- Game problems (crash handler, unreadable game files)
+Spel gecrasht
+Spel gestopt
+Spel niet gestart
+Er is iets mis met dit spelbestand
+Het spel is gecrasht.
+Het spel is gecrasht (ongeldige geheugentoegang).
+Het spel is gecrasht (busfout).
+Het spel is gecrasht (ongeldige instructie).
+Het spel is gecrasht (rekenfout).
+Het spel is gecrasht (Dolphin stopte door een fout).
+Het spel is onverwacht gestopt.
+Dolphin kon dit spel niet starten.
+Dolphin kon het niet lezen. Het bestand is beschadigd, onvolledig of geen GameCube- / Wii-spel.
+Controleer het in Dolphin op de pc (rechtsklik > Eigenschappen > Verifiëren) of converteer het opnieuw en kopieer het dan opnieuw naar de PS4.
+Details staan in crash.log en boot-trace.log (in /data/DolphinPS4).
+Details staan in dolphin.log en boot-trace.log (in /data/DolphinPS4).
+Cirkel sluit dit.

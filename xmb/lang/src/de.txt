@@ -433,3 +433,21 @@ Nunchuk schütteln
 # --- Folder browser
 Konsolen-Stammordner
 Laufwerke
+# --- Game problems (crash handler, unreadable game files)
+Spiel abgestürzt
+Spiel beendet
+Spiel nicht gestartet
+Mit dieser Spieldatei stimmt etwas nicht
+Das Spiel ist abgestürzt.
+Das Spiel ist abgestürzt (ungültiger Speicherzugriff).
+Das Spiel ist abgestürzt (Busfehler).
+Das Spiel ist abgestürzt (ungültiger Befehl).
+Das Spiel ist abgestürzt (Rechenfehler).
+Das Spiel ist abgestürzt (Dolphin hat wegen eines Fehlers angehalten).
+Das Spiel wurde unerwartet beendet.
+Dolphin konnte dieses Spiel nicht starten.
+Dolphin konnte die Datei nicht lesen. Sie ist beschädigt, unvollständig oder kein GameCube-/Wii-Spiel.
+Prüfe sie im PC-Dolphin (Rechtsklick > Eigenschaften > Überprüfen) oder konvertiere sie neu und kopiere sie dann erneut auf die PS4.
+Details stehen in crash.log und boot-trace.log (in /data/DolphinPS4).
+Details stehen in dolphin.log und boot-trace.log (in /data/DolphinPS4).
+Kreis schließt das.

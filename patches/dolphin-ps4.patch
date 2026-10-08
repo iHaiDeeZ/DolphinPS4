@@ -13597,10 +13597,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..2724697
+index 0000000..de75e7f
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5887 @@
+@@ -0,0 +1,5907 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -16518,11 +16518,10 @@ index 0000000..2724697
 +    m_panel.title = "Something Is Wrong With This Game File";
 +    m_panel.lines = {std::filesystem::path(game.path).filename().string(),
 +                     "",
-+                     "Dolphin couldn't read it. The file is damaged, incomplete,",
-+                     "or not a GameCube / Wii game.",
++                     "Dolphin couldn't read it. The file is damaged, incomplete, or not a GameCube / Wii game.",
 +                     "",
-+                     "Check it in PC Dolphin (right-click -> Properties -> Verify)",
-+                     "or convert it again, then copy it to the PS4 again.",
++                     "Check it in PC Dolphin (right-click > Properties > Verify) or convert it "
++                     "again, then copy it to the PS4 again.",
 +                     "",
 +                     "Circle closes this."};
 +    Play("error");
@@ -17088,8 +17087,21 @@ index 0000000..2724697
 +                            Rgba(0x000000, 0.72f * m_panel.slide));
 +  dl->AddLine(ImVec2(x0, 0), ImVec2(x0, H), Rgba(theme.wave, 0.8f * m_panel.slide), 2.0f);
 +  const ImU32 text = Rgba(theme.text, m_panel.slide);
-+  Text(dl, m_bold, 40, ImVec2(x0 + 50, 140), text, m_panel.title);
 +  float y = 230;
++  {
++    const std::string title = WrapText(m_bold, 40, PS4Lang::T(m_panel.title), width - 100);
++    float ty = 140;
++    size_t start = 0;
++    for (size_t end; start <= title.size(); start = end + 1)
++    {
++      end = title.find('\n', start);
++      if (end == std::string::npos)
++        end = title.size();
++      Text(dl, m_bold, 40, ImVec2(x0 + 50, ty), text, title.substr(start, end - start));
++      ty += 50;
++    }
++    y = std::max(y, ty + 40);
++  }
 +  if (!m_panel.options.empty())
 +  {
 +    for (size_t i = 0; i < m_panel.options.size(); i++, y += 62)
@@ -17105,8 +17117,16 @@ index 0000000..2724697
 +  }
 +  for (const std::string& line : m_panel.rows.empty() ? m_panel.lines : std::vector<std::string>{})
 +  {
-+    Text(dl, m_font, 28, ImVec2(x0 + 50, y), text, line);
-+    y += 42;
++    const std::string wrapped = WrapText(m_font, 28, PS4Lang::T(line), width - 100);
++    size_t start = 0;
++    for (size_t end; start <= wrapped.size(); start = end + 1)
++    {
++      end = wrapped.find('\n', start);
++      if (end == std::string::npos)
++        end = wrapped.size();
++      Text(dl, m_font, 28, ImVec2(x0 + 50, y), text, wrapped.substr(start, end - start));
++      y += 42;
++    }
 +  }
 +  if (!m_panel.rows.empty())
 +  {
@@ -20194,10 +20214,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..390d071
+index 0000000..db40b6d
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1965 @@
+@@ -0,0 +1,1964 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -21481,7 +21501,7 @@ index 0000000..390d071
 +    // The emulation ended by itself (an error, or the game ended): back to the game list with why.
 +    Platform::BootTrace("the game stopped by itself: back to the menu");
 +    WriteStopNote("Game Stopped", "The game stopped unexpectedly.",
-+                  "Details are in dolphin.log and boot-trace.log\n(in /data/DolphinPS4).");
++                  "Details are in dolphin.log and boot-trace.log (in /data/DolphinPS4).");
 +    sceSystemServiceLoadExec(ps4_self_path(), nullptr);
 +  }
 +  sceSystemServiceLoadExec("exit", nullptr);
@@ -21526,15 +21546,14 @@ index 0000000..390d071
 +  if (unreadable)
 +  {
 +    WriteStopNote("Something Is Wrong With This Game File",
-+                  "Dolphin couldn't read it. The file is damaged, incomplete,\n"
-+                  "or not a GameCube / Wii game.",
-+                  "Check it in PC Dolphin (right-click -> Properties -> Verify)\n"
-+                  "or convert it again, then copy it to the PS4 again.");
++                  "Dolphin couldn't read it. The file is damaged, incomplete, or not a GameCube / Wii game.",
++                  "Check it in PC Dolphin (right-click > Properties > Verify) or convert it "
++                  "again, then copy it to the PS4 again.");
 +  }
 +  else
 +  {
 +    WriteStopNote("Game Not Started", "Dolphin couldn't start this game.",
-+                  "Details are in dolphin.log and boot-trace.log\n(in /data/DolphinPS4).");
++                  "Details are in dolphin.log and boot-trace.log (in /data/DolphinPS4).");
 +  }
 +}
 +
@@ -21550,7 +21569,7 @@ index 0000000..390d071
 +                     sig == 6  ? "The game crashed (Dolphin stopped on an error)." :
 +                                 "The game crashed.";
 +  WriteStopNote("Game Crashed", what,
-+                "Details are in crash.log and boot-trace.log\n(in /data/DolphinPS4).");
++                "Details are in crash.log and boot-trace.log (in /data/DolphinPS4).");
 +}
 +
 +extern "C" void ps4_crash_restart()

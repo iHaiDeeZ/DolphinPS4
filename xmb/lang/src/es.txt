@@ -433,3 +433,21 @@ Agitar Nunchuk
 # --- Folder browser
 Raíz de la consola
 Unidades
+# --- Game problems (crash handler, unreadable game files)
+El juego se bloqueó
+Juego detenido
+El juego no se inició
+Algo falla en este archivo de juego
+El juego se bloqueó.
+El juego se bloqueó (acceso a memoria no válido).
+El juego se bloqueó (error de bus).
+El juego se bloqueó (instrucción no válida).
+El juego se bloqueó (error aritmético).
+El juego se bloqueó (Dolphin se detuvo por un error).
+El juego se detuvo de forma inesperada.
+Dolphin no pudo iniciar este juego.
+Dolphin no pudo leerlo. El archivo está dañado, incompleto o no es un juego de GameCube / Wii.
+Compruébalo en Dolphin para PC (clic derecho > Propiedades > Verificar) o conviértelo de nuevo y vuelve a copiarlo a la PS4.
+Los detalles están en crash.log y boot-trace.log (en /data/DolphinPS4).
+Los detalles están en dolphin.log y boot-trace.log (en /data/DolphinPS4).
+Círculo cierra esto.

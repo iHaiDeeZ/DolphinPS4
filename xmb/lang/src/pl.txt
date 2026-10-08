@@ -433,3 +433,21 @@ Potrząśnij Nunchukiem
 # --- Folder browser
 Katalog główny konsoli
 Napędy
+# --- Game problems (crash handler, unreadable game files)
+Gra uległa awarii
+Gra zatrzymana
+Gra się nie uruchomiła
+Coś jest nie tak z tym plikiem gry
+Gra uległa awarii.
+Gra uległa awarii (nieprawidłowy dostęp do pamięci).
+Gra uległa awarii (błąd magistrali).
+Gra uległa awarii (niedozwolona instrukcja).
+Gra uległa awarii (błąd arytmetyczny).
+Gra uległa awarii (Dolphin zatrzymał się z powodu błędu).
+Gra nieoczekiwanie się zatrzymała.
+Dolphin nie mógł uruchomić tej gry.
+Dolphin nie mógł go odczytać. Plik jest uszkodzony, niekompletny albo nie jest grą GameCube / Wii.
+Sprawdź go w Dolphinie na PC (prawy przycisk > Właściwości > Weryfikuj) lub przekonwertuj go ponownie, a potem skopiuj go jeszcze raz na PS4.
+Szczegóły są w crash.log i boot-trace.log (w /data/DolphinPS4).
+Szczegóły są w dolphin.log i boot-trace.log (w /data/DolphinPS4).
+Kółko zamyka to okno.

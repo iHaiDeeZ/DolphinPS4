@@ -433,3 +433,21 @@ Secouer le Nunchuk
 # --- Folder browser
 Racine de la console
 Lecteurs
+# --- Game problems (crash handler, unreadable game files)
+Le jeu a planté
+Jeu arrêté
+Jeu non démarré
+Ce fichier de jeu pose problème
+Le jeu a planté.
+Le jeu a planté (accès mémoire invalide).
+Le jeu a planté (erreur de bus).
+Le jeu a planté (instruction illégale).
+Le jeu a planté (erreur arithmétique).
+Le jeu a planté (Dolphin s'est arrêté sur une erreur).
+Le jeu s'est arrêté de manière inattendue.
+Dolphin n'a pas pu démarrer ce jeu.
+Dolphin n'a pas pu le lire. Le fichier est endommagé, incomplet ou n'est pas un jeu GameCube / Wii.
+Vérifiez-le dans Dolphin sur PC (clic droit > Propriétés > Vérifier) ou convertissez-le à nouveau, puis recopiez-le sur la PS4.
+Les détails sont dans crash.log et boot-trace.log (dans /data/DolphinPS4).
+Les détails sont dans dolphin.log et boot-trace.log (dans /data/DolphinPS4).
+Rond ferme ceci.

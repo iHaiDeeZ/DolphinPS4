@@ -433,3 +433,21 @@ Riivolution 패치
 # --- Folder browser
 본체 루트
 드라이브
+# --- Game problems (crash handler, unreadable game files)
+게임이 충돌했습니다
+게임이 중지되었습니다
+게임을 시작하지 못했습니다
+이 게임 파일에 문제가 있습니다
+게임이 충돌했습니다.
+게임이 충돌했습니다 (잘못된 메모리 접근).
+게임이 충돌했습니다 (버스 오류).
+게임이 충돌했습니다 (잘못된 명령).
+게임이 충돌했습니다 (산술 오류).
+게임이 충돌했습니다 (오류로 Dolphin이 중지됨).
+게임이 예기치 않게 중지되었습니다.
+Dolphin이 이 게임을 시작하지 못했습니다.
+Dolphin이 파일을 읽지 못했습니다. 파일이 손상되었거나 불완전하거나 GameCube / Wii 게임이 아닙니다.
+PC용 Dolphin에서 확인하거나 (오른쪽 클릭 > 속성 > 확인) 다시 변환한 뒤 PS4에 다시 복사하세요.
+자세한 내용은 crash.log와 boot-trace.log에 있습니다 (/data/DolphinPS4).
+자세한 내용은 dolphin.log와 boot-trace.log에 있습니다 (/data/DolphinPS4).
+동그라미로 닫습니다.

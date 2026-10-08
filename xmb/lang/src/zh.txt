@@ -433,3 +433,21 @@ Riivolution 补丁
 # --- Folder browser
 主机根目录
 驱动器
+# --- Game problems (crash handler, unreadable game files)
+游戏崩溃了
+游戏已停止
+游戏未能启动
+此游戏文件有问题
+游戏崩溃了。
+游戏崩溃了（无效的内存访问）。
+游戏崩溃了（总线错误）。
+游戏崩溃了（非法指令）。
+游戏崩溃了（算术错误）。
+游戏崩溃了（Dolphin 因错误而停止）。
+游戏意外停止。
+Dolphin 无法启动此游戏。
+Dolphin 无法读取该文件。文件已损坏、不完整，或不是 GameCube / Wii 游戏。
+请在电脑版 Dolphin 中检查（右键 > 属性 > 验证）或重新转换，然后再次复制到 PS4。
+详细信息在 crash.log 和 boot-trace.log 中（位于 /data/DolphinPS4）。
+详细信息在 dolphin.log 和 boot-trace.log 中（位于 /data/DolphinPS4）。
+按圆圈键关闭。

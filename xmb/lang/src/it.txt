@@ -433,3 +433,21 @@ Scuoti Nunchuk
 # --- Folder browser
 Radice della console
 Unità
+# --- Game problems (crash handler, unreadable game files)
+Il gioco si è bloccato
+Gioco interrotto
+Gioco non avviato
+C'è un problema con questo file di gioco
+Il gioco si è bloccato.
+Il gioco si è bloccato (accesso alla memoria non valido).
+Il gioco si è bloccato (errore di bus).
+Il gioco si è bloccato (istruzione non valida).
+Il gioco si è bloccato (errore aritmetico).
+Il gioco si è bloccato (Dolphin si è fermato per un errore).
+Il gioco si è interrotto inaspettatamente.
+Dolphin non è riuscito ad avviare questo gioco.
+Dolphin non è riuscito a leggerlo. Il file è danneggiato, incompleto o non è un gioco GameCube / Wii.
+Controllalo in Dolphin per PC (clic destro > Proprietà > Verifica) o convertilo di nuovo, poi copialo di nuovo sulla PS4.
+I dettagli sono in crash.log e boot-trace.log (in /data/DolphinPS4).
+I dettagli sono in dolphin.log e boot-trace.log (in /data/DolphinPS4).
+Cerchio chiude questo.

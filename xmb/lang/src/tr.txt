@@ -433,3 +433,21 @@ Nunchuk sallama
 # --- Folder browser
 Konsol kök dizini
 Sürücüler
+# --- Game problems (crash handler, unreadable game files)
+Oyun çöktü
+Oyun durdu
+Oyun başlamadı
+Bu oyun dosyasında bir sorun var
+Oyun çöktü.
+Oyun çöktü (geçersiz bellek erişimi).
+Oyun çöktü (veri yolu hatası).
+Oyun çöktü (geçersiz komut).
+Oyun çöktü (aritmetik hata).
+Oyun çöktü (Dolphin bir hata yüzünden durdu).
+Oyun beklenmedik şekilde durdu.
+Dolphin bu oyunu başlatamadı.
+Dolphin dosyayı okuyamadı. Dosya hasarlı, eksik ya da bir GameCube / Wii oyunu değil.
+PC'deki Dolphin'de kontrol edin (sağ tık > Özellikler > Doğrula) ya da yeniden dönüştürün, sonra PS4'e tekrar kopyalayın.
+Ayrıntılar crash.log ve boot-trace.log dosyalarında (/data/DolphinPS4 içinde).
+Ayrıntılar dolphin.log ve boot-trace.log dosyalarında (/data/DolphinPS4 içinde).
+Daire bunu kapatır.

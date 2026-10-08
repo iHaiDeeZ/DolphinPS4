@@ -434,3 +434,21 @@ Sacudir Nunchuk
 # --- Folder browser
 Raiz do console
 Unidades
+# --- Game problems (crash handler, unreadable game files)
+O jogo travou
+Jogo interrompido
+O jogo não iniciou
+Há algo errado com este arquivo de jogo
+O jogo travou.
+O jogo travou (acesso inválido à memória).
+O jogo travou (erro de barramento).
+O jogo travou (instrução inválida).
+O jogo travou (erro aritmético).
+O jogo travou (o Dolphin parou por um erro).
+O jogo parou inesperadamente.
+O Dolphin não conseguiu iniciar este jogo.
+O Dolphin não conseguiu lê-lo. O arquivo está danificado, incompleto ou não é um jogo de GameCube / Wii.
+Verifique-o no Dolphin para PC (clique direito > Propriedades > Verificar) ou converta-o novamente e copie-o de novo para o PS4.
+Os detalhes estão em crash.log e boot-trace.log (em /data/DolphinPS4).
+Os detalhes estão em dolphin.log e boot-trace.log (em /data/DolphinPS4).
+Círculo fecha esta tela.
