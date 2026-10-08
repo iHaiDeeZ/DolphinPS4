@@ -7309,10 +7309,10 @@ index 0000000..276a9b6
 +}  // namespace PS4Cheats
 diff --git a/Source/Core/DolphinNoGUI/PS4Controls.cpp b/Source/Core/DolphinNoGUI/PS4Controls.cpp
 new file mode 100755
-index 0000000..a345f1c
+index 0000000..671c7b4
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Controls.cpp
-@@ -0,0 +1,764 @@
+@@ -0,0 +1,820 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -7692,6 +7692,32 @@ index 0000000..a345f1c
 +static std::array<bool, 4> s_motion_moves{};
 +static bool s_motion_pointer = false;
 +static std::string s_tilt_mode = "both";     // SetWiiTilt
++static std::string s_touch_mode = "off";     // SetWiiTouchpad
++
++// A binding without the touchpad's inputs (they are added again by the Touchpad setting).
++static std::string WithoutTouch(const std::string& value)
++{
++  std::string out;
++  size_t start = 0;
++  while (start <= value.size())
++  {
++    size_t end = value.find(" | ", start);
++    if (end == std::string::npos)
++      end = value.size();
++    const std::string part = value.substr(start, end - start);
++    if (!part.empty() && part.rfind("`Touch", 0) != 0 && part.rfind("`Swipe", 0) != 0)
++      out += (out.empty() ? "" : " | ") + part;
++    start = end + 3;
++  }
++  return out;
++}
++
++void SetWiiTouchpad(const std::string& mode, bool write)
++{
++  s_touch_mode = mode;
++  if (write && s_motion_set)
++    SetWiiMotion(s_motion_controller, s_motion_on, s_motion_moves, s_motion_pointer);
++}
 +static std::string s_extension = "nunchuk";  // SetWiiAttachment
 +
 +// The left stick on Tilt Left/Right: without a Nunchuk and unless only motion tilts. A tilt the
@@ -7762,8 +7788,38 @@ index 0000000..a345f1c
 +    // The pointer: the Move's gyroscope (Start + Select recentres it); with Pointer: Motion the
 +    // DualShock 4's own (re-centred by the player's Pointer Re-centre button); else the right
 +    // stick.
++    // Touchpad: Pointer - the finger aims (the motion pointer would override it); Swing - a
++    // swipe swings the Wii Remote that way.
++    const bool touch_pointer = s_touch_mode == "pointer" && !move;
++    constexpr const char* TOUCH_IR[][2] = {{"IR/Up", "`Touch Y-`"},
++                                           {"IR/Down", "`Touch Y+`"},
++                                           {"IR/Left", "`Touch X-`"},
++                                           {"IR/Right", "`Touch X+`"}};
++    constexpr const char* SWIPES[][2] = {{"Swing/Up", "`Swipe Up`"},
++                                         {"Swing/Down", "`Swipe Down`"},
++                                         {"Swing/Left", "`Swipe Left`"},
++                                         {"Swing/Right", "`Swipe Right`"}};
++    for (const auto& [key, input] : TOUCH_IR)
++    {
++      std::string value;
++      section->Get(key, &value);
++      value = WithoutTouch(value);
++      if (touch_pointer)
++        value = value.empty() ? std::string(input) : value + " | " + input;
++      section->Set(key, value);
++    }
++    for (const auto& [key, input] : SWIPES)
++    {
++      std::string value;
++      section->Get(key, &value);
++      value = WithoutTouch(value);
++      if (s_touch_mode == "swing")
++        value = value.empty() ? std::string(input) : value + " | " + input;
++      section->Set(key, value);
++    }
 +    section->Set("IMUIR/Enabled",
-+                 std::string(move || (motion && motion_pointer) ? "True" : "False"));
++                 std::string(move || (motion && motion_pointer && !touch_pointer) ? "True" :
++                                                                                   "False"));
 +    if (move)
 +    {
 +      section->Set("IMUIR/Recenter", from_move("Start") + " & " + from_move("Select"));
@@ -8079,10 +8135,10 @@ index 0000000..a345f1c
 +}  // namespace PS4Controls
 diff --git a/Source/Core/DolphinNoGUI/PS4Controls.h b/Source/Core/DolphinNoGUI/PS4Controls.h
 new file mode 100755
-index 0000000..5ecbc97
+index 0000000..e1d4d2e
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Controls.h
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,87 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -8147,6 +8203,9 @@ index 0000000..5ecbc97
 +// "both", "motion" or "stick": what tilts the Wii Remote (the motion sensors' accelerometer, the
 +// left stick without a Nunchuk). write=false only sets it for the next SetWii* call.
 +void SetWiiTilt(const std::string& mode, bool write = true);
++// "off", "pointer" (the finger aims) or "swing" (a swipe swings the Wii Remote): applied with
++// the next SetWiiMotion (write: now, in the running game - Dolphin then reads the layout again).
++void SetWiiTouchpad(const std::string& mode, bool write = false);
 +
 +// Settings -> System -> Wii Remote / Motion Controls, before a game starts: per player, the
 +// player's PS Move (moves[player - 1]) joins the Wii Remote (its buttons alongside the DualShock 4's,
@@ -8779,10 +8838,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..1db2384
+index 0000000..d51e133
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,2556 @@
+@@ -0,0 +1,2585 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -8872,6 +8931,7 @@ index 0000000..1db2384
 +  MAIN_WII_EXTENSION,
 +  MAIN_WII_SIDEWAYS,  // Hold Wii Remote: pointed at the TV, sideways, like a wheel
 +  MAIN_WII_TILT,      // Tilt With: motion + stick, motion, stick
++  MAIN_WII_TOUCH,     // Touchpad: off, pointer, swing
 +  MAIN_SETTINGS,
 +  MAIN_CHEATS,
 +  MAIN_RESTART,
@@ -9627,6 +9687,14 @@ index 0000000..1db2384
 +                                                        "Motion + Stick"});
 +        break;
 +      }
++      case MAIN_WII_TOUCH:
++      {
++        const std::string touch = PS4Settings::Get("wii_touchpad", s_game_id);
++        rows.push_back({"Touchpad", touch == "pointer" ? "Pointer" :
++                                    touch == "swing"   ? "Swing" :
++                                                         "Off"});
++        break;
++      }
 +      case MAIN_SETTINGS:
 +        rows.push_back({"Settings"});
 +        break;
@@ -9653,7 +9721,8 @@ index 0000000..1db2384
 +    const int item = s_main_items.empty() ? MAIN_RESUME : s_main_items[s_main_selected];
 +    if (item == MAIN_SAVE || item == MAIN_LOAD)
 +      hints.push_back({Glyph::LeftRight, "Slot"});
-+    if (item == MAIN_WII_EXTENSION || item == MAIN_WII_SIDEWAYS || item == MAIN_WII_TILT)
++    if (item == MAIN_WII_EXTENSION || item == MAIN_WII_SIDEWAYS || item == MAIN_WII_TILT ||
++        item == MAIN_WII_TOUCH)
 +      hints.push_back({Glyph::LeftRight, "Change"});
 +    hints.push_back({Glyph::Circle, "Resume"});
 +    hints.push_back({Glyph::L3R3, "Resume"});
@@ -9875,6 +9944,7 @@ index 0000000..1db2384
 +    s_main_items.push_back(MAIN_WII_EXTENSION);
 +    s_main_items.push_back(MAIN_WII_SIDEWAYS);
 +    s_main_items.push_back(MAIN_WII_TILT);
++    s_main_items.push_back(MAIN_WII_TOUCH);
 +  }
 +  s_main_items.insert(s_main_items.end(), {MAIN_CONTROLS, MAIN_SETTINGS, MAIN_CHEATS});
 +  s_ach = {};
@@ -10152,6 +10222,15 @@ index 0000000..1db2384
 +    key = "wii_hold";
 +    value = next == 0 ? "pointed" : next == 1 ? "sideways" : "wheel";
 +  }
++  else if (item == MAIN_WII_TOUCH)
++  {
++    static const char* const MODES[] = {"off", "pointer", "swing"};
++    const std::string touch = PS4Settings::Get("wii_touchpad", s_game_id);
++    const int now = touch == "pointer" ? 1 : touch == "swing" ? 2 : 0;
++    key = "wii_touchpad";
++    value = MODES[(now + direction + 3) % 3];
++    PS4Settings::Set(key, value, s_game_id);
++  }
 +  else
 +  {
 +    static const char* const MODES[] = {"both", "motion", "stick"};
@@ -10167,10 +10246,13 @@ index 0000000..1db2384
 +  // The controller files too: what Dolphin reads when the layout is reloaded (Controls page).
 +  PS4Controls::SetWiiTilt(PS4Settings::Get("wii_tilt", s_game_id), false);
 +  PS4Controls::SetWiiAttachment(nunchuk ? "nunchuk" : "none", sideways, upright);
-+  if (key == "wii_tilt")
++  if (key == "wii_tilt" || key == "wii_touchpad")
 +  {
-+    // New bindings (the accelerometer, the stick): Dolphin reads the layout again.
-+    PS4Controls::SetWiiTilt(value, true);
++    // New bindings (the accelerometer, the stick, the touchpad): Dolphin reads the layout again.
++    if (key == "wii_tilt")
++      PS4Controls::SetWiiTilt(value, true);
++    else
++      PS4Controls::SetWiiTouchpad(value, true);
 +    const auto lock = ControllerEmu::EmulatedController::GetStateLock();
 +    Wiimote::LoadConfig();
 +  }
@@ -10191,6 +10273,10 @@ index 0000000..1db2384
 +    }
 +  }
 +  Toast(key == "wii_extension" ? (nunchuk ? "Nunchuk plugged in" : "Nunchuk unplugged") :
++        key == "wii_touchpad" ?
++            (value == "pointer" ? "Touchpad: your finger aims" :
++             value == "swing"   ? "Touchpad: swipe to swing the Wii Remote" :
++                                  "Touchpad off") :
 +        key == "wii_tilt" ?
 +            (value == "stick"  ? "Tilt with the left stick" :
 +             value == "motion" ? "Tilt by moving the controller" :
@@ -10366,6 +10452,7 @@ index 0000000..1db2384
 +  case MAIN_WII_EXTENSION:
 +  case MAIN_WII_SIDEWAYS:
 +  case MAIN_WII_TILT:
++  case MAIN_WII_TOUCH:
 +    ToggleWiiRemote(s_main_items[s_main_selected]);
 +    break;
 +  case MAIN_RESUME:
@@ -11288,7 +11375,8 @@ index 0000000..1db2384
 +        const int item = s_main_items[s_main_selected];
 +        if (item == MAIN_SAVE || item == MAIN_LOAD)
 +          s_slot = (s_slot - 1 + direction + 8) % 8 + 1;
-+        else if (item == MAIN_WII_EXTENSION || item == MAIN_WII_SIDEWAYS || item == MAIN_WII_TILT)
++        else if (item == MAIN_WII_EXTENSION || item == MAIN_WII_SIDEWAYS || item == MAIN_WII_TILT ||
++                 item == MAIN_WII_TOUCH)
 +          ToggleWiiRemote(item, direction);
 +      }
 +      else
@@ -12291,10 +12379,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..3392f2d
+index 0000000..22cb324
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,963 @@
+@@ -0,0 +1,967 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -12450,6 +12538,10 @@ index 0000000..3392f2d
 +     "the left stick (without a Nunchuk), or both."},
 +    {"motion_controls", "Motion Controls", "System", {{"on", "On"}, {"off", "Off"}}, "on", false,
 +     "The DualShock 4's motion sensors move the Wii Remote: tilt, swing and shake it."},
++    {"wii_touchpad", "Touchpad", "System",
++     {{"off", "Off"}, {"pointer", "Pointer"}, {"swing", "Swing"}}, "off", false,
++     "Wii games: Pointer - your finger on the touchpad aims; Swing - a quick swipe swings the Wii "
++     "Remote that way (up, down, left, right). Clicking the touchpad stays HOME."},
 +    {"wii_pointer", "Wii Pointer", "System",
 +     {{"motion", "Motion + Stick"}, {"stick", "Right Stick"}}, "motion", false,
 +     "Motion + Stick: aim by moving the DualShock 4 (R1 re-centres) and with the right stick. "
@@ -12562,7 +12654,7 @@ index 0000000..3392f2d
 +bool AlwaysPerGame(const std::string& key)
 +{
 +  return key == "wii_extension" || key == "wii_sideways" || key == "wii_upright" ||
-+         key == "wii_tilt";
++         key == "wii_tilt" || key == "wii_touchpad";
 +}
 +
 +std::string GetLocked(const std::string& key, const std::string& game_id)
@@ -13860,10 +13952,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..78ad4e0
+index 0000000..06f6594
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5939 @@
+@@ -0,0 +1,5944 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -15511,7 +15603,8 @@ index 0000000..78ad4e0
 +    }
 +  }
 +  static const std::set<std::string> WII_ONLY = {
-+      "wii_extension", "wii_sideways", "wii_upright", "wii_tilt", "motion_controls", "wii_pointer",
++      "wii_extension", "wii_sideways", "wii_upright", "wii_tilt", "wii_touchpad", "motion_controls",
++      "wii_pointer",
 +      "wii_controller",
 +      "wii_input",
 +      "sd_card",       "sd_sync",      "sd_writes",       "sd_size"};
@@ -18683,6 +18776,10 @@ index 0000000..78ad4e0
 +      parts.push_back(value == "on" ? "sideways Wii Remote" : "Wii Remote pointed at the TV");
 +    else if (key == "wii_upright")
 +      parts.push_back(value == "on" ? "Wii Remote held like a wheel" : "Wii Remote held flat");
++    else if (key == "wii_touchpad")
++      parts.push_back(value == "pointer" ? "touchpad aims" :
++                      value == "swing"   ? "touchpad swipes swing" :
++                                           "touchpad off");
 +    else if (key == "wii_tilt")
 +      parts.push_back(value == "stick"  ? "tilt with the stick" :
 +                      value == "motion" ? "tilt with motion" :
@@ -20509,10 +20606,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..a102507
+index 0000000..faeac76
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1989 @@
+@@ -0,0 +1,1990 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -22447,6 +22544,7 @@ index 0000000..a102507
 +    }
 +    if (ps4_move_enabled)
 +      BootTrace(("PS Move: players with one on:" + (found.empty() ? std::string(" none") : found)).c_str());
++    PS4Controls::SetWiiTouchpad(GetPS4Option("wii_touchpad", "off"));
 +    PS4Controls::SetWiiMotion(GetPS4Option("wii_controller", "ds4"),
 +                              GetPS4Option("motion_controls", "on") == "on", moves,
 +                              GetPS4Option("wii_pointer", "motion") == "motion");
@@ -22581,10 +22679,10 @@ index 8f7f4ba..34feb8e 100644
  {
 diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
 new file mode 100644
-index 0000000..093406a
+index 0000000..09cfc12
 --- /dev/null
 +++ b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
-@@ -0,0 +1,667 @@
+@@ -0,0 +1,723 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -22593,6 +22691,7 @@ index 0000000..093406a
 +#include <algorithm>
 +#include <cmath>
 +#include <cstring>
++#include <chrono>
 +#include <map>
 +#include <unistd.h>
 +#include <fcntl.h>
@@ -22809,6 +22908,18 @@ index 0000000..093406a
 +    AddInput(new Motion("Gyro Roll Right", m_state.acell.z, -1.0));
 +    AddInput(new Motion("Gyro Yaw Left",   m_state.acell.y, 1.0));
 +    AddInput(new Motion("Gyro Yaw Right",  m_state.acell.y, -1.0));
++    // The touchpad (Settings -> Touchpad, Wii games): where the finger is (-1..1 from the
++    // middle, kept where it was lifted) aims the pointer; how fast it moves swings the Wii Remote.
++    // Clicking the pad stays the "Touchpad" button.
++    AddInput(new Motion("Touch X-",       m_touch_x, -1.0));
++    AddInput(new Motion("Touch X+",       m_touch_x, 1.0));
++    AddInput(new Motion("Touch Y-",       m_touch_y, -1.0));
++    AddInput(new Motion("Touch Y+",       m_touch_y, 1.0));
++    AddInput(new Motion("Swipe Left",     m_swipe_x, -1.0));
++    AddInput(new Motion("Swipe Right",    m_swipe_x, 1.0));
++    AddInput(new Motion("Swipe Up",       m_swipe_y, -1.0));
++    AddInput(new Motion("Swipe Down",     m_swipe_y, 1.0));
++    AddInput(new Motion("Touch",          m_touching, 1.0));
 +    // clang-format on
 +  }
 +
@@ -22817,6 +22928,44 @@ index 0000000..093406a
 +    // The pad itself stays open (s_handles); it is closed when its user signs out.
 +    OrbisPadVibeParam off = {0, 0};
 +    scePadSetVibration(m_handle, &off);
++  }
++
++  // The touchpad (1920 x 942 on the DualShock 4): position and swipe speed of the first finger.
++  void UpdateTouch(const OrbisPadTouchData& touch)
++  {
++    using Clock = std::chrono::steady_clock;
++    const Clock::time_point now = Clock::now();
++    if (touch.fingers > 0)
++    {
++      const float x = static_cast<float>(touch.touch[0].x);
++      const float y = static_cast<float>(touch.touch[0].y);
++      m_touch_x = std::clamp((x - 960.0f) / 960.0f, -1.0f, 1.0f);
++      m_touch_y = std::clamp((y - 471.0f) / 471.0f, -1.0f, 1.0f);
++      m_touching = 1.0f;
++      if (m_had_touch)
++      {
++        const float dt = std::chrono::duration<float>(now - m_touch_time).count();
++        if (dt > 0.0005f)
++        {
++          // A quick flick is ~2500 px/s: full swing speed.
++          const float vx = std::clamp((x - m_touch_last_x) / dt / 2500.0f, -1.0f, 1.0f);
++          const float vy = std::clamp((y - m_touch_last_y) / dt / 2500.0f, -1.0f, 1.0f);
++          m_swipe_x = 0.5f * m_swipe_x + 0.5f * vx;
++          m_swipe_y = 0.5f * m_swipe_y + 0.5f * vy;
++        }
++      }
++      m_touch_last_x = x;
++      m_touch_last_y = y;
++      m_touch_time = now;
++      m_had_touch = true;
++    }
++    else
++    {
++      m_touching = 0.0f;
++      m_had_touch = false;
++      m_swipe_x *= 0.5f;
++      m_swipe_y *= 0.5f;
++    }
 +  }
 +
 +  std::string GetName() const override { return "DualShock 4"; }
@@ -22835,6 +22984,7 @@ index 0000000..093406a
 +    {
 +      m_state = data;
 +      m_buttons = data.buttons;
++      UpdateTouch(data.touch);
 +      // Real motion sensors jitter even lying still; copies without them report fixed numbers
 +      // (0 0 -0.5, no rotation). Until a reading moves, the pad looks like one lying still
 +      // (gravity straight down, no rotation): the motion pointer then stays put and the right
@@ -22927,6 +23077,10 @@ index 0000000..093406a
 +  const int32_t m_user_id;
 +  const int32_t m_handle;
 +  OrbisPadData m_state{};
++  float m_touch_x = 0.0f, m_touch_y = 0.0f, m_swipe_x = 0.0f, m_swipe_y = 0.0f;
++  float m_touching = 0.0f, m_touch_last_x = 0.0f, m_touch_last_y = 0.0f;
++  bool m_had_touch = false;
++  std::chrono::steady_clock::time_point m_touch_time{};
 +  // Motion sensors seen moving (a pad without them reports fixed numbers), and the last readings.
 +  bool m_motion_real = false;
 +  float m_prev_motion[6]{};
