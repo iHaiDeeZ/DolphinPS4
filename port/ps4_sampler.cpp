@@ -126,6 +126,38 @@ void writeLine(int fd, const char* text) {
 
 void noteHotJit(uint64_t address, int count);
 
+// jitsamples-<ID>.log: every CPU-thread sample in JIT code at its exact address, per window
+// ("== <s> <samples>" then "<address> <count>"), nothing dropped. The game's JIT time is spread
+// over thousands of blocks; the samples log keeps only 128-byte buckets seen twice (Bully: a third
+// of its JIT samples). Their code goes to jitcode.bin with the next dump.
+int g_jit_fd = -1;
+
+void writeJitSamples(const uint64_t* samples, int n, double window_start) {
+    static uint64_t a[kMaxSamples];
+    const uintptr_t text = reinterpret_cast<uintptr_t>(__text_start);
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        if (samples[i] & (kCallerTag | kWaitTag))
+            continue;
+        if (samples[i] >= text && samples[i] < text + kTextWindow)
+            continue;
+        a[m++] = samples[i];
+    }
+    std::sort(a, a + m);
+    char line[64];
+    snprintf(line, sizeof(line), "== %.0f %d\n", window_start, n);
+    writeLine(g_jit_fd, line);
+    for (int i = 0; i < m;) {
+        int j = i;
+        while (j < m && a[j] == a[i])
+            j++;
+        snprintf(line, sizeof(line), "%llx %d\n", static_cast<unsigned long long>(a[i]), j - i);
+        writeLine(g_jit_fd, line);
+        noteHotJit(a[i], 1000);  // its 64 KiB chunk goes to jitcode.bin
+        i = j;
+    }
+}
+
 // Aggregates one thread's window: sorts the samples in place and prints the top entries.
 void report(int fd, ThreadSamples& t, double window_start) {
     // Copy first: the handler keeps writing into t.samples once count is reset.
@@ -136,6 +168,8 @@ void report(int fd, ThreadSamples& t, double window_start) {
     if (n == 0)
         return;
     const uintptr_t text = reinterpret_cast<uintptr_t>(__text_start);
+    if (g_jit_fd >= 0 && t.name && strcmp(t.name, "CPU thread") == 0)
+        writeJitSamples(s, n, window_start);
 
     // Eboot code: bucket by 16 bytes (addresses relative to .text). JIT code (tagged with bit 63):
     // by 128 bytes - a game's code is spread thin over thousands of small blocks, and 16-byte
@@ -208,7 +242,7 @@ void report(int fd, ThreadSamples& t, double window_start) {
 }
 
 // 64 KiB chunks of JIT code sampled since the last dump (dumpJitCode).
-constexpr int kMaxHotChunks = 96;
+constexpr int kMaxHotChunks = 192;
 uint64_t g_hot_chunks[kMaxHotChunks];
 int g_hot_chunk_count = 0;
 
@@ -372,6 +406,7 @@ void* samplerThread(void*) {
     if (fd < 0)
         return nullptr;
     writeModuleList(fd);
+    g_jit_fd = open(profilePath("jitsamples", "log").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
     const double start = now();
     double window_start = start, last_dump = start;
     const timespec period = {0, 1000000}, paused = {0, 100000000};
@@ -400,6 +435,8 @@ void* samplerThread(void*) {
                 g_sampler_dumping.store(false);
                 last_dump = window_start = now();
                 writeLine(fd, "(jitcode.bin and mem1.bin updated)\n");
+                if (g_jit_fd >= 0)
+                    writeLine(g_jit_fd, "== dump\n");  // jitcode.bin matches the windows before it
             }
         }
     }
