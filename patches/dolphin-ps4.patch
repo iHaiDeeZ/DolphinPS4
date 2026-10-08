@@ -22458,10 +22458,10 @@ index 8f7f4ba..34feb8e 100644
  {
 diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
 new file mode 100644
-index 0000000..99767ed
+index 0000000..093406a
 --- /dev/null
 +++ b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
-@@ -0,0 +1,647 @@
+@@ -0,0 +1,667 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -22471,6 +22471,8 @@ index 0000000..99767ed
 +#include <cmath>
 +#include <cstring>
 +#include <map>
++#include <unistd.h>
++#include <fcntl.h>
 +#include <string>
 +#include <vector>
 +
@@ -22971,8 +22973,26 @@ index 0000000..99767ed
 +  static int s_init = 1;
 +  if (s_init == 1)
 +  {
++    // sceMoveInit killed the app on some consoles (a firmware 12.02 report: CE-34878-0 at every
++    // Wii game start with Wii Remote Controller on Auto). A marker file is left while it runs: if
++    // the app dies inside it, the next start finds the marker and leaves PS Move alone for good.
++    static const char* const MARKER = "/data/DolphinPS4/ps-move-init-crashed";
++    if (access(MARKER, F_OK) == 0)
++    {
++      ps4_boot_trace("PS Move: off (sceMoveInit ended the app before; delete "
++                     "/data/DolphinPS4/ps-move-init-crashed to try again)");
++      s_init = -1;
++      return -1;
++    }
++    const int marker = open(MARKER, O_WRONLY | O_CREAT | O_TRUNC, 0666);
++    if (marker >= 0)
++    {
++      fsync(marker);
++      close(marker);
++    }
 +    ps4_boot_trace("PS Move: init");
 +    s_init = sceMoveInit();
++    unlink(MARKER);
 +    char line[64];
 +    snprintf(line, sizeof(line), "PS Move: init %#x", static_cast<unsigned>(s_init));
 +    ps4_boot_trace(line);
