@@ -98,7 +98,7 @@ You bring your own game backups. Nothing copyrighted is bundled: no games, BIOS 
 **You need:** a jailbroken PS4 that runs homebrew packages (developed on a launch-model "fat"
 PS4), an FTP connection to it, and backups of games you own.
 
-1. Grab **`DolphinPS4-v03.33.pkg`** from the [releases page](https://github.com/iHaiDeeZ/DolphinPS4/releases/latest)
+1. Grab the latest **`DolphinPS4-vXX.XX.pkg`** from the [releases page](https://github.com/iHaiDeeZ/DolphinPS4/releases/latest)
    and install it with your package installer.
 2. Put your games in **`/data/DolphinPS4/games/`**. Accepted formats are `.rvz`, `.iso`,
    `.nkit.iso`, `.gcm`, `.gcz`, `.ciso`, `.wia`, `.wbfs` and `.tgc` (discs), `.wad` (WiiWare,
@@ -326,6 +326,9 @@ resolution and how it ran.
 
 ## FAQ
 
+The full list is in **[FAQ.md](FAQ.md)**: Wii Menu downloads and DNS blockers, saves, PS Move, crashes
+and more. The most common questions:
+
 **Why does a game slow down in busy scenes?**
 The PS4's CPU is usually the bottleneck, not its GPU. Leave the emulated CPU clock on *Auto*. If
 the frame rate wanders between 45 and 55 and feels choppy, *Frame Rate Limit → Auto (60/30)*
@@ -369,7 +372,7 @@ game and version (**Settings → About**) you used, and attach `/data/DolphinPS4
 - Save states carry over to new versions unless a release says otherwise. A state an update can't load is
   marked "Other Version" in the menu and is never loaded halfway, but in-game saves are the safe place for progress.
   In-game saves are never affected.
-- Netplay, achievements and texture packs aren't supported on the PS4.
+- Netplay and texture packs aren't supported on the PS4. RetroAchievements is (*Settings → RetroAchievements*).
 - Only the original PS4 has been tested so far. PS4 Pro reports are welcome.
 
 ## Thanks
