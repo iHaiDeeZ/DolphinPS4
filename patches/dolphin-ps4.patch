@@ -2917,7 +2917,7 @@ index 0000000..78d77cf
 +void PatchGame(Core::System& system);
 +}  // namespace HLE_PS4Games
 diff --git a/Source/Core/Core/HW/DVD/DVDThread.cpp b/Source/Core/Core/HW/DVD/DVDThread.cpp
-index e7b40fa..e0954e9 100644
+index e7b40fa..022eacc 100644
 --- a/Source/Core/Core/HW/DVD/DVDThread.cpp
 +++ b/Source/Core/Core/HW/DVD/DVDThread.cpp
 @@ -3,6 +3,7 @@
@@ -2928,13 +2928,13 @@ index e7b40fa..e0954e9 100644
  #include <map>
  #include <memory>
  #include <optional>
-@@ -223,8 +224,43 @@ void DVDThread::GlobalFinishRead(Core::System& system, u64 id, s64 cycles_late)
+@@ -223,8 +224,44 @@ void DVDThread::GlobalFinishRead(Core::System& system, u64 id, s64 cycles_late)
    system.GetDVDThread().FinishRead(id, cycles_late);
  }
  
 +#ifdef __ORBIS__
 +extern "C" int ps4_dvd_async;  // ps4.ini dvd_async (DolphinNoGUI/MainNoGUI.cpp)
-+int ps4_dvd_async = 1;
++int ps4_dvd_async = 0;
 +extern "C" unsigned long long ps4_dvd_late_reads, ps4_dvd_late_ms;
 +unsigned long long ps4_dvd_late_reads = 0, ps4_dvd_late_ms = 0;
 +#endif
@@ -2942,7 +2942,8 @@ index e7b40fa..e0954e9 100644
  void DVDThread::FinishRead(u64 id, s64 cycles_late)
  {
 +#ifdef __ORBIS__
-+  // dvd_async (default on): a read the PS4's drive hasn't finished when the emulated drive is due
++  // dvd_async (default OFF - v50.56 broke Bully: invalid writes, then a hang; likely reads
++  // finishing out of order once one was delayed): a read the PS4's drive hasn't finished when the emulated drive is due
 +  // doesn't stop the emulated CPU - the emulated drive finishes 1 ms (emulated) later instead, as
 +  // a real drive can take longer. Waiting froze Bully for 30-350 ms at each new area (reads from
 +  // the hard drive's new spots), a fifth of each stutter.
@@ -2972,7 +2973,7 @@ index e7b40fa..e0954e9 100644
    // We can't simply pop result_queue and always get the ReadResult
    // we want, because the DVD thread may add ReadResults to the queue
    // in a different order than we want to get them. What we do instead
-@@ -293,13 +329,59 @@ void DVDThread::FinishRead(u64 id, s64 cycles_late)
+@@ -293,13 +330,59 @@ void DVDThread::FinishRead(u64 id, s64 cycles_late)
    dvd_interface.FinishExecutingCommand(request.reply_type, interrupt, cycles_late, buffer);
  }
  
@@ -6806,7 +6807,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..ff97c7c 100644
+index 3bf40ea..476ae63 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -6961,7 +6962,7 @@ index 3bf40ea..ff97c7c 100644
  #endif
        });
  
-@@ -270,7 +365,374 @@ int main(const int argc, char* argv[])
+@@ -270,7 +365,375 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -7155,8 +7156,9 @@ index 3bf40ea..ff97c7c 100644
 +    // disc_cache=on: .iso reads through a 16 MiB cache of 256 KiB pieces. Off by default: Bully's
 +    // slow reads were first touches of new areas, which it can't serve (85% hits, all fast reads).
 +    ps4_disc_cache = Platform::GetPS4Option("disc_cache", "off") == "on";
-+    // dvd_async=off: the emulated CPU waits for a disc read the PS4 hasn't finished (Dolphin's way).
-+    ps4_dvd_async = Platform::GetPS4Option("dvd_async", "on") != "off";
++    // dvd_async=on (experimental, off by default: it broke Bully in v50.56): a late disc read
++    // delays the emulated drive instead of stopping the emulated CPU.
++    ps4_dvd_async = Platform::GetPS4Option("dvd_async", "off") == "on";
 +    // shader_dump=on (Dolphin Lab): specialized shaders' source to /data/DolphinPS4/shader-dump.
 +    ps4_shader_dump = Platform::GetPS4Option("shader_dump", "off") == "on";
 +    // tev_ras_swizzle=float, vk_dynamic_vertex_loader=off (Dolphin Lab): colour tests (TMNT 2007).
@@ -7336,7 +7338,7 @@ index 3bf40ea..ff97c7c 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +746,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +747,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -7352,7 +7354,7 @@ index 3bf40ea..ff97c7c 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +774,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +775,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
