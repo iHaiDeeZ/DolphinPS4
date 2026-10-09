@@ -5320,7 +5320,7 @@ index 4667238..6d9edba 100644
    // and an unconditional branch, we will skip the rest process.
    // Because PPCAnalyst::Flatten() merged the blocks.
 diff --git a/Source/Core/Core/PowerPC/Jit64/Jit_FloatingPoint.cpp b/Source/Core/Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
-index 86f9e49..f197f0c 100644
+index 86f9e49..0ec1e48 100644
 --- a/Source/Core/Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
 +++ b/Source/Core/Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
 @@ -7,6 +7,7 @@
@@ -5331,7 +5331,29 @@ index 86f9e49..f197f0c 100644
  #include "Common/Assert.h"
  #include "Common/CPUDetect.h"
  #include "Common/CommonTypes.h"
-@@ -984,6 +985,11 @@ void Jit64::fmrx(UGeckoInstruction inst)
+@@ -47,10 +48,21 @@ void Jit64::SetFPRFIfNeeded(const OpArg& input, bool single)
+   SetFPRF(xmm, single);
+ }
+ 
++#ifdef __ORBIS__
++// ps4.ini jit_accurate_singles: on (both), off (neither), operands (only the multiply operands'
++// 25-bit rounding kept), results (only the results' rounding to single kept) - DolphinNoGUI.
++extern "C" int ps4_jit_round_results, ps4_jit_round_operands;
++int ps4_jit_round_results = 1, ps4_jit_round_operands = 1;
++#endif
++
+ void Jit64::FinalizeSingleResult(X64Reg output, const OpArg& input, bool packed, bool duplicate)
+ {
+   // Most games don't need these. Zelda requires it though - some platforms get stuck without them.
++#ifdef __ORBIS__
++  if (ps4_jit_round_results)
++#else
+   if (jo.accurateSinglePrecision)
++#endif
+   {
+     if (packed)
+     {
+@@ -984,6 +996,11 @@ void Jit64::fmrx(UGeckoInstruction inst)
    }
  }
  
@@ -5343,7 +5365,7 @@ index 86f9e49..f197f0c 100644
  void Jit64::FloatCompare(UGeckoInstruction inst, bool upper)
  {
    bool fprf = m_fprf && js.op->wantsFPRF;
-@@ -1008,6 +1014,18 @@ void Jit64::FloatCompare(UGeckoInstruction inst, bool upper)
+@@ -1008,6 +1025,18 @@ void Jit64::FloatCompare(UGeckoInstruction inst, bool upper)
      output[3 - (next.CRBB & 3)] |= 1 << dst;
    }
  
@@ -5362,7 +5384,7 @@ index 86f9e49..f197f0c 100644
    RCOpArg Ra = upper ? fpr.Bind(a, RCMode::Read) : fpr.Use(a, RCMode::Read);
    RCX64Reg Rb = fpr.Bind(b, RCMode::Read);
    RegCache::Realize(Ra, Rb);
-@@ -1084,6 +1102,31 @@ void Jit64::FloatCompare(UGeckoInstruction inst, bool upper)
+@@ -1084,6 +1113,31 @@ void Jit64::FloatCompare(UGeckoInstruction inst, bool upper)
    }
  
    MOV(64, PPCSTATE_CR(crf), R(RSCRATCH));
@@ -5394,7 +5416,7 @@ index 86f9e49..f197f0c 100644
  }
  
  void Jit64::fcmpX(UGeckoInstruction inst)
-@@ -1155,6 +1198,50 @@ void Jit64::frspx(UGeckoInstruction inst)
+@@ -1155,6 +1209,50 @@ void Jit64::frspx(UGeckoInstruction inst)
    FinalizeSingleResult(Rd, Rb, packed, true);
  }
  
@@ -5445,7 +5467,7 @@ index 86f9e49..f197f0c 100644
  void Jit64::frsqrtex(UGeckoInstruction inst)
  {
    INSTRUCTION_START
-@@ -1170,7 +1257,11 @@ void Jit64::frsqrtex(UGeckoInstruction inst)
+@@ -1170,7 +1268,11 @@ void Jit64::frsqrtex(UGeckoInstruction inst)
    RegCache::Realize(scratch_guard, Rb, Rd);
  
    MOVAPD(XMM0, Rb);
@@ -5824,7 +5846,7 @@ index 34c327d..2003140 100644
    {
      Gen::XEmitter emit(location, location + 5);
 diff --git a/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.cpp b/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
-index 1019aa7..6a1b53e 100644
+index 1019aa7..e488cad 100644
 --- a/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 +++ b/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 @@ -3,6 +3,7 @@
@@ -6118,6 +6140,24 @@ index 1019aa7..6a1b53e 100644
      MOV(64, R(RSCRATCH2), PPCSTATE(gather_pipe_ptr));
      SwapAndStore(accessSize, MatR(RSCRATCH2), arg_reg);
      ADD(64, R(RSCRATCH2), Imm8(accessSize >> 3));
+@@ -857,9 +1085,17 @@ alignas(16) static const u64 psRoundBit[2] = {0x8000000, 0x8000000};
+ // a single precision multiply. To be precise, it drops the low 28 bits of the mantissa,
+ // rounding to nearest as it does.
+ // It needs a temp, so let the caller pass that in.
++#ifdef __ORBIS__
++extern "C" int ps4_jit_round_operands;  // Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
++#endif
++
+ void EmuCodeBlock::Force25BitPrecision(X64Reg output, const OpArg& input, X64Reg tmp)
+ {
++#ifdef __ORBIS__
++  if (ps4_jit_round_operands)
++#else
+   if (m_jit.jo.accurateSinglePrecision)
++#endif
+   {
+     DEBUG_ASSERT(output != tmp);
+     // mantissa = (mantissa & ~0xFFFFFFF) + ((mantissa & (1ULL << 27)) << 1);
 diff --git a/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.h b/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.h
 index b53b5da..ad5542c 100644
 --- a/Source/Core/Core/PowerPC/Jit64Common/EmuCodeBlock.h
@@ -7726,7 +7766,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..6bcada5 100644
+index 3bf40ea..6b912db 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -7777,7 +7817,7 @@ index 3bf40ea..6bcada5 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,64 @@
+@@ -31,6 +53,65 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -7803,6 +7843,7 @@ index 3bf40ea..6bcada5 100644
 +extern "C" int ps4_jit_unroll;           // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_gp_dynamic;       // Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 +extern "C" int ps4_jit_accurate_singles;  // Core/PowerPC/Jit64/Jit.cpp
++extern "C" int ps4_jit_round_results, ps4_jit_round_operands;  // Jit64/Jit_FloatingPoint.cpp
 +extern "C" int ps4_jit_follow;            // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_fcmp_merge;        // Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
 +extern "C" int ps4_disc_cache;            // DiscIO/FileBlob.cpp
@@ -7842,7 +7883,7 @@ index 3bf40ea..6bcada5 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +253,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +254,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -7853,7 +7894,7 @@ index 3bf40ea..6bcada5 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +268,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +269,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -7872,7 +7913,7 @@ index 3bf40ea..6bcada5 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +300,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +301,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -7883,7 +7924,7 @@ index 3bf40ea..6bcada5 100644
  #endif
        });
  
-@@ -270,7 +367,402 @@ int main(const int argc, char* argv[])
+@@ -270,7 +368,410 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -8074,6 +8115,14 @@ index 3bf40ea..6bcada5 100644
 +    ps4_jit_gp_dynamic = Platform::GetPS4Option("jit_gp_dynamic", "on") == "on";
 +    // jit_accurate_singles=off (per game): no rounding to single precision after float ops.
 +    ps4_jit_accurate_singles = Platform::GetPS4Option("jit_accurate_singles", "on") != "off";
++    // jit_accurate_singles=operands / results: only that half of the rounding kept (on: both,
++    // off: neither). Skipping both blanked the menus in Mario Kart Wii and NFS Most Wanted.
++    {
++      const std::string rounding = Platform::GetPS4Option("jit_accurate_singles", "on");
++      ps4_jit_round_results = rounding == "on" || rounding == "results";
++      ps4_jit_round_operands = rounding == "on" || rounding == "operands";
++      ps4_jit_accurate_singles = ps4_jit_round_results && ps4_jit_round_operands;
++    }
 +    // jit_follow=N (1..16, default 2): branches/calls/returns a JIT block may follow.
 +    ps4_jit_follow = std::clamp(std::atoi(Platform::GetPS4Option("jit_follow", "2").c_str()), 1, 16);
 +    // jit_fcmp_merge=off: fcmp and the bc after it compiled separately (the bc reloads the CR).
@@ -8286,7 +8335,7 @@ index 3bf40ea..6bcada5 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +776,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +785,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -8302,7 +8351,7 @@ index 3bf40ea..6bcada5 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +804,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +813,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
