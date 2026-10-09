@@ -13384,10 +13384,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..22cb324
+index 0000000..f1d7e7d
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,967 @@
+@@ -0,0 +1,971 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -13501,6 +13501,10 @@ index 0000000..22cb324
 +    {"dual_core", "Dual Core", "Performance",
 +     {{"on", "On"}, {"force", "Forced"}, {"off", "Off"}}, "on", false,
 +     "Emulates the GPU on its own thread."},
++    {"sync_gpu", "Synchronize GPU Thread", "Performance", {{"off", "Off"}, {"on", "On"}}, "off",
++     false,
++     "On keeps the GPU thread in step with the CPU: a little slower, but fixes games whose "
++     "graphics freeze on loading (\"GFX FIFO: Unknown Opcode\", e.g. Call of Duty: MW3)."},
 +    {"vk_thread", "Vulkan Thread", "Performance", {{"on", "On"}, {"off", "Off"}}, "on", false,
 +     "Records graphics commands on a separate core."},
 +    {"fast_disc", "Fast Disc Speed", "Performance", {{"on", "On"}, {"off", "Off"}}, "on", false,
@@ -14957,10 +14961,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..06f6594
+index 0000000..abc055a
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5944 @@
+@@ -0,0 +1,5946 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -19767,6 +19771,8 @@ index 0000000..06f6594
 +      parts.push_back("CPU clock " + value + "%");
 +    else if (key == "dual_core")
 +      parts.push_back("dual core");
++    else if (key == "sync_gpu")
++      parts.push_back(value == "on" ? "GPU thread synchronized" : "GPU thread not synchronized");
 +    else if (key == "perfmon")
 +      parts.push_back("performance counters " + value);
 +    else if (key == "zoom")
