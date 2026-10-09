@@ -2917,7 +2917,7 @@ index 0000000..78d77cf
 +void PatchGame(Core::System& system);
 +}  // namespace HLE_PS4Games
 diff --git a/Source/Core/Core/HW/DVD/DVDThread.cpp b/Source/Core/Core/HW/DVD/DVDThread.cpp
-index e7b40fa..5897a75 100644
+index e7b40fa..e0954e9 100644
 --- a/Source/Core/Core/HW/DVD/DVDThread.cpp
 +++ b/Source/Core/Core/HW/DVD/DVDThread.cpp
 @@ -3,6 +3,7 @@
@@ -2928,7 +2928,51 @@ index e7b40fa..5897a75 100644
  #include <map>
  #include <memory>
  #include <optional>
-@@ -293,13 +294,56 @@ void DVDThread::FinishRead(u64 id, s64 cycles_late)
+@@ -223,8 +224,43 @@ void DVDThread::GlobalFinishRead(Core::System& system, u64 id, s64 cycles_late)
+   system.GetDVDThread().FinishRead(id, cycles_late);
+ }
+ 
++#ifdef __ORBIS__
++extern "C" int ps4_dvd_async;  // ps4.ini dvd_async (DolphinNoGUI/MainNoGUI.cpp)
++int ps4_dvd_async = 1;
++extern "C" unsigned long long ps4_dvd_late_reads, ps4_dvd_late_ms;
++unsigned long long ps4_dvd_late_reads = 0, ps4_dvd_late_ms = 0;
++#endif
++
+ void DVDThread::FinishRead(u64 id, s64 cycles_late)
+ {
++#ifdef __ORBIS__
++  // dvd_async (default on): a read the PS4's drive hasn't finished when the emulated drive is due
++  // doesn't stop the emulated CPU - the emulated drive finishes 1 ms (emulated) later instead, as
++  // a real drive can take longer. Waiting froze Bully for 30-350 ms at each new area (reads from
++  // the hard drive's new spots), a fifth of each stutter.
++  if (ps4_dvd_async && m_result_map.find(id) == m_result_map.end())
++  {
++    ReadResult ready;
++    while (m_result_map.find(id) == m_result_map.end() && m_result_queue.Pop(ready))
++    {
++      const u64 ready_id = ready.first.id;
++      m_result_map.emplace(ready_id, std::move(ready));
++    }
++    if (m_result_map.find(id) == m_result_map.end())
++    {
++      static u64 late_id = ~0ull;
++      if (late_id != id)
++      {
++        late_id = id;
++        ps4_dvd_late_reads++;
++      }
++      ps4_dvd_late_ms++;
++      m_system.GetCoreTiming().ScheduleEvent(
++          m_system.GetSystemTimers().GetTicksPerSecond() / 1000, m_finish_read, id);
++      return;
++    }
++  }
++#endif
+   // We can't simply pop result_queue and always get the ReadResult
+   // we want, because the DVD thread may add ReadResults to the queue
+   // in a different order than we want to get them. What we do instead
+@@ -293,13 +329,59 @@ void DVDThread::FinishRead(u64 id, s64 cycles_late)
    dvd_interface.FinishExecutingCommand(request.reply_type, interrupt, cycles_late, buffer);
  }
  
@@ -2936,6 +2980,7 @@ index e7b40fa..5897a75 100644
 +extern "C" void ps4_sampler_register_thread(const char* name);  // port/ps4_sampler.cpp
 +extern "C" void ps4_boot_trace(const char* stage);
 +extern "C" unsigned long long ps4_disc_cache_hits, ps4_disc_cache_misses;  // DiscIO/FileBlob.cpp
++extern "C" unsigned long long ps4_dvd_late_reads, ps4_dvd_late_ms;  // FinishRead below
 +#endif
 +
  void DVDThread::ProcessReadRequest(ReadRequest&& request)
@@ -2966,9 +3011,11 @@ index e7b40fa..5897a75 100644
 +    if (reads % 500 == 0)
 +    {
 +      char stats[160];
-+      snprintf(stats, sizeof(stats), "dvd: %llu reads, average %.1f ms (disc cache: %llu hits, %llu misses)",
++      snprintf(stats, sizeof(stats),
++               "dvd: %llu reads, average %.1f ms (disc cache: %llu hits, %llu misses; late: %llu "
++               "reads, %llu ms emulated)",
 +               static_cast<unsigned long long>(reads), read_us / 1000.0 / reads,
-+               ps4_disc_cache_hits, ps4_disc_cache_misses);
++               ps4_disc_cache_hits, ps4_disc_cache_misses, ps4_dvd_late_reads, ps4_dvd_late_ms);
 +      ps4_boot_trace(stats);
 +    }
 +    if (took_us > 30000)
@@ -6603,7 +6650,7 @@ index cd35ea1..aecce41 100644
 +#endif
  }  // namespace State
 diff --git a/Source/Core/DiscIO/FileBlob.cpp b/Source/Core/DiscIO/FileBlob.cpp
-index 3a30e2a..f22c973 100644
+index 3a30e2a..2dd7c74 100644
 --- a/Source/Core/DiscIO/FileBlob.cpp
 +++ b/Source/Core/DiscIO/FileBlob.cpp
 @@ -33,8 +33,71 @@ std::unique_ptr<BlobReader> PlainFileReader::CopyReader() const
@@ -6612,7 +6659,7 @@ index 3a30e2a..f22c973 100644
  
 +#ifdef __ORBIS__
 +extern "C" int ps4_disc_cache;  // ps4.ini disc_cache (DolphinNoGUI/MainNoGUI.cpp)
-+int ps4_disc_cache = 1;
++int ps4_disc_cache = 0;
 +extern "C" unsigned long long ps4_disc_cache_hits, ps4_disc_cache_misses;
 +unsigned long long ps4_disc_cache_hits = 0, ps4_disc_cache_misses = 0;
 +
@@ -6759,7 +6806,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..bb7f28c 100644
+index 3bf40ea..ff97c7c 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -6810,7 +6857,7 @@ index 3bf40ea..bb7f28c 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,61 @@
+@@ -31,6 +53,62 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -6839,6 +6886,7 @@ index 3bf40ea..bb7f28c 100644
 +extern "C" int ps4_jit_follow;            // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_fcmp_merge;        // Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
 +extern "C" int ps4_disc_cache;            // DiscIO/FileBlob.cpp
++extern "C" int ps4_dvd_async;             // Core/HW/DVD/DVDThread.cpp
 +extern "C" int ps4_sync_idle_frame;      // Core/CoreTiming.cpp
 +extern "C" int ps4_shader_dump;          // VideoCommon/ShaderCache.cpp
 +extern "C" int ps4_tev_ras_float;        // VideoCommon/PixelShaderGen.cpp
@@ -6872,7 +6920,7 @@ index 3bf40ea..bb7f28c 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +250,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +251,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -6883,7 +6931,7 @@ index 3bf40ea..bb7f28c 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +265,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +266,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -6902,7 +6950,7 @@ index 3bf40ea..bb7f28c 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +297,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +298,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -6913,7 +6961,7 @@ index 3bf40ea..bb7f28c 100644
  #endif
        });
  
-@@ -270,7 +364,371 @@ int main(const int argc, char* argv[])
+@@ -270,7 +365,374 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -7104,8 +7152,11 @@ index 3bf40ea..bb7f28c 100644
 +    ps4_jit_follow = std::clamp(std::atoi(Platform::GetPS4Option("jit_follow", "2").c_str()), 1, 16);
 +    // jit_fcmp_merge=off: fcmp and the bc after it compiled separately (the bc reloads the CR).
 +    ps4_jit_fcmp_merge = Platform::GetPS4Option("jit_fcmp_merge", "on") != "off";
-+    // disc_cache=off: .iso reads go straight to the drive (no 16 MiB cache of 256 KiB pieces).
-+    ps4_disc_cache = Platform::GetPS4Option("disc_cache", "on") != "off";
++    // disc_cache=on: .iso reads through a 16 MiB cache of 256 KiB pieces. Off by default: Bully's
++    // slow reads were first touches of new areas, which it can't serve (85% hits, all fast reads).
++    ps4_disc_cache = Platform::GetPS4Option("disc_cache", "off") == "on";
++    // dvd_async=off: the emulated CPU waits for a disc read the PS4 hasn't finished (Dolphin's way).
++    ps4_dvd_async = Platform::GetPS4Option("dvd_async", "on") != "off";
 +    // shader_dump=on (Dolphin Lab): specialized shaders' source to /data/DolphinPS4/shader-dump.
 +    ps4_shader_dump = Platform::GetPS4Option("shader_dump", "off") == "on";
 +    // tev_ras_swizzle=float, vk_dynamic_vertex_loader=off (Dolphin Lab): colour tests (TMNT 2007).
@@ -7285,7 +7336,7 @@ index 3bf40ea..bb7f28c 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +742,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +746,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -7301,7 +7352,7 @@ index 3bf40ea..bb7f28c 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +770,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +774,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
