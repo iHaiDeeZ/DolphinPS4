@@ -3608,6 +3608,71 @@ index ed320f5..e6f93a5 100644
  }
  
  NetKDRequestDevice::~NetKDRequestDevice()
+diff --git a/Source/Core/Core/IOS/Network/Socket.cpp b/Source/Core/Core/IOS/Network/Socket.cpp
+index feb2579..a50db73 100644
+--- a/Source/Core/Core/IOS/Network/Socket.cpp
++++ b/Source/Core/Core/IOS/Network/Socket.cpp
+@@ -37,6 +37,10 @@
+ #define closesocket close
+ #endif
+ 
++#ifdef __ORBIS__
++extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
++#endif
++
+ namespace IOS::HLE
+ {
+ // The following functions can return
+@@ -304,9 +308,49 @@ void WiiSocket::Update(bool read, bool write, bool except)
+         memory.CopyFromEmu(&addr, ioctl.buffer_in + 8, sizeof(WiiSockAddrIn));
+         sockaddr_in local_name = WiiSockMan::ToNativeAddrIn(addr);
+ 
++#ifdef __ORBIS__
++        // PS4: a game polling a non-blocking connect (Mario Kart Wii's GPCM login on Retro WFC)
++        // never saw it complete - connect() again on the PS4 didn't report EISCONN. While a
++        // connect is in progress the socket's own state answers instead (select, SO_ERROR,
++        // getpeername): connected -> EISCONN, still connecting -> EALREADY, failed -> try again.
++        if (connecting_state == ConnectingState::Connecting)
++        {
++          const ConnectingState state = GetConnectingState();
++          if (state != ConnectingState::Error)
++          {
++            ReturnValue = state == ConnectingState::Connected ? -SO_EISCONN : -SO_EALREADY;
++            if (state == ConnectingState::Connected)
++            {
++              connecting_state = ConnectingState::Connected;
++              char line[160];
++              snprintf(line, sizeof(line), "net: connect %s:%u completed (socket %d)",
++                       inet_ntoa(local_name.sin_addr), Common::swap16(local_name.sin_port),
++                       wii_fd);
++              ps4_boot_trace(line);
++            }
++            INFO_LOG_FMT(IOS_NET, "IOCTL_SO_CONNECT ({:08x}, {}:{}) = {} (in progress)", wii_fd,
++                         inet_ntoa(local_name.sin_addr), Common::swap16(local_name.sin_port),
++                         ReturnValue);
++            break;
++          }
++        }
++#endif
+         const int ret = connect(fd, (sockaddr*)&local_name, sizeof(local_name));
++#ifdef __ORBIS__
++        const int connect_errno = ret < 0 ? errno : 0;
++#endif
+         ReturnValue = m_socket_manager.GetNetErrorCode(ret, "SO_CONNECT", false);
+         UpdateConnectingState(ReturnValue);
++#ifdef __ORBIS__
++        {
++          // Every connect result in the boot trace (the log limiter hides repeats in dolphin.log).
++          char line[192];
++          snprintf(line, sizeof(line), "net: connect %s:%u = %d, errno %d -> %d (socket %d%s)",
++                   inet_ntoa(local_name.sin_addr), Common::swap16(local_name.sin_port), ret,
++                   connect_errno, ReturnValue, wii_fd, nonBlock ? ", non-blocking" : "");
++          ps4_boot_trace(line);
++        }
++#endif
+ 
+         INFO_LOG_FMT(IOS_NET, "IOCTL_SO_CONNECT ({:08x}, {}:{}) = {}", wii_fd,
+                      inet_ntoa(local_name.sin_addr), Common::swap16(local_name.sin_port), ret);
 diff --git a/Source/Core/Core/IOS/STM/STM.cpp b/Source/Core/Core/IOS/STM/STM.cpp
 index e262fc4..ab8cf7c 100644
 --- a/Source/Core/Core/IOS/STM/STM.cpp
