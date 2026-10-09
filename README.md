@@ -224,11 +224,13 @@ Everything the app creates sits in **`/data/DolphinPS4/`**:
 | Status | Game | System | FPS |
 |---|---|---|---|
 | ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | Call of Duty 2: Big Red One | GameCube | 15–20 (its normal rate is 30) |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Chicken Little | GameCube | 30 (its normal rate); video cutscenes need its recommended settings |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Crash Bandicoot: The Wrath of Cortex | GameCube | 20–60 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Crash Nitro Kart | GameCube | 60 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Crash Tag Team Racing | GameCube | 60 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | FIFA Street 2 | GameCube | ~34 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | The Legend of Zelda: Twilight Princess | GameCube | 30 (its normal rate) |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Metroid Prime | GameCube | ~48 with its recommended settings (its normal rate is 60) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Mortal Kombat: Deadly Alliance | GameCube | 60 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Resident Evil 4 | GameCube | 30 (its normal rate) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Shadow the Hedgehog | GameCube | 30–60 |
@@ -239,13 +241,16 @@ Everything the app creates sits in **`/data/DolphinPS4/`**:
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Teenage Mutant Ninja Turtles (2003) | GameCube | 50–60 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | TMNT (2007, Europe) | GameCube | 25 (the PAL version's normal rate); thin lines in some cutscenes |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Worms 3D | GameCube | ~55 |
-| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Bully: Scholarship Edition | Wii | 15–30 (its normal rate is 30) |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Bully: Scholarship Edition | Wii | 18–30 with its recommended settings (its normal rate is 30); busy streets ~20 |
+| ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | Call of Duty: Modern Warfare 3 | Wii | 12–25 with its recommended settings (its normal rate is 30); freezes ~45 s into the first level without them |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Crash of the Titans | Wii | 25–30 with its recommended settings (its normal rate is 30) |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Mario Kart Wii | Wii | 45–50 in races with its recommended settings (its normal rate is 60) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Super Mario Galaxy | Wii | 40–57 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Wii Sports | Wii | ~40 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Wii Sports Resort | Wii | ~37 |
 
-A range means the frame rate depends on what's on screen.
+A range means the frame rate depends on what's on screen. *Recommended settings* come from the
+[Game settings center](#game-settings-center) and are applied when you say *Yes* at the game's first start.
 
 **Reported by testers** on the [Discord](https://discord.gg/QwtU8ZaCth):
 
