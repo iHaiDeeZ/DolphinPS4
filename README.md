@@ -236,6 +236,7 @@ Everything the app creates sits in **`/data/DolphinPS4/`**:
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Resident Evil 4 | GameCube | 30 (its normal rate) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Shadow the Hedgehog | GameCube | 30–60 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Sonic Adventure DX | GameCube | 60 |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Sonic Gems Collection | GameCube | 60, smooth (menus and the games tried so far) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Spider-Man 2 | GameCube | 15–29 (its normal rate is 30) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Super Mario Sunshine | GameCube | 30 (its normal rate) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Super Smash Bros. Melee | GameCube | 36–60 |
