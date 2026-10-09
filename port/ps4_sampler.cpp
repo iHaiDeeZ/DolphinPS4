@@ -83,6 +83,7 @@ void profHandler(int, siginfo_t*, void* context) {
         const int n = t.count.load(std::memory_order_relaxed);
         {
             uint64_t sample = regs[kRipIndex];
+            uint64_t ring_sample = sample;  // the hitch ring: a wait keeps two callers
             // Inside a system module: keep the exact address (tagged). The module list at the
             // top of samples.log maps it to a module offset, which the decrypted modules' symbol
             // tables name. (Blaming "the first eboot address on the stack" picked up stale
@@ -95,24 +96,31 @@ void profHandler(int, siginfo_t*, void* context) {
                 const uint64_t sp = regs[kRspIndex];
                 const uint64_t top = t.stack_top;
                 uint64_t fp = regs[kRbpIndex];
-                uint64_t caller = 0;
+                uint64_t caller = 0, caller2 = 0;
                 for (int depth = 0; depth < 16 && top; depth++) {
                     if (fp < sp || fp + 16 > top || (fp & 7))
                         break;
                     const uint64_t* frame = reinterpret_cast<const uint64_t*>(fp);
                     const uint64_t ret = frame[1];
                     if (ret >= text && ret < text + kTextWindow) {
-                        caller = ret - text;
-                        break;
+                        // The first is often a C++ library function (sleep_for, an atomic wait);
+                        // the one after it is the Dolphin code that called it (hitch log only).
+                        if (!caller) {
+                            caller = ret - text;
+                        } else {
+                            caller2 = ret - text;
+                            break;
+                        }
                     }
                     if (frame[0] <= fp)
                         break;
                     fp = frame[0];
                 }
                 sample = caller ? (caller | kWaitTag) : (sample | kCallerTag);
+                ring_sample = caller ? (caller | (caller2 << 26) | kWaitTag) : sample;
             }
             const uint32_t pos = t.ring_pos.load(std::memory_order_relaxed);
-            t.ring[pos % kRing] = sample;
+            t.ring[pos % kRing] = ring_sample;
             t.ring_pos.store(pos + 1, std::memory_order_release);
             if (n < kMaxSamples) {
                 t.samples[n] = sample;
@@ -417,6 +425,7 @@ void* samplerThread(void*) {
         return nullptr;
     writeModuleList(fd);
     g_jit_fd = open(profilePath("jitsamples", "log").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    close(open(profilePath("hitches", "log").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666));  // this run only
     const double start = now();
     double window_start = start, last_dump = start;
     const timespec period = {0, 1000000}, paused = {0, 100000000};
@@ -757,7 +766,7 @@ extern "C" void ps4_sampler_note_hitch(const char* what, double gap_ms) {
         for (uint32_t j = 0; j < k; j++) {
             uint64_t v = t.ring[(pos - k + j) % kRing];
             if (v & kWaitTag)
-                v = (v & ~kWaitTag & ~0xFULL) | kWaitTag;
+                ;  // exact: kWaitTag | (caller2 << 26) | caller
             else if (v & kCallerTag)
                 v = (v & ~0xFULL);  // keeps kCallerTag
             else if (v >= text && v < text + kTextWindow)
@@ -779,7 +788,7 @@ extern "C" void ps4_sampler_note_hitch(const char* what, double gap_ms) {
                   [](const Entry& a, const Entry& b) { return a.count > b.count; });
         snprintf(line, sizeof(line), "  %s: %u samples\n", t.name ? t.name : "?", k);
         writeLine(fd, line);
-        for (int j = 0; j < unique && j < 12; j++) {
+        for (int j = 0; j < unique && j < 24; j++) {
             const uint64_t key = entries[j].key;
             const double pct = 100.0 * entries[j].count / k;
             if (key >> 63)
@@ -788,8 +797,9 @@ extern "C" void ps4_sampler_note_hitch(const char* what, double gap_ms) {
                 snprintf(line, sizeof(line), "  %5.1f%% sys 0x%llx\n", pct,
                          static_cast<unsigned long long>(key & ~kCallerTag));
             else if (key & kWaitTag)
-                snprintf(line, sizeof(line), "  %5.1f%% syscall from elf 0x%llx\n", pct,
-                         static_cast<unsigned long long>(key & ~kWaitTag));
+                snprintf(line, sizeof(line), "  %5.1f%% syscall from elf 0x%llx <- 0x%llx\n", pct,
+                         static_cast<unsigned long long>(key & 0x3FFFFFFULL),
+                         static_cast<unsigned long long>((key >> 26) & 0x3FFFFFFULL));
             else
                 snprintf(line, sizeof(line), "  %5.1f%% elf 0x%llx\n", pct,
                          static_cast<unsigned long long>(key));

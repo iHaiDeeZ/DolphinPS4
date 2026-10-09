@@ -2917,7 +2917,7 @@ index 0000000..78d77cf
 +void PatchGame(Core::System& system);
 +}  // namespace HLE_PS4Games
 diff --git a/Source/Core/Core/HW/DVD/DVDThread.cpp b/Source/Core/Core/HW/DVD/DVDThread.cpp
-index e7b40fa..fadd490 100644
+index e7b40fa..5897a75 100644
 --- a/Source/Core/Core/HW/DVD/DVDThread.cpp
 +++ b/Source/Core/Core/HW/DVD/DVDThread.cpp
 @@ -3,6 +3,7 @@
@@ -2928,13 +2928,14 @@ index e7b40fa..fadd490 100644
  #include <map>
  #include <memory>
  #include <optional>
-@@ -293,13 +294,43 @@ void DVDThread::FinishRead(u64 id, s64 cycles_late)
+@@ -293,13 +294,56 @@ void DVDThread::FinishRead(u64 id, s64 cycles_late)
    dvd_interface.FinishExecutingCommand(request.reply_type, interrupt, cycles_late, buffer);
  }
  
 +#ifdef __ORBIS__
 +extern "C" void ps4_sampler_register_thread(const char* name);  // port/ps4_sampler.cpp
 +extern "C" void ps4_boot_trace(const char* stage);
++extern "C" unsigned long long ps4_disc_cache_hits, ps4_disc_cache_misses;  // DiscIO/FileBlob.cpp
 +#endif
 +
  void DVDThread::ProcessReadRequest(ReadRequest&& request)
@@ -2959,12 +2960,24 @@ index e7b40fa..fadd490 100644
 +  {
 +    // A slow read is a likely stutter: the game waits for it.
 +    const u64 took_us = Common::Timer::NowUs() - read_start_us;
++    static u64 reads = 0, read_us = 0;
++    reads++;
++    read_us += took_us;
++    if (reads % 500 == 0)
++    {
++      char stats[160];
++      snprintf(stats, sizeof(stats), "dvd: %llu reads, average %.1f ms (disc cache: %llu hits, %llu misses)",
++               static_cast<unsigned long long>(reads), read_us / 1000.0 / reads,
++               ps4_disc_cache_hits, ps4_disc_cache_misses);
++      ps4_boot_trace(stats);
++    }
 +    if (took_us > 30000)
 +    {
-+      char line[160];
-+      snprintf(line, sizeof(line), "dvd: read %u KiB at 0x%llx took %llu ms", request.length / 1024,
-+               static_cast<unsigned long long>(request.dvd_offset),
-+               static_cast<unsigned long long>(took_us / 1000));
++      char line[200];
++      snprintf(line, sizeof(line), "dvd: read %u KiB at 0x%llx took %llu ms (disc cache: %llu hits, %llu misses)",
++               request.length / 1024, static_cast<unsigned long long>(request.dvd_offset),
++               static_cast<unsigned long long>(took_us / 1000), ps4_disc_cache_hits,
++               ps4_disc_cache_misses);
 +      ps4_boot_trace(line);
 +    }
 +  }
@@ -6589,6 +6602,119 @@ index cd35ea1..aecce41 100644
 +void PS4SetLoadResultCallback(PS4LoadResultFunc callback);
 +#endif
  }  // namespace State
+diff --git a/Source/Core/DiscIO/FileBlob.cpp b/Source/Core/DiscIO/FileBlob.cpp
+index 3a30e2a..f22c973 100644
+--- a/Source/Core/DiscIO/FileBlob.cpp
++++ b/Source/Core/DiscIO/FileBlob.cpp
+@@ -33,8 +33,71 @@ std::unique_ptr<BlobReader> PlainFileReader::CopyReader() const
+   return Create(m_file);
+ }
+ 
++#ifdef __ORBIS__
++extern "C" int ps4_disc_cache;  // ps4.ini disc_cache (DolphinNoGUI/MainNoGUI.cpp)
++int ps4_disc_cache = 1;
++extern "C" unsigned long long ps4_disc_cache_hits, ps4_disc_cache_misses;
++unsigned long long ps4_disc_cache_hits = 0, ps4_disc_cache_misses = 0;
++
++bool PlainFileReader::CachedRead(u64 offset, u64 nbytes, u8* out_ptr)
++{
++  constexpr u64 PIECE = 256 * 1024;
++  constexpr size_t PIECES = 64;
++  std::lock_guard lock(m_cache_mutex);
++  if (m_cache.empty())
++    m_cache.resize(PIECES);
++  while (nbytes > 0)
++  {
++    const u64 start = offset & ~(PIECE - 1);
++    CachePiece* piece = nullptr;
++    for (CachePiece& p : m_cache)
++    {
++      if (p.start == start)
++      {
++        piece = &p;
++        break;
++      }
++    }
++    if (piece)
++    {
++      ps4_disc_cache_hits++;
++    }
++    else
++    {
++      ps4_disc_cache_misses++;
++      piece = &*std::min_element(m_cache.begin(), m_cache.end(),
++                                 [](const CachePiece& a, const CachePiece& b) {
++                                   return a.last_use < b.last_use;
++                                 });
++      const u64 size = std::min(PIECE, m_size - start);
++      piece->data.resize(size);
++      piece->start = ~0ull;
++      if (!m_file.OffsetRead(start, piece->data.data(), size))
++        return false;
++      piece->start = start;
++    }
++    piece->last_use = ++m_cache_clock;
++    const u64 in_piece = offset - start;
++    if (in_piece >= piece->data.size())
++      return false;  // past the end of the file
++    const u64 take = std::min(nbytes, piece->data.size() - in_piece);
++    std::copy_n(piece->data.data() + in_piece, take, out_ptr);
++    offset += take;
++    out_ptr += take;
++    nbytes -= take;
++  }
++  return true;
++}
++#endif
++
+ bool PlainFileReader::Read(u64 offset, u64 nbytes, u8* out_ptr)
+ {
++#ifdef __ORBIS__
++  // Big reads (a game loading a whole file) go straight to the drive: the cache is for the small
++  // scattered ones.
++  if (ps4_disc_cache && nbytes < 512 * 1024 && offset < m_size)
++    return CachedRead(offset, nbytes, out_ptr);
++#endif
+   return m_file.OffsetRead(offset, out_ptr, nbytes);
+ }
+ 
+diff --git a/Source/Core/DiscIO/FileBlob.h b/Source/Core/DiscIO/FileBlob.h
+index 3e3a495..3b345f7 100644
+--- a/Source/Core/DiscIO/FileBlob.h
++++ b/Source/Core/DiscIO/FileBlob.h
+@@ -4,7 +4,9 @@
+ #pragma once
+ 
+ #include <memory>
++#include <mutex>
+ #include <string>
++#include <vector>
+ 
+ #include "Common/CommonTypes.h"
+ #include "Common/DirectIOFile.h"
+@@ -36,6 +38,22 @@ private:
+ 
+   File::DirectIOFile m_file;
+   u64 m_size;
++
++#ifdef __ORBIS__
++  // PS4 disc cache (ps4.ini disc_cache, default on): reads go through aligned 256 KiB pieces, the
++  // most recently used 64 (16 MiB) kept. A game reads small pieces (Bully: 1-32 KiB) close to each
++  // other, and each read from the PS4's hard drive took 30-350 ms - the game waited for them.
++  struct CachePiece
++  {
++    u64 start = ~0ull;
++    u64 last_use = 0;
++    std::vector<u8> data;
++  };
++  bool CachedRead(u64 offset, u64 nbytes, u8* out_ptr);
++  std::vector<CachePiece> m_cache;
++  u64 m_cache_clock = 0;
++  std::mutex m_cache_mutex;
++#endif
+ };
+ 
+ }  // namespace DiscIO
 diff --git a/Source/Core/DolphinNoGUI/CMakeLists.txt b/Source/Core/DolphinNoGUI/CMakeLists.txt
 index 51c3fff..b8dfe84 100644
 --- a/Source/Core/DolphinNoGUI/CMakeLists.txt
@@ -6633,7 +6759,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..137e539 100644
+index 3bf40ea..bb7f28c 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -6684,7 +6810,7 @@ index 3bf40ea..137e539 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,60 @@
+@@ -31,6 +53,61 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -6712,6 +6838,7 @@ index 3bf40ea..137e539 100644
 +extern "C" int ps4_jit_accurate_singles;  // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_follow;            // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_fcmp_merge;        // Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
++extern "C" int ps4_disc_cache;            // DiscIO/FileBlob.cpp
 +extern "C" int ps4_sync_idle_frame;      // Core/CoreTiming.cpp
 +extern "C" int ps4_shader_dump;          // VideoCommon/ShaderCache.cpp
 +extern "C" int ps4_tev_ras_float;        // VideoCommon/PixelShaderGen.cpp
@@ -6745,7 +6872,7 @@ index 3bf40ea..137e539 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +249,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +250,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -6756,7 +6883,7 @@ index 3bf40ea..137e539 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +264,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +265,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -6775,7 +6902,7 @@ index 3bf40ea..137e539 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +296,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +297,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -6786,7 +6913,7 @@ index 3bf40ea..137e539 100644
  #endif
        });
  
-@@ -270,7 +363,369 @@ int main(const int argc, char* argv[])
+@@ -270,7 +364,371 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -6977,6 +7104,8 @@ index 3bf40ea..137e539 100644
 +    ps4_jit_follow = std::clamp(std::atoi(Platform::GetPS4Option("jit_follow", "2").c_str()), 1, 16);
 +    // jit_fcmp_merge=off: fcmp and the bc after it compiled separately (the bc reloads the CR).
 +    ps4_jit_fcmp_merge = Platform::GetPS4Option("jit_fcmp_merge", "on") != "off";
++    // disc_cache=off: .iso reads go straight to the drive (no 16 MiB cache of 256 KiB pieces).
++    ps4_disc_cache = Platform::GetPS4Option("disc_cache", "on") != "off";
 +    // shader_dump=on (Dolphin Lab): specialized shaders' source to /data/DolphinPS4/shader-dump.
 +    ps4_shader_dump = Platform::GetPS4Option("shader_dump", "off") == "on";
 +    // tev_ras_swizzle=float, vk_dynamic_vertex_loader=off (Dolphin Lab): colour tests (TMNT 2007).
@@ -7156,7 +7285,7 @@ index 3bf40ea..137e539 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +739,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +742,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -7172,7 +7301,7 @@ index 3bf40ea..137e539 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +767,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +770,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
