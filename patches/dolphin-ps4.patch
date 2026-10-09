@@ -4167,7 +4167,7 @@ index 0000000..01c97dd
 +void OnMemory(u32 address, u32 size, bool write);
 +}  // namespace ParallelismOracle
 diff --git a/Source/Core/Core/PowerPC/Jit64/Jit.cpp b/Source/Core/Core/PowerPC/Jit64/Jit.cpp
-index 1248b1a..679bd1a 100644
+index 1248b1a..ab024de 100644
 --- a/Source/Core/Core/PowerPC/Jit64/Jit.cpp
 +++ b/Source/Core/Core/PowerPC/Jit64/Jit.cpp
 @@ -49,6 +49,31 @@
@@ -4202,7 +4202,18 @@ index 1248b1a..679bd1a 100644
  using namespace PowerPC;
  
  // Dolphin's PowerPC->x86_64 JIT dynamic recompiler
-@@ -259,10 +284,29 @@ void Jit64::Init()
+@@ -253,16 +278,40 @@ bool Jit64::BackPatch(SContext* ctx)
+   return true;
+ }
+ 
++#ifdef __ORBIS__
++extern "C" int ps4_jit_pin[4];  // ps4.ini jit_pin (DolphinNoGUI/MainNoGUI.cpp)
++int ps4_jit_pin[4] = {-1, -1, -1, -1};
++#endif
++
+ void Jit64::Init()
+ {
+   InitFastmemArena();
  
    RefreshConfig();
  
@@ -4232,7 +4243,34 @@ index 1248b1a..679bd1a 100644
    js.fastmemLoadStore = nullptr;
    js.compilerPC = 0;
  
-@@ -303,6 +347,15 @@ void Jit64::Init()
+@@ -285,6 +334,26 @@ void Jit64::Init()
+   m_stack_guard = nullptr;
+ 
+   blocks.Init();
++#ifdef __ORBIS__
++  {
++    // jit_pin (see RegCache::SetPinned): before the dispatcher is generated - it stores and
++    // reloads these. Not with MMU emulation (revertable register bindings).
++    static constexpr X64Reg PIN_HOSTS[] = {R12, R13, R14, R15};
++    m_ps4_pins.clear();
++    gpr.ClearPinned();
++    std::string pins;
++    for (int k = 0; k < 4 && !jo.memcheck; k++)
++    {
++      if (ps4_jit_pin[k] < 0 || ps4_jit_pin[k] > 31)
++        continue;
++      m_ps4_pins.emplace_back(static_cast<u32>(ps4_jit_pin[k]), PIN_HOSTS[m_ps4_pins.size()]);
++      gpr.SetPinned(ps4_jit_pin[k], m_ps4_pins.back().second);
++      pins += " r" + std::to_string(ps4_jit_pin[k]);
++    }
++    if (!pins.empty())
++      ps4_boot_trace(("jit: pinned guest registers" + pins + " (R12-R15)").c_str());
++  }
++#endif
+   asm_routines.Init();
+ 
+   // important: do this *after* generating the global asm routines, because we can't use farcode in
+@@ -303,6 +372,15 @@ void Jit64::Init()
  
  void Jit64::ClearCache()
  {
@@ -4248,7 +4286,60 @@ index 1248b1a..679bd1a 100644
    blocks.Clear();
    blocks.ClearRangesToFree();
    trampolines.ClearCodeSpace();
-@@ -430,6 +483,21 @@ void Jit64::DoNothing(UGeckoInstruction _inst)
+@@ -348,6 +426,20 @@ void Jit64::Shutdown()
+   m_const_pool.Shutdown();
+ }
+ 
++#ifdef __ORBIS__
++void Jit64::PS4StorePinned()
++{
++  for (const auto& [guest, host] : m_ps4_pins)
++    MOV(32, PPCSTATE_GPR(guest), R(host));
++}
++
++void Jit64::PS4LoadPinned()
++{
++  for (const auto& [guest, host] : m_ps4_pins)
++    MOV(32, R(host), PPCSTATE_GPR(guest));
++}
++#endif
++
+ void Jit64::FallBackToInterpreter(UGeckoInstruction inst)
+ {
+   FlushCarry();
+@@ -363,9 +455,15 @@ void Jit64::FallBackToInterpreter(UGeckoInstruction inst)
+   }
+ 
+   Interpreter::Instruction instr = Interpreter::GetInterpreterOp(inst);
++#ifdef __ORBIS__
++  PS4StorePinned();  // the interpreter reads and writes ppcState
++#endif
+   ABI_PushRegistersAndAdjustStack({}, 0);
+   ABI_CallFunctionPC(instr, &m_system.GetInterpreter(), inst.hex);
+   ABI_PopRegistersAndAdjustStack({}, 0);
++#ifdef __ORBIS__
++  PS4LoadPinned();
++#endif
+ 
+   // If the instruction wrote to any registers which were marked as discarded,
+   // we must mark them as no longer discarded
+@@ -420,9 +518,15 @@ void Jit64::HLEFunction(u32 hook_index)
+ {
+   gpr.Flush();
+   fpr.Flush();
++#ifdef __ORBIS__
++  PS4StorePinned();
++#endif
+   ABI_PushRegistersAndAdjustStack({}, 0);
+   ABI_CallFunctionCCP(HLE::ExecuteFromJIT, js.compilerPC, hook_index, &m_system);
+   ABI_PopRegistersAndAdjustStack({}, 0);
++#ifdef __ORBIS__
++  PS4LoadPinned();
++#endif
+ }
+ 
+ void Jit64::DoNothing(UGeckoInstruction _inst)
+@@ -430,6 +534,21 @@ void Jit64::DoNothing(UGeckoInstruction _inst)
    // Yup, just don't do anything.
  }
  
@@ -4270,7 +4361,7 @@ index 1248b1a..679bd1a 100644
  void Jit64::ImHere(Jit64& jit)
  {
    auto& ppc_state = jit.m_ppc_state;
-@@ -453,15 +521,211 @@ void Jit64::ImHere(Jit64& jit)
+@@ -453,15 +572,211 @@ void Jit64::ImHere(Jit64& jit)
    been_here[ppc_state.pc] = 1;
  }
  
@@ -4482,7 +4573,7 @@ index 1248b1a..679bd1a 100644
      FixupBranch exit = J_CC(CC_L);
      ABI_PushRegistersAndAdjustStack({}, 0);
      ABI_CallFunctionP(GPFifo::UpdateGatherPipe, &m_system.GetGPFifo());
-@@ -600,6 +864,48 @@ void Jit64::JustWriteExit(u32 destination, bool bl, u32 after)
+@@ -600,6 +915,48 @@ void Jit64::JustWriteExit(u32 destination, bool bl, u32 after)
    linkData.linkStatus = false;
    linkData.call = bl;
  
@@ -4531,7 +4622,7 @@ index 1248b1a..679bd1a 100644
    MOV(32, PPCSTATE(pc), Imm32(destination));
  
    // Perform downcount flag check, followed by the requested exit
-@@ -647,6 +953,51 @@ void Jit64::WriteExitDestInRSCRATCH(bool bl, u32 after)
+@@ -647,6 +1004,51 @@ void Jit64::WriteExitDestInRSCRATCH(bool bl, u32 after)
    }
  
    SUB(32, PPCSTATE(downcount), Imm32(js.downcountAmount));
@@ -4583,7 +4674,7 @@ index 1248b1a..679bd1a 100644
    if (bl)
    {
      CALL(asm_routines.dispatcher);
-@@ -819,6 +1170,9 @@ void Jit64::Jit(u32 em_address, bool clear_cache_and_retry_on_failure)
+@@ -819,6 +1221,9 @@ void Jit64::Jit(u32 em_address, bool clear_cache_and_retry_on_failure)
          analyzer.ClearOption(PPCAnalyst::PPCAnalyzer::OPTION_CROR_MERGE);
          analyzer.ClearOption(PPCAnalyst::PPCAnalyzer::OPTION_CARRY_MERGE);
          analyzer.ClearOption(PPCAnalyst::PPCAnalyzer::OPTION_BRANCH_FOLLOW);
@@ -4593,7 +4684,7 @@ index 1248b1a..679bd1a 100644
        }
        Trace();
      }
-@@ -992,10 +1346,21 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+@@ -992,10 +1397,21 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
      IntializeSpeculativeConstants();
    }
  
@@ -4615,7 +4706,7 @@ index 1248b1a..679bd1a 100644
  
      js.compilerPC = op.address;
      js.op = &op;
-@@ -1018,16 +1383,32 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+@@ -1018,16 +1434,32 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
        bool gatherPipeIntCheck = js.fifoWriteAddresses.contains(prev_address);
  
        // Gather pipe writes using an immediate address are explicitly tracked.
@@ -4650,7 +4741,7 @@ index 1248b1a..679bd1a 100644
        }
  
        // Gather pipe writes can generate an exception; add an exception check.
-@@ -1155,7 +1536,12 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+@@ -1155,7 +1587,12 @@ bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
              // prioritize the more important registers.
              gpr.PreloadRegisters(op.regsIn & (op.gprWillBeRead | op.gprWillBeWritten) &
                                   ~op.gprDiscardable);
@@ -4663,7 +4754,7 @@ index 1248b1a..679bd1a 100644
            }
  
            CompileInstruction(op);
-@@ -1330,6 +1716,9 @@ void Jit64::EnableOptimization()
+@@ -1330,6 +1767,9 @@ void Jit64::EnableOptimization()
    analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_CROR_MERGE);
    analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_CARRY_MERGE);
    analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_BRANCH_FOLLOW);
@@ -4673,21 +4764,39 @@ index 1248b1a..679bd1a 100644
  }
  
  void Jit64::IntializeSpeculativeConstants()
+@@ -1360,7 +1800,12 @@ void Jit64::IntializeSpeculativeConstants()
+         JMP(asm_routines.dispatcher_no_check);
+         SwitchToNearCode();
+       }
+-      CMP(32, PPCSTATE_GPR(i), Imm32(compileTimeValue));
++#ifdef __ORBIS__
++      if (gpr.IsPinned(i))
++        CMP(32, R(gpr.PinnedReg(i)), Imm32(compileTimeValue));  // ppcState may be stale
++      else
++#endif
++        CMP(32, PPCSTATE_GPR(i), Imm32(compileTimeValue));
+       J_CC(CC_NZ, target);
+       gpr.SetImmediate32(i, compileTimeValue, false);
+     }
 diff --git a/Source/Core/Core/PowerPC/Jit64/Jit.h b/Source/Core/Core/PowerPC/Jit64/Jit.h
-index da1be2d..e7e98ea 100644
+index da1be2d..500a71c 100644
 --- a/Source/Core/Core/PowerPC/Jit64/Jit.h
 +++ b/Source/Core/Core/PowerPC/Jit64/Jit.h
-@@ -167,6 +167,9 @@ public:
+@@ -167,6 +167,13 @@ public:
    using Instruction = void (Jit64::*)(UGeckoInstruction instCode);
    void FallBackToInterpreter(UGeckoInstruction _inst);
    void DoNothing(UGeckoInstruction _inst);
 +#ifdef __ORBIS__
 +  void PS4SyncPageTable(UGeckoInstruction inst);
++  // jit_pin (RegCache::SetPinned): {guest GPR, host register}, fixed when the JIT starts.
++  std::vector<std::pair<u32, Gen::X64Reg>> m_ps4_pins;
++  void PS4StorePinned();
++  void PS4LoadPinned();
 +#endif
    void HLEFunction(u32 hook_index);
  
    void DynaRunTable4(UGeckoInstruction inst);
-@@ -220,6 +223,9 @@ public:
+@@ -220,6 +227,9 @@ public:
    void ps_mergeXX(UGeckoInstruction inst);
    void ps_res(UGeckoInstruction inst);
    void ps_rsqrte(UGeckoInstruction inst);
@@ -4697,7 +4806,7 @@ index da1be2d..e7e98ea 100644
    void ps_sum(UGeckoInstruction inst);
    void ps_muls(UGeckoInstruction inst);
    void ps_cmpXX(UGeckoInstruction inst);
-@@ -238,6 +244,19 @@ public:
+@@ -238,6 +248,19 @@ public:
    void cntlzwx(UGeckoInstruction inst);
  
    void lfXXX(UGeckoInstruction inst);
@@ -4758,10 +4867,98 @@ index be5458b..a507294 100644
  
  constexpr std::array<Jit64OpTemplate, 9> s_table59{{
 diff --git a/Source/Core/Core/PowerPC/Jit64/JitAsm.cpp b/Source/Core/Core/PowerPC/Jit64/JitAsm.cpp
-index 7594d0e..b25f9f9 100644
+index 7594d0e..234576a 100644
 --- a/Source/Core/Core/PowerPC/Jit64/JitAsm.cpp
 +++ b/Source/Core/Core/PowerPC/Jit64/JitAsm.cpp
-@@ -110,6 +110,28 @@ void Jit64AsmRoutineManager::Generate()
+@@ -61,6 +61,26 @@ void Jit64AsmRoutineManager::Generate()
+ 
+   MOV(64, PPCSTATE(stored_stack_pointer), R(RSP));
+ 
++#ifdef __ORBIS__
++  // jit_pin (RegCache::SetPinned): the pinned guest registers are valid in their host registers
++  // everywhere in here - loaded on entry from C++ and after each C++ call; every entry from JIT
++  // code stores them (C++ reads ppcState).
++  const auto& pins = m_jit.m_ps4_pins;
++  const auto store_pins = [&] {
++    for (const auto& [guest, host] : pins)
++      MOV(32, PPCSTATE_GPR(guest), R(host));
++  };
++  const auto load_pins = [&] {
++    for (const auto& [guest, host] : pins)
++      MOV(32, R(host), PPCSTATE_GPR(guest));
++  };
++  load_pins();
++#else
++  const std::vector<int> pins;
++  const auto store_pins = [] {};
++  const auto load_pins = [] {};
++#endif
++
+   // something that can't pass the BLR test
+   MOV(64, MDisp(RSP, 8), Imm32((u32)-1));
+ 
+@@ -68,6 +88,7 @@ void Jit64AsmRoutineManager::Generate()
+   ABI_PushRegistersAndAdjustStack({}, 0);
+   ABI_CallFunction(CoreTiming::GlobalAdvance);
+   ABI_PopRegistersAndAdjustStack({}, 0);
++  load_pins();
+ 
+   // When we've just entered the jit we need to update the membase
+   // GlobalAdvance also checks exceptions after which we need to
+@@ -75,22 +96,38 @@ void Jit64AsmRoutineManager::Generate()
+   MOV(64, R(RMEM), PPCSTATE(mem_ptr));
+ 
+   // skip the sync and compare first time
+-  FixupBranch skipToRealDispatch = J(enable_debugging ? Jump::Near : Jump::Short);
++  FixupBranch skipToRealDispatch =
++      J(enable_debugging || !pins.empty() ? Jump::Near : Jump::Short);
+ 
++  // With pinned registers each entry stores them once; the paths falling into the next entry
++  // jump over its stores (the flags of the downcount SUB survive the MOVs and JMPs).
+   dispatcher_mispredicted_blr = GetCodePtr();
++  store_pins();
+   AND(32, PPCSTATE(pc), Imm32(0xFFFFFFFC));
+ 
+   ResetStack(*this);
+ 
+   SUB(32, PPCSTATE(downcount), R(RSCRATCH2));
++  FixupBranch mispredicted_stored;
++  if (!pins.empty())
++    mispredicted_stored = J(Jump::Near);
+ 
+   dispatcher = GetCodePtr();
++  store_pins();
++  if (!pins.empty())
++    SetJumpTarget(mispredicted_stored);
+ 
+   // Expected result of SUB(32, PPCSTATE(downcount), Imm32(block_cycles)) is in RFLAGS.
+   // Branch if downcount is <= 0 (signed).
+   FixupBranch bail = J_CC(CC_LE, Jump::Near);
++  FixupBranch dispatcher_stored;
++  if (!pins.empty())
++    dispatcher_stored = J(Jump::Near);
+ 
+   dispatcher_no_timing_check = GetCodePtr();
++  store_pins();
++  if (!pins.empty())
++    SetJumpTarget(dispatcher_stored);
+ 
+   auto& system = m_jit.m_system;
+ 
+@@ -103,13 +140,41 @@ void Jit64AsmRoutineManager::Generate()
+   }
+ 
+   SetJumpTarget(skipToRealDispatch);
++  FixupBranch no_timing_stored;
++  if (!pins.empty())
++    no_timing_stored = J(Jump::Near);
+ 
+   dispatcher_no_check = GetCodePtr();
++  store_pins();
++  if (!pins.empty())
++    SetJumpTarget(no_timing_stored);
+ 
+   // The following is a translation of JitBaseBlockCache::Dispatch into assembly.
    const bool assembly_dispatcher = true;
    if (assembly_dispatcher)
    {
@@ -4790,7 +4987,7 @@ index 7594d0e..b25f9f9 100644
      if (m_jit.GetBlockCache()->GetEntryPoints())
      {
        MOV(32, R(RSCRATCH2), PPCSTATE(feature_flags));
-@@ -181,6 +203,7 @@ void Jit64AsmRoutineManager::Generate()
+@@ -181,6 +246,7 @@ void Jit64AsmRoutineManager::Generate()
      }
  
      // Failure, fallback to the C++ dispatcher for calling the JIT.
@@ -4798,6 +4995,38 @@ index 7594d0e..b25f9f9 100644
    }
  
    // There is no point in calling the dispatcher in the fast lookup table
+@@ -192,6 +258,7 @@ void Jit64AsmRoutineManager::Generate()
+     MOV(64, R(ABI_PARAM1), Imm64(reinterpret_cast<u64>(&m_jit)));
+     ABI_CallFunction(JitBase::Dispatch);
+     ABI_PopRegistersAndAdjustStack({}, 0);
++    load_pins();
+ 
+     TEST(64, R(ABI_RETURN), R(ABI_RETURN));
+     FixupBranch no_block_available = J_CC(CC_Z);
+@@ -213,6 +280,7 @@ void Jit64AsmRoutineManager::Generate()
+   MOV(32, R(ABI_PARAM2), PPCSTATE(pc));
+   ABI_CallFunction(JitTrampoline);
+   ABI_PopRegistersAndAdjustStack({}, 0);
++  load_pins();
+ 
+   // If jitting triggered an ISI exception, MSR.DR may have changed
+   MOV(64, R(RMEM), PPCSTATE(mem_ptr));
+@@ -221,6 +289,7 @@ void Jit64AsmRoutineManager::Generate()
+ 
+   SetJumpTarget(bail);
+   do_timing = GetCodePtr();
++  store_pins();
+ 
+   // make sure npc contains the next pc (needed for exception checking in CoreTiming::Advance)
+   MOV(32, R(RSCRATCH), PPCSTATE(pc));
+@@ -234,6 +303,7 @@ void Jit64AsmRoutineManager::Generate()
+ 
+   // Landing pad for drec space
+   dispatcher_exit = GetCodePtr();
++  store_pins();
+   if (enable_debugging)
+     SetJumpTarget(dbg_exit);
+ 
 diff --git a/Source/Core/Core/PowerPC/Jit64/Jit_Branch.cpp b/Source/Core/Core/PowerPC/Jit64/Jit_Branch.cpp
 index 4667238..6d9edba 100644
 --- a/Source/Core/Core/PowerPC/Jit64/Jit_Branch.cpp
@@ -5133,6 +5362,179 @@ index 2e1b05c..e70f45b 100644
  
    FinalizeSingleResult(Rd, Rd);
  }
+diff --git a/Source/Core/Core/PowerPC/Jit64/RegCache/GPRRegCache.cpp b/Source/Core/Core/PowerPC/Jit64/RegCache/GPRRegCache.cpp
+index fdbe13e..960a504 100644
+--- a/Source/Core/Core/PowerPC/Jit64/RegCache/GPRRegCache.cpp
++++ b/Source/Core/Core/PowerPC/Jit64/RegCache/GPRRegCache.cpp
+@@ -32,6 +32,12 @@ s32 GPRRegCache::SImm32(preg_t preg) const
+ 
+ OpArg GPRRegCache::R(preg_t preg) const
+ {
++#ifdef __ORBIS__
++  // jit_pin: a pinned register with a known value reads as that constant, as an unpinned one does
++  // (code checks IsImm() and then takes Imm32() of the operand); its host register holds the same.
++  if (IsPinned(preg) && m_jit.GetConstantPropagation().HasGPR(preg))
++    return ::Gen::Imm32(m_jit.GetConstantPropagation().GetGPR(preg));
++#endif
+   if (m_regs[preg].IsInHostRegister())
+   {
+     return ::Gen::R(m_regs[preg].GetHostRegister());
+@@ -108,6 +114,16 @@ void GPRRegCache::SetImmediate32(preg_t preg, u32 imm_value, bool dirty)
+ {
+   // "dirty" can be false to avoid redundantly flushing an immediate when
+   // processing speculative constants.
++#ifdef __ORBIS__
++  if (IsPinned(preg))
++  {
++    // jit_pin: the host register always holds the value (also a constant).
++    if (dirty)
++      m_emitter->MOV(32, ::Gen::R(PinnedReg(preg)), ::Gen::Imm32(imm_value));
++    m_jit.GetConstantPropagation().SetGPR(preg, imm_value);
++    return;
++  }
++#endif
+   if (dirty)
+     DiscardRegister(preg);
+   m_jit.GetConstantPropagation().SetGPR(preg, imm_value);
+diff --git a/Source/Core/Core/PowerPC/Jit64/RegCache/JitRegCache.cpp b/Source/Core/Core/PowerPC/Jit64/RegCache/JitRegCache.cpp
+index 2700f31..7fd856b 100644
+--- a/Source/Core/Core/PowerPC/Jit64/RegCache/JitRegCache.cpp
++++ b/Source/Core/Core/PowerPC/Jit64/RegCache/JitRegCache.cpp
+@@ -233,6 +233,9 @@ void RCForkGuard::EndFork()
+ 
+ RegCache::RegCache(Jit64& jit) : m_jit{jit}
+ {
++#ifdef __ORBIS__
++  ClearPinned();
++#endif
+ }
+ 
+ void RegCache::Start()
+@@ -242,6 +245,18 @@ void RegCache::Start()
+   {
+     m_regs[i] = PPCCachedReg{GetDefaultLocation(i)};
+   }
++#ifdef __ORBIS__
++  // jit_pin: a block starts with its pinned registers already in their host registers (clean: the
++  // cache never stores them).
++  for (size_t i = 0; i < m_regs.size(); i++)
++  {
++    if (IsPinned(i))
++    {
++      m_xregs[m_pinned[i]].SetBoundTo(i);
++      m_regs[i].SetInHostRegister(m_pinned[i], false);
++    }
++  }
++#endif
+ }
+ 
+ void RegCache::SetEmitter(XEmitter* emitter)
+@@ -351,6 +366,10 @@ void RegCache::Reset(BitSet32 pregs)
+ {
+   for (preg_t i : pregs)
+   {
++#ifdef __ORBIS__
++    if (IsPinned(i))
++      continue;  // reloaded by the caller (Jit64::PS4LoadPinned)
++#endif
+     ASSERT_MSG(DYNA_REC, !m_regs[i].IsInHostRegister(),
+                "Attempted to reset a loaded register (did you mean to flush it?)");
+     m_regs[i].SetFlushed(false);
+@@ -410,6 +429,10 @@ void RegCache::FlushX(X64Reg reg)
+   ASSERT_MSG(DYNA_REC, reg < m_xregs.size(), "Flushing non-existent reg {}",
+              std::to_underlying(reg));
+   ASSERT(!m_xregs[reg].IsLocked());
++#ifdef __ORBIS__
++  ASSERT_MSG(DYNA_REC, m_xregs[reg].IsFree() || !IsPinned(m_xregs[reg].Contents()),
++             "jit_pin: X64 reg {} holds a pinned register", std::to_underlying(reg));
++#endif
+   if (!m_xregs[reg].IsFree())
+   {
+     StoreFromRegister(m_xregs[reg].Contents());
+@@ -418,6 +441,10 @@ void RegCache::FlushX(X64Reg reg)
+ 
+ void RegCache::DiscardRegister(preg_t preg)
+ {
++#ifdef __ORBIS__
++  if (IsPinned(preg))
++    return;  // stays in its host register (a new value is written there)
++#endif
+   if (m_regs[preg].IsInHostRegister())
+   {
+     X64Reg xr = m_regs[preg].GetHostRegister();
+@@ -429,6 +456,16 @@ void RegCache::DiscardRegister(preg_t preg)
+ 
+ void RegCache::BindToRegister(preg_t i, bool doLoad, bool makeDirty)
+ {
++#ifdef __ORBIS__
++  if (IsPinned(i))
++  {
++    // Always in its host register, and never dirty: the cache doesn't store it.
++    ASSERT(m_regs[i].IsInHostRegister());
++    if (makeDirty)
++      DiscardImm(i);
++    return;
++  }
++#endif
+   if (!m_regs[i].IsInHostRegister())
+   {
+     X64Reg xr = GetFreeXReg();
+@@ -470,6 +507,10 @@ void RegCache::StoreFromRegister(preg_t i, FlushMode mode,
+ {
+   // When a transaction is in progress, allowing the store would overwrite the old value.
+   ASSERT_MSG(DYNA_REC, !m_regs[i].IsRevertable(), "Register transaction on {} is in progress!", i);
++#ifdef __ORBIS__
++  if (IsPinned(i))
++    return;  // never stored or freed by the cache (see jit_pin)
++#endif
+ 
+   if (!m_regs[i].IsInDefaultLocation())
+     StoreRegister(i, GetDefaultLocation(i), ignore_discarded_registers);
+@@ -499,6 +540,10 @@ X64Reg RegCache::GetFreeXReg()
+     const preg_t preg = m_xregs[xreg].Contents();
+     if (m_xregs[xreg].IsLocked() || m_regs[preg].IsLocked())
+       continue;
++#ifdef __ORBIS__
++    if (IsPinned(preg))
++      continue;
++#endif
+ 
+     const float score = ScoreRegister(xreg);
+     if (score < min_score)
+diff --git a/Source/Core/Core/PowerPC/Jit64/RegCache/JitRegCache.h b/Source/Core/Core/PowerPC/Jit64/RegCache/JitRegCache.h
+index 7a692a2..60331b1 100644
+--- a/Source/Core/Core/PowerPC/Jit64/RegCache/JitRegCache.h
++++ b/Source/Core/Core/PowerPC/Jit64/RegCache/JitRegCache.h
+@@ -168,6 +168,21 @@ public:
+ 
+   bool IsBound(preg_t preg) const { return m_regs[preg].IsInHostRegister(); }
+ 
++#ifdef __ORBIS__
++// Dolphin Lab (PS4) jit_pin: up to four guest GPRs (ps4.ini jit_pin=1,3,4,31) live in R12-R15 -
++// callee-saved, so C++ calls keep them - for as long as JIT code runs, instead of being loaded from
++// ppcState at each block's first use and stored at each block exit (Bully: guest register loads and
++// stores were 16-20% of its JIT block time). Invariant: inside JIT code the host register is the
++// value; ppcState holds it whenever C++ may read it - the dispatcher stores the pinned registers on
++// every entry from JIT code and reloads them after its own C++ calls; interpreter fallbacks and HLE
++// calls store them before and reload them after. The register cache never spills, stores, frees or
++// discards them. Off with MMU emulation (memcheck: revertable bindings).
++  void ClearPinned() { m_pinned.fill(Gen::INVALID_REG); }
++  void SetPinned(preg_t preg, Gen::X64Reg xr) { m_pinned[preg] = xr; }
++  bool IsPinned(preg_t preg) const { return preg < 32 && m_pinned[preg] != Gen::INVALID_REG; }
++  Gen::X64Reg PinnedReg(preg_t preg) const { return m_pinned[preg]; }
++#endif
++
+   RCOpArg Use(preg_t preg, RCMode mode);
+   RCOpArg UseNoImm(preg_t preg, RCMode mode);
+   RCOpArg BindOrImm(preg_t preg, RCMode mode);
+@@ -234,4 +249,7 @@ protected:
+   std::array<X64CachedReg, NUM_XREGS> m_xregs;
+   std::array<RCConstraint, 32> m_constraints;
+   Gen::XEmitter* m_emitter = nullptr;
++#ifdef __ORBIS__
++  std::array<Gen::X64Reg, 32> m_pinned{};
++#endif
+ };
 diff --git a/Source/Core/Core/PowerPC/Jit64Common/BlockCache.cpp b/Source/Core/Core/PowerPC/Jit64Common/BlockCache.cpp
 index 34c327d..2003140 100644
 --- a/Source/Core/Core/PowerPC/Jit64Common/BlockCache.cpp
@@ -6807,7 +7209,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..476ae63 100644
+index 3bf40ea..1085c35 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -6858,7 +7260,7 @@ index 3bf40ea..476ae63 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,62 @@
+@@ -31,6 +53,63 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -6888,6 +7290,7 @@ index 3bf40ea..476ae63 100644
 +extern "C" int ps4_jit_fcmp_merge;        // Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
 +extern "C" int ps4_disc_cache;            // DiscIO/FileBlob.cpp
 +extern "C" int ps4_dvd_async;             // Core/HW/DVD/DVDThread.cpp
++extern "C" int ps4_jit_pin[4];            // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_sync_idle_frame;      // Core/CoreTiming.cpp
 +extern "C" int ps4_shader_dump;          // VideoCommon/ShaderCache.cpp
 +extern "C" int ps4_tev_ras_float;        // VideoCommon/PixelShaderGen.cpp
@@ -6921,7 +7324,7 @@ index 3bf40ea..476ae63 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +251,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +252,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -6932,7 +7335,7 @@ index 3bf40ea..476ae63 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +266,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +267,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -6951,7 +7354,7 @@ index 3bf40ea..476ae63 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +298,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +299,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -6962,7 +7365,7 @@ index 3bf40ea..476ae63 100644
  #endif
        });
  
-@@ -270,7 +365,375 @@ int main(const int argc, char* argv[])
+@@ -270,7 +366,396 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -7159,6 +7562,27 @@ index 3bf40ea..476ae63 100644
 +    // dvd_async=on (experimental, off by default: it broke Bully in v50.56): a late disc read
 +    // delays the emulated drive instead of stopping the emulated CPU.
 +    ps4_dvd_async = Platform::GetPS4Option("dvd_async", "off") == "on";
++    // jit_pin=1,3,4,31 (Dolphin Lab, per game; default off): up to four guest GPRs kept in host
++    // registers across JIT blocks (Core/PowerPC/Jit64/RegCache/JitRegCache.h).
++    {
++      for (int& pin : ps4_jit_pin)
++        pin = -1;
++      const std::string pin_list = Platform::GetPS4Option("jit_pin", "off");
++      int count = 0;
++      size_t at = 0;
++      while (count < 4 && at < pin_list.size())
++      {
++        while (at < pin_list.size() && (pin_list[at] < '0' || pin_list[at] > '9'))
++          at++;
++        if (at >= pin_list.size())
++          break;
++        const int value = std::atoi(pin_list.c_str() + at);
++        while (at < pin_list.size() && pin_list[at] >= '0' && pin_list[at] <= '9')
++          at++;
++        if (value >= 0 && value <= 31)
++          ps4_jit_pin[count++] = value;
++      }
++    }
 +    // shader_dump=on (Dolphin Lab): specialized shaders' source to /data/DolphinPS4/shader-dump.
 +    ps4_shader_dump = Platform::GetPS4Option("shader_dump", "off") == "on";
 +    // tev_ras_swizzle=float, vk_dynamic_vertex_loader=off (Dolphin Lab): colour tests (TMNT 2007).
@@ -7338,7 +7762,7 @@ index 3bf40ea..476ae63 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +747,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +769,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -7354,7 +7778,7 @@ index 3bf40ea..476ae63 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +775,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +797,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
