@@ -236,7 +236,7 @@ Everything the app creates sits in **`/data/DolphinPS4/`**:
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Resident Evil 4 | GameCube | 30 (its normal rate) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Shadow the Hedgehog | GameCube | 30–60 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Sonic Adventure DX | GameCube | 60 |
-| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Sonic Gems Collection | GameCube | 60, smooth (menus and the games tried so far) |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Sonic Gems Collection | GameCube | 60, smooth; Sonic the Fighters ~30 and needs its recommended settings (froze without them) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Spider-Man 2 | GameCube | 15–29 (its normal rate is 30) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Super Mario Sunshine | GameCube | 30 (its normal rate) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Super Smash Bros. Melee | GameCube | 36–60 |
@@ -274,7 +274,7 @@ A range means the frame rate depends on what's on screen. *Recommended settings*
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Shrek 2 | GameCube | PS4 (original), 9.00 | 720p (2x) | 30 FPS, playable; some drops in cutscenes |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Shrek: Extra Large | GameCube | – | 480p | 30–60 FPS, some stuttering |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Sonic Adventure 2: Battle | GameCube | PS4, 13.52 | – | 30–60 FPS (mostly in the 30s), works normally, playable |
-| ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | Sonic Gems Collection | GameCube | PS4 Pro, 13.52 | 1080p | Sonic R and Sonic CD run great; Sonic the Fighters crashes at the SEGA screen |
+| ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | Sonic Gems Collection | GameCube | PS4 Pro, 13.52 | 1080p | Sonic R and Sonic CD run great; Sonic the Fighters crashed at the SEGA screen (fixed by its recommended settings) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Sonic Heroes | GameCube | – | – | 60 FPS |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Sphinx and the Cursed Mummy | GameCube | PS4 Pro, 6.72 | 1080p (3x), 2x anti-aliasing | 50 FPS with *Speed Features: Compatible* (with Fast: a black screen instead of the THQ logo) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Spider-Man 2 | GameCube | PS4 Slim, 12.52 | 1080p | ~25 FPS, dips to 80% speed, some stutters, no crashes |
