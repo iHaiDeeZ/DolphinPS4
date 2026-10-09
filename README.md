@@ -229,6 +229,7 @@ Everything the app creates sits in **`/data/DolphinPS4/`**:
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Crash Nitro Kart | GameCube | 60 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Crash Tag Team Racing | GameCube | 60 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | FIFA Street 2 | GameCube | ~34 |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Killer7 | GameCube | 30 (its normal rate), full speed; froze on older versions without its recommended settings |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | The Legend of Zelda: Twilight Princess | GameCube | 30 (its normal rate) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Metroid Prime | GameCube | ~48 with its recommended settings (its normal rate is 60) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Mortal Kombat: Deadly Alliance | GameCube | 60 |
