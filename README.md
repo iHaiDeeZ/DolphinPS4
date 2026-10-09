@@ -235,6 +235,7 @@ Everything the app creates sits in **`/data/DolphinPS4/`**:
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Need for Speed: Most Wanted | GameCube | 25–35 in races with its recommended settings (2x, no lines over the videos); cutscenes 13–30 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Resident Evil 4 | GameCube | 30 (its normal rate) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Shadow the Hedgehog | GameCube | 30–60 |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Soulcalibur II | GameCube | 35–60 in fights (average ~46), ~96% speed |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Sonic Adventure DX | GameCube | 60 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Sonic Gems Collection | GameCube | 60, smooth; Sonic the Fighters ~30 and needs its recommended settings (froze without them) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Spider-Man 2 | GameCube | 15–29 (its normal rate is 30) |
