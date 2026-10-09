@@ -1500,6 +1500,36 @@ index fbba27a..ce7a57b 100644
  
  void SleepCurrentThread(int ms);
  void SwitchCurrentThread();  // On Linux, this is equal to sleep 1ms
+diff --git a/Source/Core/Common/Timer.cpp b/Source/Core/Common/Timer.cpp
+index fcbbd7b..ec196b3 100644
+--- a/Source/Core/Common/Timer.cpp
++++ b/Source/Core/Common/Timer.cpp
+@@ -15,6 +15,10 @@
+ #include "Common/CommonTypes.h"
+ #include "Common/Logging/Log.h"
+ 
++// DolphinNoGUI/PlatformPS4.cpp: Settings -> Clock -> Timezone (hours, -12..+14), read
++// from xmb.ini at startup. The emulated console clock is UTC plus this.
++extern "C" int ps4_clock_offset;
++
+ namespace Common
+ {
+ template <typename Clock, typename Duration>
+@@ -68,7 +72,13 @@ u64 Timer::ElapsedMs() const
+ 
+ u64 Timer::GetLocalTimeSinceJan1970()
+ {
+-#ifdef _MSC_VER
++#ifdef __ORBIS__
++  // The emulated GameCube/Wii clock: UTC plus Settings -> Clock -> Timezone (hours),
++  // so games like Animal Crossing show their timezone's time instead of UTC (the PS4's libc
++  // has no timezone, whatever the console's date & time settings say).
++  const time_t now = time(nullptr);
++  return static_cast<u64>(now + static_cast<time_t>(ps4_clock_offset) * 3600);
++#elif defined(_MSC_VER)
+   std::chrono::zoned_seconds seconds(
+       std::chrono::current_zone(),
+       std::chrono::time_point_cast<std::chrono::seconds>(std::chrono::system_clock::now()));
 diff --git a/Source/Core/Common/WindowSystemInfo.h b/Source/Core/Common/WindowSystemInfo.h
 index 9d15477..ac60cc5 100644
 --- a/Source/Core/Common/WindowSystemInfo.h
@@ -3100,7 +3130,7 @@ index 5366444..9518b9c 100644
      {
        PanicAlertFmtT("Could not launch the Wii Menu because it is missing from the NAND.\n"
 diff --git a/Source/Core/Core/IOS/Network/IP/Top.cpp b/Source/Core/Core/IOS/Network/IP/Top.cpp
-index e38fd1d..50f9609 100644
+index e38fd1df..50f9609 100644
 --- a/Source/Core/Core/IOS/Network/IP/Top.cpp
 +++ b/Source/Core/Core/IOS/Network/IP/Top.cpp
 @@ -58,6 +58,74 @@
@@ -13741,10 +13771,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..78ad4e0
+index 0000000..04fdf71
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5939 @@
+@@ -0,0 +1,5971 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -14224,6 +14254,7 @@ index 0000000..78ad4e0
 +  bool sounds = true;
 +  int volume = 80;
 +  bool clock = true;
++  int clock_offset = 0;  // Timezone (hours): the clocks show UTC + clock_offset
 +  bool auto_update = true;  // look for a new version on GitHub when the app opens
 +  std::string games_dir;    // Settings -> Game Folder; empty = data_dir/games
 +  std::string last_game;
@@ -14253,6 +14284,8 @@ index 0000000..78ad4e0
 +        volume = std::clamp(std::atoi(value.c_str()), 0, 100);
 +      else if (key == "clock")
 +        clock = value == "on";
++      else if (key == "clock_offset")
++        clock_offset = std::clamp(std::atoi(value.c_str()), -12, 14);
 +      else if (key == "auto_update")
 +        auto_update = value == "on";
 +      else if (key == "games_dir")
@@ -14273,7 +14306,8 @@ index 0000000..78ad4e0
 +    file << "# Dolphin XMB preferences (edited by the menu)\n";
 +    file << "theme=" << theme << "\nwallpaper=" << wallpaper << "\nsounds="
 +         << (sounds ? "on" : "off") << "\nvolume=" << volume << "\nclock="
-+         << (clock ? "on" : "off") << "\nauto_update=" << (auto_update ? "on" : "off")
++         << (clock ? "on" : "off") << "\nclock_offset=" << clock_offset
++         << "\nauto_update=" << (auto_update ? "on" : "off")
 +         << "\ngames_dir=" << games_dir << "\nlast_game=" << last_game << "\nstyle=" << style
 +         << "\nsort=" << sort << "\ndefault_game=" << default_game << "\n";
 +  }
@@ -14336,6 +14370,7 @@ index 0000000..78ad4e0
 +  SET_SOUNDS,
 +  SET_VOLUME,
 +  SET_CLOCK,
++  SET_TIMEZONE,     // Timezone: what the clocks add to UTC
 +  SET_ABOUT,
 +  SET_RESET_ALL,
 +  SET_CONTROLS,
@@ -15097,6 +15132,10 @@ index 0000000..78ad4e0
 +  settings.push_back({"Volume", std::to_string(m_prefs.volume), -1, -1, SET_VOLUME});
 +  settings.push_back({"Menu Style", Library() ? "Library" : "XMB", -1, -1, SET_STYLE});
 +  settings.push_back({"Clock", m_prefs.clock ? "On" : "Off", -1, -1, SET_CLOCK});
++  settings.push_back({"Timezone",
++                      std::string("UTC") + (m_prefs.clock_offset >= 0 ? "+" : "") +
++                          std::to_string(m_prefs.clock_offset),
++                      -1, -1, SET_TIMEZONE});
 +  settings.push_back({"Controls", "Remap the GameCube and Wii buttons", -1, -1, SET_CONTROLS});
 +  settings.push_back({"RetroAchievements", "Earn achievements (retroachievements.org)", -1, -1,
 +                      SET_ACHIEVEMENTS});
@@ -15288,6 +15327,18 @@ index 0000000..78ad4e0
 +    m_panel.options = {"On", "Off"};
 +    m_panel.selected = m_prefs.clock ? 0 : 1;
 +    break;
++  case SET_TIMEZONE:
++    // One scrolling row (the 62 px options list only fits ~13 entries; -12..+14 is 27).
++    m_panel.title = "Timezone";
++    m_panel.rows = {{"Clock and games show",
++                     std::string("UTC") + (m_prefs.clock_offset >= 0 ? "+" : "") +
++                         std::to_string(m_prefs.clock_offset),
++                     "clock_offset"}};
++    m_panel.lines = {
++        "Left / Right: hours from UTC, from UTC-12 to UTC+14. The menu's clock and the games' "
++        "own clocks (Animal Crossing's, the memory cards') show UTC plus this."};
++    m_panel.selected = 0;
++    break;
 +  case SET_CONTROLS:
 +    m_panel.title = "Controls";
 +    m_panel.options = {PS4Controls::DeviceName(PS4Controls::Device::GameCube),
@@ -15438,6 +15489,17 @@ index 0000000..78ad4e0
 +    direction = 1;
 +  if (m_panel.selected < 0 || m_panel.selected >= static_cast<int>(m_panel.rows.size()))
 +    return;
++  if (m_panel.rows[m_panel.selected].key == "clock_offset")
++  {
++    // Settings -> Clock -> Timezone: UTC plus this many hours, saved at once so the
++    // game process (restarted by sceSystemServiceLoadExec) reads it from xmb.ini.
++    m_prefs.clock_offset = std::clamp(m_prefs.clock_offset + direction, -12, 14);
++    m_panel.rows[m_panel.selected].value =
++        std::string("UTC") + (m_prefs.clock_offset >= 0 ? "+" : "") +
++        std::to_string(m_prefs.clock_offset);
++    m_prefs.Save(m_data_dir + "/xmb.ini");
++    return;
++  }
 +  if (m_panel.setting == SET_ACHVIEW)
 +    return;  // a list to read
 +  if (m_panel.setting == SET_WIIMENU)
@@ -17602,7 +17664,7 @@ index 0000000..78ad4e0
 +    // Clock (top right).
 +    if (m_prefs.clock)
 +    {
-+      const std::time_t now = std::time(nullptr);
++      const std::time_t now = std::time(nullptr) + m_prefs.clock_offset * 3600;
 +      std::tm local = {};
 +      localtime_r(&now, &local);
 +      char clock[32];
@@ -18001,7 +18063,7 @@ index 0000000..78ad4e0
 +  PS4Glyphs::Draw(dl, m_bold, "R1", bar_x + total + 8 + 30, BAR_Y + BAR_H * 0.5f, 40, 0.9f);
 +  if (m_prefs.clock)
 +  {
-+    const std::time_t now = std::time(nullptr);
++    const std::time_t now = std::time(nullptr) + m_prefs.clock_offset * 3600;
 +    std::tm local = {};
 +    localtime_r(&now, &local);
 +    char clock[32];
@@ -20390,10 +20452,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..a102507
+index 0000000..caed205
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1989 @@
+@@ -0,0 +1,2017 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -20465,6 +20527,10 @@ index 0000000..a102507
 +// cpu_clock=auto (MainNoGUI.cpp): current clock in percent (0 = off) and its range.
 +extern "C" int ps4_auto_clock, ps4_auto_clock_min, ps4_auto_clock_max;
 +int ps4_auto_clock = 0, ps4_auto_clock_min = 60, ps4_auto_clock_max = 100;
++// Settings -> Clock -> Timezone (xmb.ini clock_offset, hours): the emulated console
++// clock (Common/Timer.cpp) is UTC plus this, as chosen in the menu.
++extern "C" int ps4_clock_offset;
++int ps4_clock_offset = 0;
 +extern "C" unsigned long long ps4_scene_stats[8];       // VideoCommon/Statistics.cpp
 +extern "C" long long ps4_wait_total(int slot);            // port/ps4_sampler.cpp
 +extern "C" unsigned long long ps4_present_counter;        // VideoCommon/Present.cpp
@@ -20847,6 +20913,30 @@ index 0000000..a102507
 +  ProbeInternalMemory();
 +  LoadSystemModules();
 +  Common::RegisterMsgAlertHandler(LogMessageAlert);
++  // Settings -> Clock -> Timezone: the menu saved it to xmb.ini; the game process
++  // (restarted with sceSystemServiceLoadExec) reads it here, before any clock is sampled.
++  {
++    const std::string path = std::string(PS4_DATA_DIR_PATH) + "/xmb.ini";
++    if (FILE* file = fopen(path.c_str(), "r"))
++    {
++      char line[128];
++      while (fgets(line, sizeof(line), file))
++      {
++        if (char* eq = strchr(line, '='))
++        {
++          *eq = '\0';
++          if (strcmp(line, "clock_offset") == 0)
++          {
++            const int offset = std::atoi(eq + 1);
++            if (offset >= -12 && offset <= 14)
++              ps4_clock_offset = offset;
++            break;
++          }
++        }
++      }
++      fclose(file);
++    }
++  }
 +  return true;
 +}
 +
