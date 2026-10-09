@@ -7456,6 +7456,232 @@ index 3e3a495..3b345f7 100644
  };
  
  }  // namespace DiscIO
+diff --git a/Source/Core/DiscIO/NANDImporter.cpp b/Source/Core/DiscIO/NANDImporter.cpp
+index 5ef1d68..1b5c124 100644
+--- a/Source/Core/DiscIO/NANDImporter.cpp
++++ b/Source/Core/DiscIO/NANDImporter.cpp
+@@ -4,6 +4,7 @@
+ #include "DiscIO/NANDImporter.h"
+ 
+ #include <algorithm>
++#include <array>
+ #include <cstring>
+ 
+ #include "Common/Crypto/AES.h"
+@@ -28,16 +29,37 @@ void NANDImporter::ImportNANDBin(const std::string& path_to_bin, UpdateCallback
+                                  const std::function<std::string()>& get_otp_dump_path)
+ {
+   m_update_callback = std::move(update_callback);
++#ifdef __ORBIS__
++  m_ps4_error.clear();
++  m_ps4_replaced = 0;
++#endif
+ 
+   if (!ReadNANDBin(path_to_bin, get_otp_dump_path))
++  {
++#ifdef __ORBIS__
++    if (m_ps4_error.empty())
++      m_ps4_error = "Couldn't read the backup";
++#endif
+     return;
++  }
+   if (!FindSuperblock())
++  {
++#ifdef __ORBIS__
++    m_ps4_error = "No Wii file system in this backup";
++#endif
+     return;
++  }
+ 
+   ExportKeys();
+ 
+   if (!ExtractFiles())
++  {
++#ifdef __ORBIS__
++    if (m_ps4_error.empty())
++      m_ps4_error = "Extracting stopped (see dolphin.log)";
++#endif
+     return;
++  }
+ 
+   ExtractCertificates();
+ 
+@@ -53,6 +75,34 @@ bool NANDImporter::ReadNANDBin(const std::string& path_to_bin,
+   constexpr size_t NAND_BIN_SIZE =
+       (NAND_BLOCK_SIZE + NAND_ECC_BLOCK_SIZE) * NAND_TOTAL_BLOCKS;  // 0x21000000
+ 
++#ifdef __ORBIS__
++  m_ps4_file = File::IOFile(path_to_bin, "rb");
++  if (!m_ps4_file)
++  {
++    m_ps4_error = "Can't open " + path_to_bin;
++    return false;
++  }
++  const u64 ps4_size = m_ps4_file.GetSize();
++  if (ps4_size != NAND_BIN_SIZE + NAND_KEYS_SIZE && ps4_size != NAND_BIN_SIZE)
++  {
++    m_ps4_error = "Not a BootMii NAND backup (wrong size)";
++    return false;
++  }
++  m_nand_keys.resize(NAND_KEYS_SIZE);
++  if (ps4_size == NAND_BIN_SIZE)
++  {
++    const std::string otp_dump_path = get_otp_dump_path();
++    if (otp_dump_path.empty())
++    {
++      m_ps4_error = "keys.bin is missing (put it next to nand.bin)";
++      return false;
++    }
++    File::IOFile keys_file{otp_dump_path, "rb"};
++    return keys_file.ReadBytes(m_nand_keys.data(), NAND_KEYS_SIZE);
++  }
++  return m_ps4_file.Seek(NAND_BIN_SIZE, File::SeekOrigin::Begin) &&
++         m_ps4_file.ReadBytes(m_nand_keys.data(), NAND_KEYS_SIZE);
++#endif
+   File::IOFile file(path_to_bin, "rb");
+   const u64 image_size = file.GetSize();
+   if (image_size != NAND_BIN_SIZE + NAND_KEYS_SIZE && image_size != NAND_BIN_SIZE)
+@@ -99,8 +149,16 @@ bool NANDImporter::FindSuperblock()
+   for (int i = 0; i < 16; i++)
+   {
+     auto superblock = std::make_unique<NANDSuperblock>();
++#ifdef __ORBIS__
++    if (!PS4ReadNAND(NAND_SUPERBLOCK_START + i * sizeof(NANDSuperblock),
++                     reinterpret_cast<u8*>(superblock.get()), sizeof(NANDSuperblock)))
++    {
++      continue;
++    }
++#else
+     std::memcpy(superblock.get(), &m_nand[NAND_SUPERBLOCK_START + i * sizeof(NANDSuperblock)],
+                 sizeof(NANDSuperblock));
++#endif
+ 
+     if (std::memcmp(superblock->magic.data(), "SFFS", 4) != 0)
+     {
+@@ -168,6 +226,9 @@ bool NANDImporter::ProcessEntry(u16 entry_number, const std::string& parent_path
+       if (m_update_callback(Step::Extracting, m_progress_cur++, m_progress_max))
+         return false;
+       std::vector<u8> data = GetEntryData(entry);
++#ifdef __ORBIS__
++      PS4KeepOld(path);
++#endif
+       File::IOFile file(m_nand_root + path, "wb");
+       file.WriteBytes(data.data(), data.size());
+     }
+@@ -205,7 +266,16 @@ std::vector<u8> NANDImporter::GetEntryData(const NANDFSTEntry& entry) const
+       return {};
+     }
+ 
++#ifdef __ORBIS__
++    {
++      std::array<u8, NAND_FAT_BLOCK_SIZE> encrypted;
++      if (!PS4ReadNAND(u64{NAND_FAT_BLOCK_SIZE} * sub, encrypted.data(), NAND_FAT_BLOCK_SIZE))
++        return {};
++      m_aes_ctx->CryptIvZero(encrypted.data(), block.get(), NAND_FAT_BLOCK_SIZE);
++    }
++#else
+     m_aes_ctx->CryptIvZero(&m_nand[NAND_FAT_BLOCK_SIZE * sub], block.get(), NAND_FAT_BLOCK_SIZE);
++#endif
+ 
+     size_t size = std::min(remaining_bytes, NAND_FAT_BLOCK_SIZE);
+     data.insert(data.end(), block.get(), block.get() + size);
+@@ -303,6 +373,39 @@ bool NANDImporter::ExtractCertificates()
+   return true;
+ }
+ 
++#ifdef __ORBIS__
++// A BootMii backup stores each 0x800-byte page followed by its 0x40 bytes of ECC data.
++bool NANDImporter::PS4ReadNAND(u64 offset, u8* out, size_t size) const
++{
++  constexpr u64 PAGE = 0x800, PAGE_WITH_ECC = 0x840;
++  while (size > 0)
++  {
++    const u64 page = offset / PAGE, in_page = offset % PAGE;
++    const size_t take = static_cast<size_t>(std::min<u64>(size, PAGE - in_page));
++    if (!m_ps4_file.Seek(static_cast<s64>(page * PAGE_WITH_ECC + in_page), File::SeekOrigin::Begin) ||
++        !m_ps4_file.ReadBytes(out, take))
++    {
++      return false;
++    }
++    offset += take;
++    out += take;
++    size -= take;
++  }
++  return true;
++}
++
++void NANDImporter::PS4KeepOld(const std::string& path)
++{
++  const std::string current = m_nand_root + path;
++  if (m_ps4_backup_root.empty() || !File::Exists(current) || File::IsDirectory(current))
++    return;
++  const std::string kept = m_ps4_backup_root + path;
++  File::CreateFullPath(kept);
++  if (File::Rename(current, kept))
++    m_ps4_replaced++;
++}
++#endif
++
+ void NANDImporter::ExportKeys()
+ {
+   constexpr size_t NAND_AES_KEY_OFFSET = 0x158;
+@@ -310,6 +413,9 @@ void NANDImporter::ExportKeys()
+   m_aes_ctx = Common::AES::CreateContextDecrypt(&m_nand_keys[NAND_AES_KEY_OFFSET]);
+ 
+   const std::string file_path = m_nand_root + "/keys.bin";
++#ifdef __ORBIS__
++  PS4KeepOld("/keys.bin");
++#endif
+   File::IOFile file(file_path, "wb");
+   if (!file.WriteBytes(m_nand_keys.data(), NAND_KEYS_SIZE))
+     PanicAlertFmtT("Unable to write to file {0}", file_path);
+diff --git a/Source/Core/DiscIO/NANDImporter.h b/Source/Core/DiscIO/NANDImporter.h
+index 6851466..908e167 100644
+--- a/Source/Core/DiscIO/NANDImporter.h
++++ b/Source/Core/DiscIO/NANDImporter.h
+@@ -3,6 +3,10 @@
+ 
+ #pragma once
+ 
++#ifdef __ORBIS__
++#include "Common/IOFile.h"
++#endif
++
+ #include <array>
+ #include <bitset>
+ #include <functional>
+@@ -39,6 +43,14 @@ public:
+                      const std::function<std::string()>& get_otp_dump_path);
+   bool ExtractCertificates();
+ 
++#ifdef __ORBIS__
++  // PS4: why the last ImportNANDBin stopped ("" = imported). Files it replaced (and an old
++  // keys.bin) are moved under the backup root first, same paths; PS4Replaced() counts them.
++  const std::string& PS4Error() const { return m_ps4_error; }
++  void PS4SetBackupRoot(std::string root) { m_ps4_backup_root = std::move(root); }
++  int PS4Replaced() const { return m_ps4_replaced; }
++#endif
++
+   enum class Type
+   {
+     File = 1,
+@@ -93,6 +105,16 @@ private:
+   UpdateCallback m_update_callback;
+   u16 m_progress_cur = 0;
+   u16 m_progress_max = 0;
++#ifdef __ORBIS__
++  // The backup is read from the file as needed: the whole NAND (512 MiB) doesn't fit in the
++  // PS4 app's memory.
++  bool PS4ReadNAND(u64 offset, u8* out, size_t size) const;
++  void PS4KeepOld(const std::string& path);
++  mutable File::IOFile m_ps4_file;
++  std::string m_ps4_error;
++  std::string m_ps4_backup_root;
++  int m_ps4_replaced = 0;
++#endif
+ };
+ }  // namespace DiscIO
+ 
 diff --git a/Source/Core/DolphinNoGUI/CMakeLists.txt b/Source/Core/DolphinNoGUI/CMakeLists.txt
 index 51c3fff..b8dfe84 100644
 --- a/Source/Core/DolphinNoGUI/CMakeLists.txt
@@ -14978,10 +15204,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..abc055a
+index 0000000..259759e
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,5946 @@
+@@ -0,0 +1,6016 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -15757,6 +15983,12 @@ index 0000000..abc055a
 +  std::atomic<size_t> m_nus_total{0};
 +  std::string m_nus_result;
 +  int m_nus_region = 0;  // USA, EUR, JPN, KOR
++  // Import NAND Backup (on m_nus_thread, with m_nus_busy): a BootMii nand.bin (+ keys.bin) from
++  // the data folder - the real Wii's system, saves and console identity (Wiimmfi needs it).
++  std::atomic<bool> m_nand_active{false};
++  std::atomic<int> m_nand_done{0};
++  std::atomic<int> m_nand_total{0};
++  std::string m_nand_result;
 +  std::string m_direct_launch;  // "nand:<title ID>": started without a game
 +  void UpdateWiimmfiDownload();
 +  void LaunchWiimmfi();
@@ -16736,6 +16968,56 @@ index 0000000..abc055a
 +        }
 +        m_nus_busy = false;
 +      });
++    }
++    else if (key == "wm:nand" && !m_nus_busy && !m_nus_thread.joinable())
++    {
++      const std::string nand_bin = m_data_dir + "/nand.bin";
++      if (!File::Exists(nand_bin))
++      {
++        m_nand_result = "Put nand.bin in " + m_data_dir + " first";
++      }
++      else
++      {
++        m_nus_busy = true;
++        m_nand_active = true;
++        m_nand_done = 0;
++        m_nand_total = 0;
++        m_nand_result.clear();
++        const std::time_t now = std::time(nullptr);
++        char stamp[32];
++        std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", std::localtime(&now));
++        const std::string backup = m_data_dir + "/nand-import-backup/" + stamp;
++        const std::string keys_bin = m_data_dir + "/keys.bin";
++        Log("wii nand: importing " + nand_bin + " (replaced files go to " + backup + ")");
++        m_nus_thread = std::thread([this, nand_bin, keys_bin, backup] {
++          DiscIO::NANDImporter importer;
++          importer.PS4SetBackupRoot(backup);
++          importer.ImportNANDBin(
++              nand_bin,
++              [this](DiscIO::NANDImporter::Step, int cur, int max) {
++                m_nand_done = cur;
++                m_nand_total = max;
++                return false;  // never cancelled
++              },
++              [keys_bin] { return File::Exists(keys_bin) ? keys_bin : std::string(); });
++          if (importer.PS4Error().empty())
++          {
++            m_nand_result = "Imported";
++            if (importer.PS4Replaced() > 0)
++            {
++              m_nand_result += " (" + std::to_string(importer.PS4Replaced()) +
++                               " old files kept in nand-import-backup)";
++            }
++          }
++          else
++          {
++            m_nand_result = importer.PS4Error();
++          }
++          m_nus_result = "NAND import: " + m_nand_result;
++          m_nand_active = false;
++          m_nus_busy = false;
++        });
++      }
 +    }
 +    else if (key == "wm:menu" && TitleInstalled("00000001/00000002"))
 +    {
@@ -20145,13 +20427,27 @@ index 0000000..abc055a
 +    update = m_nus_result.empty() ? (menu ? "Update" : "Install") : m_nus_result;
 +  }
 +  rows.push_back({menu ? "Update from Nintendo" : "Install from Nintendo", update, "wm:update"});
++  std::string nand;
++  if (m_nand_active)
++  {
++    nand = m_nand_total ? "Importing " + std::to_string(m_nand_done.load()) + " / " +
++                              std::to_string(m_nand_total.load()) + " files..." :
++                          "Reading the backup...";
++  }
++  else
++  {
++    nand = m_nand_result.empty() ? "From nand.bin (BootMii)" : m_nand_result;
++  }
++  rows.push_back({"Import NAND Backup", nand, "wm:nand"});
 +  if (menu)
 +    rows.push_back({"Start Wii Menu", "", "wm:menu"});
 +  if (mii)
 +    rows.push_back({"Start Mii Channel", "Make and edit Miis", "wm:mii"});
 +  m_panel.rows = std::move(rows);
 +  m_panel.lines = {"Downloads the Wii's system software and channels from Nintendo.",
-+                   "Miis you make in the Mii Channel appear in Wii games."};
++                   "Miis you make in the Mii Channel appear in Wii games.",
++                   "Import NAND Backup: your own Wii's system, saves and console identity (needed "
++                   "for Wiimmfi). Put BootMii's nand.bin (and keys.bin) in " + m_data_dir + "."};
 +}
 +
 +void Menu::UpdateWiiMenu()
