@@ -2916,6 +2916,62 @@ index 0000000..78d77cf
 +// Installs the hooks whose game and code match (from HLE::PatchFixedFunctions).
 +void PatchGame(Core::System& system);
 +}  // namespace HLE_PS4Games
+diff --git a/Source/Core/Core/HW/DVD/DVDThread.cpp b/Source/Core/Core/HW/DVD/DVDThread.cpp
+index e7b40fa..fadd490 100644
+--- a/Source/Core/Core/HW/DVD/DVDThread.cpp
++++ b/Source/Core/Core/HW/DVD/DVDThread.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "Core/HW/DVD/DVDThread.h"
+ 
++#include <cstdio>
+ #include <map>
+ #include <memory>
+ #include <optional>
+@@ -293,13 +294,43 @@ void DVDThread::FinishRead(u64 id, s64 cycles_late)
+   dvd_interface.FinishExecutingCommand(request.reply_type, interrupt, cycles_late, buffer);
+ }
+ 
++#ifdef __ORBIS__
++extern "C" void ps4_sampler_register_thread(const char* name);  // port/ps4_sampler.cpp
++extern "C" void ps4_boot_trace(const char* stage);
++#endif
++
+ void DVDThread::ProcessReadRequest(ReadRequest&& request)
+ {
++#ifdef __ORBIS__
++  // Dolphin Lab profiling: the DVD thread is sampled too - the CPU thread waits for its reads in
++  // FinishRead (Bully: a quarter of the CPU thread's time in its stutters).
++  static thread_local bool registered = false;
++  if (!registered)
++  {
++    registered = true;
++    ps4_sampler_register_thread("DVD thread");
++  }
++  const u64 read_start_us = Common::Timer::NowUs();
++#endif
+   m_file_logger.Log(*m_disc, request.partition, request.dvd_offset);
+ 
+   std::vector<u8> buffer(request.length);
+   if (!m_disc->Read(request.dvd_offset, request.length, buffer.data(), request.partition))
+     buffer.resize(0);
++#ifdef __ORBIS__
++  {
++    // A slow read is a likely stutter: the game waits for it.
++    const u64 took_us = Common::Timer::NowUs() - read_start_us;
++    if (took_us > 30000)
++    {
++      char line[160];
++      snprintf(line, sizeof(line), "dvd: read %u KiB at 0x%llx took %llu ms", request.length / 1024,
++               static_cast<unsigned long long>(request.dvd_offset),
++               static_cast<unsigned long long>(took_us / 1000));
++      ps4_boot_trace(line);
++    }
++  }
++#endif
+ 
+   request.realtime_done_us = Common::Timer::NowUs();
+ 
 diff --git a/Source/Core/Core/HW/GPFifo.cpp b/Source/Core/Core/HW/GPFifo.cpp
 index 0de434b..da62ff3 100644
 --- a/Source/Core/Core/HW/GPFifo.cpp
