@@ -10086,10 +10086,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..d51e133
+index 0000000..280fa0f
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,2585 @@
+@@ -0,0 +1,2614 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10221,6 +10221,7 @@ index 0000000..d51e133
 +{
 +  Cross,
 +  Circle,
++  Square,
 +  LeftRight,
 +  UpDown,
 +  L3R3,
@@ -11001,7 +11002,8 @@ index 0000000..d51e133
 +    keys.push_back("__ctlreset__");
 +    selected = s_settings_selected;
 +    subtitle = own ? "CONTROLS - THIS GAME" : "CONTROLS - ALL GAMES";
-+    hints = {{Glyph::Cross, "Change"}, {Glyph::UpDown, "Move"}, {Glyph::Circle, "Back"}};
++    hints = {{Glyph::Cross, "Change"}, {Glyph::Square, "Clear"}, {Glyph::UpDown, "Move"},
++             {Glyph::Circle, "Back"}};
 +  }
 +  else if (s_page == Page::Achievements)
 +  {
@@ -11230,6 +11232,22 @@ index 0000000..d51e133
 +  Pad::LoadConfig();
 +  if (s_wii)
 +    Wiimote::LoadConfig();
++}
++
++// Square on a button: its mapping cleared (the button then does nothing).
++void ClearControl(int row)
++{
++  if (row < 0 || row >= static_cast<int>(s_row_keys.size()) || s_row_keys[row].rfind("ctl:", 0) != 0)
++    return;
++  const auto device = s_wii ? PS4Controls::Device::Wii : PS4Controls::Device::GameCube;
++  PS4Controls::EditGame(PS4Controls::HasGameProfile(s_game_id) ? s_game_id : std::string());
++  const auto& binding = PS4Controls::Bindings(device)[std::atoi(s_row_keys[row].c_str() + 4)];
++  if (binding.stick_group)
++    return;
++  PS4Controls::Set(device, binding, "");
++  ApplyControls();
++  Toast(std::string(binding.label) + ": cleared");
++  Log(std::string("controls: cleared ") + binding.label);
 +}
 +
 +void ChangeControl(int row, int direction)
@@ -12064,6 +12082,11 @@ index 0000000..d51e133
 +    dl->AddLine(ImVec2(c.x - r * 0.45f, c.y + r * 0.45f), ImVec2(c.x + r * 0.45f, c.y - r * 0.45f),
 +                colour(120, 170, 255), r * 0.22f);
 +    break;
++  case Glyph::Square:
++    dl->AddCircleFilled(c, r, ring, 28);
++    dl->AddRect(ImVec2(c.x - r * 0.42f, c.y - r * 0.42f), ImVec2(c.x + r * 0.42f, c.y + r * 0.42f),
++                colour(255, 140, 200), 0.0f, 0, r * 0.2f);
++    break;
 +  case Glyph::Circle:
 +    dl->AddCircleFilled(c, r, ring, 28);
 +    dl->AddCircle(c, r * 0.48f, colour(255, 100, 110), 24, r * 0.2f);
@@ -12645,6 +12668,12 @@ index 0000000..d51e133
 +    else if (combo)
 +    {
 +      Close(system);
++    }
++    else if ((pressed & ORBIS_PAD_BUTTON_SQUARE) && s_page == Page::Controls &&
++             s_ctl_capture_row < 0)
++    {
++      ClearControl(s_settings_selected);
++      rebuild = true;
 +    }
 +    else if (pressed & ORBIS_PAD_BUTTON_CIRCLE)
 +    {
@@ -15204,10 +15233,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..259759e
+index 0000000..5c0167c
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,6016 @@
+@@ -0,0 +1,6035 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -17913,6 +17942,23 @@ index 0000000..259759e
 +      }
 +      return;
 +    }
++    // Controls: Square clears the selected button's mapping (it then does nothing).
++    if ((pressed & BTN_SQUARE) && m_panel.setting == SET_CONTROLS && !m_capture &&
++        m_panel.selected < static_cast<int>(m_panel.rows.size()) &&
++        m_panel.rows[m_panel.selected].key.rfind("ctl:", 0) == 0)
++    {
++      const auto device = static_cast<PS4Controls::Device>(m_controls_device);
++      const auto& binding =
++          PS4Controls::Bindings(device)[std::atoi(m_panel.rows[m_panel.selected].key.c_str() + 4)];
++      if (!binding.stick_group)
++      {
++        PS4Controls::Set(device, binding, "");
++        BuildControlRows();
++        Log(std::string("controls: cleared ") + binding.label);
++        Play("back");
++        return;
++      }
++    }
 +    if (pressed & BTN_CROSS)
 +    {
 +      if (m_panel.setting == SET_CONTROLS)
@@ -19041,6 +19087,8 @@ index 0000000..259759e
 +      hint("Select", 0);
 +    if (!m_panel.rows.empty())
 +      hint("Change", 0);
++    if (m_panel.setting == SET_CONTROLS)
++      hint("Clear", 3);
 +  }
 +  else
 +  {
