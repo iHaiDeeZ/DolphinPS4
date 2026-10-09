@@ -31017,7 +31017,7 @@ index 4a58c6f..1493495 100644
    clear_scissors = true;
    if (scissors.size() > 1)
 diff --git a/Source/Core/VideoCommon/TextureCacheBase.cpp b/Source/Core/VideoCommon/TextureCacheBase.cpp
-index 4e4567d..ed937ef 100644
+index 4e4567d..88ab994 100644
 --- a/Source/Core/VideoCommon/TextureCacheBase.cpp
 +++ b/Source/Core/VideoCommon/TextureCacheBase.cpp
 @@ -2,6 +2,7 @@
@@ -31036,7 +31036,7 @@ index 4e4567d..ed937ef 100644
    if (auto entry = LoadImpl(stage, false))
    {
      if (!DidLinkedAssetsChange(*entry))
-@@ -1311,6 +1313,47 @@ TCacheEntry* TextureCacheBase::LoadImpl(u32 stage, bool force_reload)
+@@ -1311,6 +1313,68 @@ TCacheEntry* TextureCacheBase::LoadImpl(u32 stage, bool force_reload)
    return entry.get();
  }
  
@@ -31047,6 +31047,9 @@ index 4e4567d..ed937ef 100644
 +// reuse the result. The memo is cleared every frame and on every EFB copy (which can write into
 +// texture memory). Palettes and TMEM textures are never memoized. ps4.ini tex_hash_once=off
 +// restores hashing on every lookup.
++// A memo also keeps eight 8-byte samples spread over the texture: a texture the CPU rewrote within
++// the frame is hashed again. Bink video players write a slice into one small texture, draw it and
++// write the next slice into the same memory (Chicken Little's cutscenes came out garbled).
 +extern "C" int ps4_tex_hash_once;
 +int ps4_tex_hash_once = 1;
 +extern "C" u32 ps4_tex_hash_epoch;
@@ -31061,7 +31064,24 @@ index 4e4567d..ed937ef 100644
 +  u32 samples;
 +  u32 epoch;
 +  u64 hash;
++  u64 content;
 +};
++
++// Eight 8-byte samples spread over the texture, folded: a rewrite almost always changes one.
++u64 PS4TextureContentSample(const u8* data, u32 size)
++{
++  if (size < 8)
++    return 0;
++  u64 folded = size;
++  const u32 last = size - 8;
++  for (u32 i = 0; i < 8; i++)
++  {
++    u64 sample;
++    std::memcpy(&sample, data + static_cast<u64>(last) * i / 7, sizeof(sample));
++    folded = (folded ^ sample) * 0x9E3779B97F4A7C15ull;
++  }
++  return folded;
++}
 +TextureHashMemo s_texture_hash_memo[1024];
 +}  // namespace
 +
@@ -31070,13 +31090,14 @@ index 4e4567d..ed937ef 100644
 +  if (!ps4_tex_hash_once)
 +    return Common::GetHash64(data, size, samples);
 +  TextureHashMemo& memo = s_texture_hash_memo[((address >> 5) ^ (size << 3)) & 1023];
++  const u64 content = PS4TextureContentSample(data, size);
 +  if (memo.epoch == ps4_tex_hash_epoch && memo.address == address && memo.size == size &&
-+      memo.samples == samples)
++      memo.samples == samples && memo.content == content)
 +  {
 +    return memo.hash;
 +  }
 +  const u64 hash = Common::GetHash64(data, size, samples);
-+  memo = {address, size, samples, ps4_tex_hash_epoch, hash};
++  memo = {address, size, samples, ps4_tex_hash_epoch, hash, content};
 +  return hash;
 +}
 +#endif
@@ -31084,7 +31105,7 @@ index 4e4567d..ed937ef 100644
  RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSampleSize,
                                             const TextureInfo& texture_info)
  {
-@@ -1347,8 +1390,16 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
+@@ -1347,8 +1411,16 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
  
    // TODO: This doesn't hash GB tiles for preloaded RGBA8 textures (instead, it's hashing more data
    // from the low tmem bank than it should)
@@ -31103,7 +31124,7 @@ index 4e4567d..ed937ef 100644
    u32 palette_size = 0;
    if (texture_info.GetPaletteSize())
    {
-@@ -2145,12 +2196,21 @@ bool TextureCacheBase::CopyFilterCanOverflow(const std::array<u32, 3>& coefficie
+@@ -2145,12 +2217,21 @@ bool TextureCacheBase::CopyFilterCanOverflow(const std::array<u32, 3>& coefficie
    return coefficients[0] + coefficients[1] + coefficients[2] >= 128;
  }
  
@@ -31125,7 +31146,7 @@ index 4e4567d..ed937ef 100644
    // Emulation methods:
    //
    // - EFB to RAM:
-@@ -3257,7 +3317,11 @@ u64 TCacheEntry::CalculateHash() const
+@@ -3257,7 +3338,11 @@ u64 TCacheEntry::CalculateHash() const
    u8* ptr = memory.GetPointerForRange(addr, size_in_bytes);
    if (memory_stride == bytes_per_row)
    {
