@@ -7726,7 +7726,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..2663193 100644
+index 3bf40ea..6bcada5 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -7883,7 +7883,7 @@ index 3bf40ea..2663193 100644
  #endif
        });
  
-@@ -270,7 +367,398 @@ int main(const int argc, char* argv[])
+@@ -270,7 +367,402 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -7987,6 +7987,10 @@ index 3bf40ea..2663193 100644
 +    // compiles the first time the game uses it (a short hitch).
 +    Config::SetBase(Config::GFX_SHADER_CACHE,
 +                    Platform::GetPS4Option("shader_cache", "on") == "on");
++    // vertex_rounding=on: Dolphin's Vertex Rounding (2D vertices on whole pixels at higher
++    // internal resolutions) - gaps between a video's tiles in Need for Speed: Most Wanted.
++    Config::SetBase(Config::GFX_HACK_VERTEX_ROUNDING,
++                    Platform::GetPS4Option("vertex_rounding", "off") == "on");
 +    // Save states without the texture cache and the EFB: at 3x resolution mid-race in Mario Kart
 +    // they made a 148 MB state, and the second save ran out of memory and crashed (it needs the
 +    // state twice: the buffer and its compressed copy). Without them a GameCube state is about
@@ -8282,7 +8286,7 @@ index 3bf40ea..2663193 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +772,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +776,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -8298,7 +8302,7 @@ index 3bf40ea..2663193 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +800,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +804,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -13656,10 +13660,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..f1d7e7d
+index 0000000..b15e9ef
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,971 @@
+@@ -0,0 +1,974 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -13743,6 +13747,9 @@ index 0000000..f1d7e7d
 +     "Removes distance fog (some games use fog for effects)."},
 +    {"copy_filter", "Copy Filter", "Graphics", {{"on", "On"}, {"off", "Off"}}, "on", true,
 +     "The game's own blur/deflicker filter on copies; Off is sharper."},
++    {"vertex_rounding", "Vertex Rounding", "Graphics", {{"off", "Off"}, {"on", "On"}}, "off", false,
++     "Snaps 2D pieces to whole pixels at higher resolutions: removes thin grid lines in some "
++     "videos and menus (Need for Speed: Most Wanted)."},
 +    {"efb_copies", "EFB Copies", "Graphics",
 +     {{"texture", "To Texture (fast)"}, {"ram", "To RAM (accurate)"}}, "texture", true,
 +     "Some effects need RAM copies; Texture is faster."},
@@ -15233,10 +15240,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..5c0167c
+index 0000000..230eab3
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,6035 @@
+@@ -0,0 +1,6037 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -20118,6 +20125,8 @@ index 0000000..5c0167c
 +      parts.push_back("CPU clock " + value + "%");
 +    else if (key == "dual_core")
 +      parts.push_back("dual core");
++    else if (key == "vertex_rounding")
++      parts.push_back(value == "on" ? "vertex rounding" : "no vertex rounding");
 +    else if (key == "sync_gpu")
 +      parts.push_back(value == "on" ? "GPU thread synchronized" : "GPU thread not synchronized");
 +    else if (key == "perfmon")
