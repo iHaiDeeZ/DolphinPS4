@@ -2916,6 +2916,262 @@ index 0000000..78d77cf
 +// Installs the hooks whose game and code match (from HLE::PatchFixedFunctions).
 +void PatchGame(Core::System& system);
 +}  // namespace HLE_PS4Games
+diff --git a/Source/Core/Core/HW/DSPHLE/UCodes/AX.cpp b/Source/Core/Core/HW/DSPHLE/UCodes/AX.cpp
+index 7159a5b..08a90da 100644
+--- a/Source/Core/Core/HW/DSPHLE/UCodes/AX.cpp
++++ b/Source/Core/Core/HW/DSPHLE/UCodes/AX.cpp
+@@ -38,7 +38,119 @@ AXUCode::AXUCode(DSPHLE* dsphle, u32 crc) : AXUCode(dsphle, crc, false)
+   m_accelerator = std::make_unique<HLEAccelerator>(dsphle->GetSystem().GetDSP());
+ }
+ 
++#ifdef __ORBIS__
++extern "C" int ps4_dsp_async;  // ps4.ini dsp_async (DolphinNoGUI/MainNoGUI.cpp)
++int ps4_dsp_async = 0;
++extern "C" void ps4_boot_trace(const char* stage);
++// The uCode with a command list in progress (one at a time), for savestates.
++static AXUCode* s_ps4_pending_ucode = nullptr;
++
++extern "C" void ps4_dsp_flush_for_state(int loading)
++{
++  if (s_ps4_pending_ucode)
++    s_ps4_pending_ucode->PS4FlushForState(loading != 0);
++}
++
++void AXUCode::PushListMail(u32 mail)
++{
++  if (m_ps4_list_async)
++    m_ps4_list_mails.push_back(mail);
++  else
++    m_mail_handler.PushMail(mail, true);
++}
++
++void AXUCode::PS4StartCommandList()
++{
++  if (!m_ps4_worker.joinable())
++  {
++    m_ps4_worker = std::thread([this] {
++      std::unique_lock lock(m_ps4_mutex);
++      for (;;)
++      {
++        m_ps4_cv.wait(lock, [this] { return m_ps4_job || m_ps4_quit; });
++        if (m_ps4_quit)
++          return;
++        lock.unlock();
++        HandleCommandList();
++        lock.lock();
++        m_ps4_job = false;
++        m_ps4_cv.notify_all();
++      }
++    });
++    ps4_boot_trace("audio: AX command lists on their own thread (dsp_async)");
++  }
++  m_ps4_list_mails.clear();
++  m_ps4_list_async = true;
++  m_ps4_list_pending = true;
++  m_ps4_list_updates = 0;
++  s_ps4_pending_ucode = this;
++  {
++    std::lock_guard lock(m_ps4_mutex);
++    m_ps4_job = true;
++  }
++  m_ps4_cv.notify_all();
++}
++
++void AXUCode::PS4WaitForWorker()
++{
++  std::unique_lock lock(m_ps4_mutex);
++  m_ps4_cv.wait(lock, [this] { return !m_ps4_job; });
++}
++
++void AXUCode::PS4FinishCommandList()
++{
++  if (!m_ps4_list_pending)
++    return;
++  PS4WaitForWorker();
++  m_ps4_list_pending = false;
++  m_ps4_list_async = false;
++  if (s_ps4_pending_ucode == this)
++    s_ps4_pending_ucode = nullptr;
++  for (const u32 mail : m_ps4_list_mails)
++    m_mail_handler.PushMail(mail, true);
++  m_ps4_list_mails.clear();
++  SignalWorkEnd();
++}
++
++void AXUCode::PS4FlushForState(bool loading)
++{
++  if (!m_ps4_list_pending)
++    return;
++  if (!loading)
++  {
++    PS4FinishCommandList();
++    return;
++  }
++  PS4WaitForWorker();  // the loaded state replaces everything it did
++  m_ps4_list_pending = false;
++  m_ps4_list_async = false;
++  m_ps4_list_mails.clear();
++  if (s_ps4_pending_ucode == this)
++    s_ps4_pending_ucode = nullptr;
++}
++
++void AXUCode::PS4StopWorker()
++{
++  if (!m_ps4_worker.joinable())
++    return;
++  PS4WaitForWorker();
++  {
++    std::lock_guard lock(m_ps4_mutex);
++    m_ps4_quit = true;
++  }
++  m_ps4_cv.notify_all();
++  m_ps4_worker.join();
++  if (s_ps4_pending_ucode == this)
++    s_ps4_pending_ucode = nullptr;
++}
++
++AXUCode::~AXUCode()
++{
++  PS4StopWorker();
++}
++#else
+ AXUCode::~AXUCode() = default;
++#endif
+ 
+ void AXUCode::Initialize()
+ {
+@@ -706,6 +818,10 @@ void AXUCode::SendAUXAndMix(u32 auxa_lrs_up, u32 auxb_s_up, u32 main_l_dl, u32 m
+ 
+ void AXUCode::HandleMail(u32 mail)
+ {
++#ifdef __ORBIS__
++  // A command list still running is done before the DSP takes new mail.
++  PS4FinishCommandList();
++#endif
+   if (m_upload_setup_in_progress)
+   {
+     PrepareBootUCode(mail);
+@@ -730,6 +846,16 @@ void AXUCode::HandleMail(u32 mail)
+ 
+   case MailState::WaitingForCmdListAddress:
+     CopyCmdList(mail, m_cmdlist_size);
++#ifdef __ORBIS__
++    if (ps4_dsp_async)
++    {
++      // The list runs on the worker; its mails and SignalWorkEnd come when it's collected.
++      m_cmdlist_size = 0;
++      m_mail_state = MailState::WaitingForNextTask;
++      PS4StartCommandList();
++      break;
++    }
++#endif
+     HandleCommandList();
+     m_cmdlist_size = 0;
+     SignalWorkEnd();
+@@ -792,6 +918,20 @@ void AXUCode::CopyCmdList(u32 addr, u16 size)
+ 
+ void AXUCode::Update()
+ {
++#ifdef __ORBIS__
++  // Collected at the first DSP update after the worker finished; waited for at the second (the
++  // list then took over 1 ms emulated).
++  if (m_ps4_list_pending)
++  {
++    bool done;
++    {
++      std::lock_guard lock(m_ps4_mutex);
++      done = !m_ps4_job;
++    }
++    if (done || ++m_ps4_list_updates >= 2)
++      PS4FinishCommandList();
++  }
++#endif
+   // Used for UCode switching.
+   if (NeedsResumeMail())
+   {
+diff --git a/Source/Core/Core/HW/DSPHLE/UCodes/AX.h b/Source/Core/Core/HW/DSPHLE/UCodes/AX.h
+index 138db3a..4da034c 100644
+--- a/Source/Core/Core/HW/DSPHLE/UCodes/AX.h
++++ b/Source/Core/Core/HW/DSPHLE/UCodes/AX.h
+@@ -12,6 +12,12 @@
+ #pragma once
+ 
+ #include <array>
++#ifdef __ORBIS__
++#include <condition_variable>
++#include <mutex>
++#include <thread>
++#include <vector>
++#endif
+ #include <memory>
+ #include <optional>
+ 
+@@ -129,6 +135,34 @@ protected:
+   virtual void HandleCommandList();
+   void SignalWorkEnd();
+ 
++#ifdef __ORBIS__
++public:
++  // Dolphin Lab (PS4) dsp_async (ps4.ini, per game; default off): a command list's audio work
++  // (voices, mixing - ~2% of Bully's CPU thread) runs on its own thread while the game goes on,
++  // as a real DSP works beside the CPU. The CPU thread collects it at the next DSP update (every
++  // 1 ms emulated; a real DSP takes 50,000-700,000 cycles, ~0.07-1 ms) and only then sends the
++  // list's mails and its end-of-work interrupt, in their usual order - until then the game sees a
++  // busy DSP. The next mail, a savestate (State.cpp) and a uCode change collect it first.
++  void PS4FinishCommandList();
++  // Savestates: before anything is saved (collect: mails sent) or loaded (wait, drop it).
++  void PS4FlushForState(bool loading);
++
++protected:
++  void PS4StartCommandList();
++  void PS4WaitForWorker();
++  void PS4StopWorker();
++  // Mails a command list sends (AXWii's DSP_SYNC): kept until it is collected.
++  void PushListMail(u32 mail);
++  bool m_ps4_list_pending = false;  // CPU thread
++  int m_ps4_list_updates = 0;
++  bool m_ps4_list_async = false;  // the running list's mails are kept (set before it starts)
++  std::vector<u32> m_ps4_list_mails;
++  std::thread m_ps4_worker;
++  std::mutex m_ps4_mutex;
++  std::condition_variable m_ps4_cv;
++  bool m_ps4_job = false, m_ps4_quit = false;
++#endif
++
+   struct BufferDesc
+   {
+     int* ptr;
+diff --git a/Source/Core/Core/HW/DSPHLE/UCodes/AXWii.cpp b/Source/Core/Core/HW/DSPHLE/UCodes/AXWii.cpp
+index e8b5496..895e01d 100644
+--- a/Source/Core/Core/HW/DSPHLE/UCodes/AXWii.cpp
++++ b/Source/Core/Core/HW/DSPHLE/UCodes/AXWii.cpp
+@@ -618,7 +618,11 @@ void AXWiiUCode::OutputSamples(u32 lr_addr, u32 surround_addr, u16 volume, bool
+   }
+ 
+   memory.CopyToEmu(lr_addr, buffer.data(), sizeof(buffer));
++#ifdef __ORBIS__
++  PushListMail(DSP_SYNC);  // kept until the list is collected with dsp_async
++#else
+   m_mail_handler.PushMail(DSP_SYNC, true);
++#endif
+ }
+ 
+ void AXWiiUCode::OutputWMSamples(u32* addresses)
+diff --git a/Source/Core/Core/HW/DSPHLE/UCodes/AXWii.h b/Source/Core/Core/HW/DSPHLE/UCodes/AXWii.h
+index b3c43b8..b81f39e 100644
+--- a/Source/Core/Core/HW/DSPHLE/UCodes/AXWii.h
++++ b/Source/Core/Core/HW/DSPHLE/UCodes/AXWii.h
+@@ -18,6 +18,10 @@ public:
+ 
+   void Initialize() override;
+   void DoState(PointerWrap& p) override;
++#ifdef __ORBIS__
++  // dsp_async: the worker may be running this class's HandleCommandList.
++  ~AXWiiUCode() override { PS4StopWorker(); }
++#endif
+ 
+ protected:
+   // Additional AUX buffers
 diff --git a/Source/Core/Core/HW/DVD/DVDThread.cpp b/Source/Core/Core/HW/DVD/DVDThread.cpp
 index e7b40fa..022eacc 100644
 --- a/Source/Core/Core/HW/DVD/DVDThread.cpp
@@ -6779,7 +7035,7 @@ index 8d84ed1..d1377b7 100644
  
  #ifdef _M_X86_64
 diff --git a/Source/Core/Core/State.cpp b/Source/Core/Core/State.cpp
-index 2dcd2ca..ea713fb 100644
+index 2dcd2ca..0dc7bd8 100644
 --- a/Source/Core/Core/State.cpp
 +++ b/Source/Core/Core/State.cpp
 @@ -54,6 +54,13 @@
@@ -6821,7 +7077,25 @@ index 2dcd2ca..ea713fb 100644
  // Maps savestate versions to Dolphin versions.
  // Versions after 42 don't need to be added to this list,
  // because they save the exact Dolphin version to savestates.
-@@ -374,8 +399,13 @@ static void WriteHeadersToFile(size_t uncompressed_size, File::IOFile& f)
+@@ -135,8 +160,17 @@ static constexpr bool s_use_compression = true;
+ 
+ static bool ReadHeader(const std::string& filename, StateHeader& header);
+ 
++#ifdef __ORBIS__
++extern "C" void ps4_dsp_flush_for_state(int loading);  // Core/HW/DSPHLE/UCodes/AX.cpp
++#endif
++
+ static void DoState(Core::System& system, PointerWrap& p)
+ {
++#ifdef __ORBIS__
++  // dsp_async: an audio command list still running finishes (saving) or is dropped (loading)
++  // before anything is saved or loaded.
++  ps4_dsp_flush_for_state(p.IsReadMode());
++#endif
+   bool is_wii = system.IsWii() || system.IsMIOS();
+   const bool is_wii_currently = is_wii;
+   p.Do(is_wii);
+@@ -374,8 +408,13 @@ static void WriteHeadersToFile(size_t uncompressed_size, File::IOFile& f)
                                            std::size(header.legacy_header.game_id));
    header.legacy_header.time = GetSystemTimeAsDouble();
  
@@ -6836,7 +7110,7 @@ index 2dcd2ca..ea713fb 100644
    header.version_header.version_string_length = static_cast<u32>(header.version_string.length());
  
    StateExtendedHeader extended_header{};
-@@ -391,6 +421,16 @@ static void WriteHeadersToFile(size_t uncompressed_size, File::IOFile& f)
+@@ -391,6 +430,16 @@ static void WriteHeadersToFile(size_t uncompressed_size, File::IOFile& f)
  
  static void CompressAndDumpState(Core::System& system, const CompressAndDumpStateArgs& save_args)
  {
@@ -6853,7 +7127,7 @@ index 2dcd2ca..ea713fb 100644
    const auto& buffer = save_args.buffer;
    const std::string& filename = save_args.filename;
  
-@@ -493,11 +533,18 @@ static void SaveAsFromCore(Core::System& system, std::string filename)
+@@ -493,11 +542,18 @@ static void SaveAsFromCore(Core::System& system, std::string filename)
    else
    {
      Core::DisplayMessage("Unable to save: Internal DoState Error", 4000);
@@ -6872,7 +7146,7 @@ index 2dcd2ca..ea713fb 100644
    Core::RunOnCPUThread(
        system, [&system, filename = std::move(filename), lock = GetStateSaveTaskLock()]() mutable {
          SaveAsFromCore(system, std::move(filename));
-@@ -559,7 +606,11 @@ static bool ReadStateHeaderFromFile(StateHeader& header, File::IOFile& f,
+@@ -559,7 +615,11 @@ static bool ReadStateHeaderFromFile(StateHeader& header, File::IOFile& f,
  {
    if (!f.IsOpen())
    {
@@ -6884,7 +7158,7 @@ index 2dcd2ca..ea713fb 100644
      return false;
    }
  
-@@ -700,6 +751,10 @@ static bool ValidateHeaders(const StateHeader& header)
+@@ -700,6 +760,10 @@ static bool ValidateHeaders(const StateHeader& header)
    // Game ID
    if (strncmp(SConfig::GetInstance().GetGameID().c_str(), header.legacy_header.game_id, 6) != 0)
    {
@@ -6895,7 +7169,7 @@ index 2dcd2ca..ea713fb 100644
      Core::DisplayMessage(fmt::format("State belongs to a different game (ID {})",
                                       std::string_view{header.legacy_header.game_id,
                                                        std::size(header.legacy_header.game_id)}),
-@@ -723,11 +778,20 @@ static bool ValidateHeaders(const StateHeader& header)
+@@ -723,11 +787,20 @@ static bool ValidateHeaders(const StateHeader& header)
  
      loaded_str = "Dolphin " + oldest_version + " - " + newest_version;
    }
@@ -6917,7 +7191,7 @@ index 2dcd2ca..ea713fb 100644
    if (!success)
    {
      const std::string message =
-@@ -811,12 +875,20 @@ static void LoadAsFromCore(Core::System& system, std::string filename)
+@@ -811,12 +884,20 @@ static void LoadAsFromCore(Core::System& system, std::string filename)
  {
    // Ensure all data has reached the filesystem before trying to use it.
    s_compress_and_dump_thread.WaitForCompletion();
@@ -6938,7 +7212,7 @@ index 2dcd2ca..ea713fb 100644
      const std::string dtmpath = File::GetUserPath(D_STATESAVES_IDX) + "undo.dtm";
      if (movie.IsMovieActive())
        movie.SaveRecording(dtmpath);
-@@ -843,9 +915,11 @@ static void LoadAsFromCore(Core::System& system, std::string filename)
+@@ -843,9 +924,11 @@ static void LoadAsFromCore(Core::System& system, std::string filename)
    {
      if (loaded_successfully)
      {
@@ -6950,7 +7224,7 @@ index 2dcd2ca..ea713fb 100644
        if (File::Exists(filename + ".dtm"))
        {
          movie.LoadInput(filename + ".dtm");
-@@ -858,13 +932,34 @@ static void LoadAsFromCore(Core::System& system, std::string filename)
+@@ -858,13 +941,34 @@ static void LoadAsFromCore(Core::System& system, std::string filename)
      }
      else
      {
@@ -6985,7 +7259,7 @@ index 2dcd2ca..ea713fb 100644
    if (s_on_after_load_callback)
      s_on_after_load_callback();
  }
-@@ -884,6 +979,38 @@ void SetOnAfterLoadCallback(AfterLoadCallbackFunc callback)
+@@ -884,6 +988,38 @@ void SetOnAfterLoadCallback(AfterLoadCallbackFunc callback)
    s_on_after_load_callback = std::move(callback);
  }
  
@@ -7209,7 +7483,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..1085c35 100644
+index 3bf40ea..2663193 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -7260,7 +7534,7 @@ index 3bf40ea..1085c35 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,63 @@
+@@ -31,6 +53,64 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -7291,6 +7565,7 @@ index 3bf40ea..1085c35 100644
 +extern "C" int ps4_disc_cache;            // DiscIO/FileBlob.cpp
 +extern "C" int ps4_dvd_async;             // Core/HW/DVD/DVDThread.cpp
 +extern "C" int ps4_jit_pin[4];            // Core/PowerPC/Jit64/Jit.cpp
++extern "C" int ps4_dsp_async;             // Core/HW/DSPHLE/UCodes/AX.cpp
 +extern "C" int ps4_sync_idle_frame;      // Core/CoreTiming.cpp
 +extern "C" int ps4_shader_dump;          // VideoCommon/ShaderCache.cpp
 +extern "C" int ps4_tev_ras_float;        // VideoCommon/PixelShaderGen.cpp
@@ -7324,7 +7599,7 @@ index 3bf40ea..1085c35 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +252,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +253,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -7335,7 +7610,7 @@ index 3bf40ea..1085c35 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +267,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +268,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -7354,7 +7629,7 @@ index 3bf40ea..1085c35 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +299,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +300,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -7365,7 +7640,7 @@ index 3bf40ea..1085c35 100644
  #endif
        });
  
-@@ -270,7 +366,396 @@ int main(const int argc, char* argv[])
+@@ -270,7 +367,398 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -7562,6 +7837,8 @@ index 3bf40ea..1085c35 100644
 +    // dvd_async=on (experimental, off by default: it broke Bully in v50.56): a late disc read
 +    // delays the emulated drive instead of stopping the emulated CPU.
 +    ps4_dvd_async = Platform::GetPS4Option("dvd_async", "off") == "on";
++    // dsp_async=on (Dolphin Lab, per game; default off): audio command lists on their own thread.
++    ps4_dsp_async = Platform::GetPS4Option("dsp_async", "off") == "on";
 +    // jit_pin=1,3,4,31 (Dolphin Lab, per game; default off): up to four guest GPRs kept in host
 +    // registers across JIT blocks (Core/PowerPC/Jit64/RegCache/JitRegCache.h).
 +    {
@@ -7762,7 +8039,7 @@ index 3bf40ea..1085c35 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +769,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +772,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -7778,7 +8055,7 @@ index 3bf40ea..1085c35 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +797,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +800,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
