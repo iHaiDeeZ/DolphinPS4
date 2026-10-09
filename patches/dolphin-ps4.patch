@@ -5618,24 +5618,41 @@ index 2e1b05c..e70f45b 100644
  
    FinalizeSingleResult(Rd, Rd);
  }
+diff --git a/Source/Core/Core/PowerPC/Jit64/RegCache/CachedReg.h b/Source/Core/Core/PowerPC/Jit64/RegCache/CachedReg.h
+index 99a6e47..63411a4 100644
+--- a/Source/Core/Core/PowerPC/Jit64/RegCache/CachedReg.h
++++ b/Source/Core/Core/PowerPC/Jit64/RegCache/CachedReg.h
+@@ -128,6 +128,7 @@ class RCConstraint
+ {
+ public:
+   bool IsRealized() const { return realized != RealizedLoc::Invalid; }
++  bool IsRealizedImm() const { return realized == RealizedLoc::Imm; }
+   bool IsActive() const
+   {
+     return IsRealized() || write || read || kill_imm || kill_mem || revertable;
 diff --git a/Source/Core/Core/PowerPC/Jit64/RegCache/GPRRegCache.cpp b/Source/Core/Core/PowerPC/Jit64/RegCache/GPRRegCache.cpp
-index fdbe13e..960a504 100644
+index fdbe13e..badea64 100644
 --- a/Source/Core/Core/PowerPC/Jit64/RegCache/GPRRegCache.cpp
 +++ b/Source/Core/Core/PowerPC/Jit64/RegCache/GPRRegCache.cpp
-@@ -32,6 +32,12 @@ s32 GPRRegCache::SImm32(preg_t preg) const
+@@ -32,6 +32,17 @@ s32 GPRRegCache::SImm32(preg_t preg) const
  
  OpArg GPRRegCache::R(preg_t preg) const
  {
 +#ifdef __ORBIS__
-+  // jit_pin: a pinned register with a known value reads as that constant, as an unpinned one does
-+  // (code checks IsImm() and then takes Imm32() of the operand); its host register holds the same.
-+  if (IsPinned(preg) && m_jit.GetConstantPropagation().HasGPR(preg))
++  // jit_pin: a pinned register with a known value reads as that constant only where the operand
++  // was realized as one (Use, BindOrImm), as an unpinned register does - code checks IsImm() and
++  // then takes Imm32(). Bind and UseNoImm need its host register (v50.59: a constant reached a
++  // MUL in Chicken Little - "WriteMulDivType - Imm argument").
++  if (IsPinned(preg) && m_jit.GetConstantPropagation().HasGPR(preg) &&
++      m_constraints[preg].IsRealizedImm())
++  {
 +    return ::Gen::Imm32(m_jit.GetConstantPropagation().GetGPR(preg));
++  }
 +#endif
    if (m_regs[preg].IsInHostRegister())
    {
      return ::Gen::R(m_regs[preg].GetHostRegister());
-@@ -108,6 +114,16 @@ void GPRRegCache::SetImmediate32(preg_t preg, u32 imm_value, bool dirty)
+@@ -108,6 +119,16 @@ void GPRRegCache::SetImmediate32(preg_t preg, u32 imm_value, bool dirty)
  {
    // "dirty" can be false to avoid redundantly flushing an immediate when
    // processing speculative constants.
