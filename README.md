@@ -281,7 +281,6 @@ A range means the frame rate depends on what's on screen. *Recommended settings*
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Sonic Heroes | GameCube | – | – | 60 FPS |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Sphinx and the Cursed Mummy | GameCube | PS4 Pro, 6.72 | 1080p (3x), 2x anti-aliasing | 50 FPS with *Speed Features: Compatible* (with Fast: a black screen instead of the THQ logo) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Spider-Man 2 | GameCube | PS4 Slim, 12.52 | 1080p | ~25 FPS, dips to 80% speed, some stutters, no crashes |
-| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Star Fox Adventures | GameCube | 60 in gameplay with its recommended settings; cutscenes 42–52 (voices stutter a little) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | SpongeBob SquarePants: Battle for Bikini Bottom (Deluxe mod) | GameCube | – | 480p | Playable, but the frame rate is unsteady with frequent slowdowns |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Super Smash Bros. Melee (Akaneia / ACE mod) | GameCube | PS4 Slim, 11.00 | 1080p | 60 FPS, very stable, no stutters or crashes |
 | ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | Tony Hawk's Underground | GameCube | – | – | Very low frame rate |
