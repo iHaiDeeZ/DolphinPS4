@@ -232,7 +232,7 @@ Everything the app creates sits in **`/data/DolphinPS4/`**:
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | The Legend of Zelda: Twilight Princess | GameCube | 30 (its normal rate) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Metroid Prime | GameCube | ~48 with its recommended settings (its normal rate is 60) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Mortal Kombat: Deadly Alliance | GameCube | 60 |
-| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Need for Speed: Most Wanted | GameCube | 22–40 with its recommended settings; cutscenes 17–26, a thin line in some |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Need for Speed: Most Wanted | GameCube | 19–28 (22–40 being tested); cutscenes 13–30, thin lines over videos at higher resolutions |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Resident Evil 4 | GameCube | 30 (its normal rate) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Shadow the Hedgehog | GameCube | 30–60 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Sonic Adventure DX | GameCube | 60 |
