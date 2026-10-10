@@ -10277,10 +10277,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..35c5537
+index 0000000..2df760b
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,2967 @@
+@@ -0,0 +1,2975 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10320,6 +10320,7 @@ index 0000000..35c5537
 +#endif
 +#include "DolphinNoGUI/PS4Cheats.h"
 +#include "DolphinNoGUI/PS4Controls.h"
++#include "DolphinNoGUI/PS4Glyphs.h"
 +#include "DolphinNoGUI/PS4Lang.h"
 +#include "DolphinNoGUI/Platform.h"
 +#include "DolphinNoGUI/PS4Settings.h"
@@ -12511,25 +12512,23 @@ index 0000000..35c5537
 +  }
 +  case Glyph::L3R3:
 +  {
-+    // Two round buttons, "L3" and "R3" written in them, with a "+" between.
++    // The DualShock 4's L3 and R3 (stick presses, as in the launcher's lists) with a "+".
 +    ImFont* font = ps4_overlay_font ? ps4_overlay_font : ImGui::GetFont();
-+    const float button_r = r * 0.95f, offset = r * 1.45f;
-+    for (int i = 0; i < 2; i++)
++    float h = r * 2.0f;
++    const float plus_w = r * 0.9f;
++    float w = PS4Glyphs::Width("L3", h) + plus_w + PS4Glyphs::Width("R3", h);
++    if (w > r * 4.8f && w > 0.0f)
 +    {
-+      const ImVec2 p(c.x + (i == 0 ? -offset : offset), c.y);
-+      dl->AddCircleFilled(p, button_r, IM_COL32(20, 24, 34, static_cast<int>(230 * a)), 28);
-+      dl->AddCircle(p, button_r, colour(255, 255, 255), 28, r * 0.1f);
-+      const char* label = i == 0 ? "L3" : "R3";
-+      const float fs = r * 0.95f;
-+      const ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, label);
-+      dl->AddText(font, fs, ImVec2(p.x - ts.x * 0.5f, p.y - ts.y * 0.5f), colour(255, 255, 255),
-+                  label);
++      h *= r * 4.8f / w;
++      w = r * 4.8f;
 +    }
-+    const float plus = r * 0.22f;
-+    dl->AddLine(ImVec2(c.x - plus, c.y), ImVec2(c.x + plus, c.y), colour(255, 255, 255),
-+                r * 0.1f);
-+    dl->AddLine(ImVec2(c.x, c.y - plus), ImVec2(c.x, c.y + plus), colour(255, 255, 255),
-+                r * 0.1f);
++    float x = c.x - w * 0.5f;
++    x += PS4Glyphs::Draw(dl, font, "L3", x, c.y, h, a);
++    const float plus = r * 0.2f, px = x + plus_w * 0.5f;
++    dl->AddLine(ImVec2(px - plus, c.y), ImVec2(px + plus, c.y), colour(255, 255, 255), r * 0.12f);
++    dl->AddLine(ImVec2(px, c.y - plus), ImVec2(px, c.y + plus), colour(255, 255, 255), r * 0.12f);
++    x += plus_w;
++    PS4Glyphs::Draw(dl, font, "R3", x, c.y, h, a);
 +    break;
 +  }
 +  }
@@ -12847,24 +12846,33 @@ index 0000000..35c5537
 +    dl->AddText(bold, 32 * s, p, IM_COL32(255, 255, 255, static_cast<int>(255 * ta)),
 +                PS4Lang::T(s_toast).c_str());
 +  }
-+  if (hint_alpha > 0.0f && s_appear < 0.5f && !toast)
++  if (hint_time > 3.0f && hint_time < 10.0f && s_appear < 0.5f && !toast)
 +  {
-+    // "L3 + R3 for the menu", with the two stick icons, in the bottom-right corner.
++    // "L3 + R3  Menu" in the bottom-right corner: slides in from the right (eased), the button
++    // icons breathe while it shows, then it slides back out.
++    ps4_overlay_repaint = 1;
++    const float in = std::clamp((hint_time - 3.0f) / 0.5f, 0.0f, 1.0f);
++    const float out = std::clamp((10.0f - hint_time) / 0.45f, 0.0f, 1.0f);
++    const float ease_in = 1.0f - (1.0f - in) * (1.0f - in) * (1.0f - in);
++    const float ease_out = out * out * (3.0f - 2.0f * out);
++    const float ha = std::min(ease_in, ease_out);
 +    const char* label = "Menu";
 +    const float ts = 30 * s, r = 20 * s;
 +    const float tw = bold->CalcTextSizeA(ts, FLT_MAX, 0, PS4Lang::T(label)).x;
-+    const float icon_w = r * 4.9f, pad = 22 * s, gap = 16 * s;
-+    const float right = size.x - 60 * s, bottom = size.y - 60 * s, height = 70 * s;
-+    const float left = right - pad - tw - gap - icon_w - pad;
-+    const auto alpha = [hint_alpha](int a) { return static_cast<int>(a * hint_alpha); };
-+    dl->AddRectFilled(ImVec2(left, bottom - height), ImVec2(right, bottom),
-+                      IM_COL32(8, 20, 46, alpha(215)), 16 * s);
-+    dl->AddRect(ImVec2(left, bottom - height), ImVec2(right, bottom),
-+                IM_COL32(120, 196, 255, alpha(90)), 16 * s, 0, 1.5f * s);
++    const float icon_w = r * 4.8f, pad = 24 * s, gap = 18 * s;
++    const float box_w = pad + icon_w + gap + tw + pad, height = 74 * s;
++    const float slide = (1.0f - std::min(ease_in, ease_out)) * (box_w + 80 * s);
++    const float right = size.x - 60 * s + slide, bottom = size.y - 60 * s;
++    const float left = right - box_w;
++    BevelBox(dl, ImVec2(left, bottom - height), ImVec2(right, bottom),
++             IM_COL32(40, 96, 180, static_cast<int>(210 * ha)),
++             IM_COL32(8, 22, 56, static_cast<int>(225 * ha)),
++             IM_COL32(120, 196, 255, static_cast<int>(130 * ha)), 18 * s, ha, s, true);
++    const float breathe = 0.82f + 0.18f * std::sin(hint_time * 4.0f);
 +    DrawGlyph(dl, Glyph::L3R3, ImVec2(left + pad + icon_w * 0.5f, bottom - height * 0.5f), r,
-+              hint_alpha);
++              ha * breathe);
 +    dl->AddText(bold, ts, ImVec2(left + pad + icon_w + gap, bottom - height * 0.5f - ts * 0.55f),
-+                IM_COL32(255, 255, 255, alpha(255)), PS4Lang::T(label));
++                IM_COL32(255, 255, 255, static_cast<int>(255 * ha)), PS4Lang::T(label));
 +  }
 +}
 +
