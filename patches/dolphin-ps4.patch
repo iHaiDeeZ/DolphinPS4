@@ -10311,10 +10311,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..a7cd7b1
+index 0000000..9df3c32
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,3179 @@
+@@ -0,0 +1,3178 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -12248,8 +12248,7 @@ index 0000000..a7cd7b1
 +    db.ForEachSymbol([&](const Common::Symbol& symbol) {
 +      char line[64];
 +      snprintf(line, sizeof(line), "%08x %u ", symbol.address, symbol.size);
-+      text += line + symbol.name + "
-+";
++      text += std::string(line) + symbol.name + "\n";
 +      count++;
 +      if (symbol.name.rfind("zz_", 0) != 0)
 +        named++;
