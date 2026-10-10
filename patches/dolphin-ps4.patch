@@ -10277,10 +10277,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..01fe1eb
+index 0000000..35c5537
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,2936 @@
+@@ -0,0 +1,2967 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10992,6 +10992,10 @@ index 0000000..01fe1eb
 +std::string s_drawn_subtitle;
 +Clock::time_point s_last_draw;
 +Clock::time_point s_toast_start;
++// Rewind effect (under s_mutex): from the press until shortly after the checkpoint is loaded, a
++// tape-rewind screen covers the game (the frames around a state load are not the game's).
++bool s_rewind_fx = false;
++Clock::time_point s_rewind_fx_start, s_rewind_fx_end;
 +
 +// ---- Host thread only. ----
 +Page s_page = Page::Main;
@@ -11984,8 +11988,13 @@ index 0000000..01fe1eb
 +    s_last_rewind = Clock::now();
 +    s_checkpoint_clock = 0.0f;
 +    s_rewind_loading = true;
++    {
++      std::lock_guard lock(s_mutex);
++      s_rewind_fx = true;
++      s_rewind_fx_start = Clock::now();
++      s_rewind_fx_end = s_rewind_fx_start + std::chrono::seconds(30);  // until the load is done
++    }
 +    State::LoadAs(system, s_checkpoints.front());
-+    Toast("Rewinding...");
 +    return;
 +  }
 +  if (fired(s_save_mask))
@@ -12566,8 +12575,10 @@ index 0000000..01fe1eb
 +      hint_time < 3.0f || hint_time > 10.0f ?
 +          0.0f :
 +          std::min({1.0f, (hint_time - 3.0f) / 0.4f, (10.0f - hint_time) / 0.6f});
++  if (s_rewind_fx && now > s_rewind_fx_end)
++    s_rewind_fx = false;
 +  if (s_appear < 0.01f && !toast && hint_alpha <= 0.0f && s_popups.empty() &&
-+      s_banners.empty())
++      s_banners.empty() && !s_rewind_fx)
 +    return;
 +
 +  ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -12577,6 +12588,40 @@ index 0000000..01fe1eb
 +  const float s = size.y / 1080.0f;  // layout in 1080p units
 +  if (DrawPopup(dl, bold, regular, s, now))
 +    ps4_overlay_repaint = 1;  // keep animating while paused
++  if (s_rewind_fx)
++  {
++    // Tape rewind: the picture dims behind scan lines, a tracking band rolls up, and a large
++    // rewind sign pulses in the middle.
++    ps4_overlay_repaint = 1;
++    const float t = std::chrono::duration<float>(now - s_rewind_fx_start).count();
++    const float left = std::chrono::duration<float>(s_rewind_fx_end - now).count();
++    const float fx = std::clamp(std::min(t / 0.12f, left / 0.6f), 0.0f, 1.0f);
++    dl->AddRectFilled(ImVec2(0, 0), size, IM_COL32(6, 10, 22, static_cast<int>(225 * fx)));
++    for (float ly = 0.0f; ly < size.y; ly += 4.0f * s)
++      dl->AddLine(ImVec2(0, ly), ImVec2(size.x, ly), IM_COL32(0, 0, 0, static_cast<int>(70 * fx)), 1.0f * s);
++    const float band = size.y - std::fmod(t * size.y * 1.4f, size.y + 160 * s);
++    dl->AddRectFilledMultiColor(ImVec2(0, band), ImVec2(size.x, band + 70 * s),
++                                IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 0),
++                                IM_COL32(200, 220, 255, static_cast<int>(60 * fx)),
++                                IM_COL32(200, 220, 255, static_cast<int>(60 * fx)));
++    for (int k = 0; k < 14; k++)
++    {
++      // Noise specks along the band.
++      const float nx = std::fmod((k * 197.0f + t * 2900.0f), size.x);
++      dl->AddRectFilled(ImVec2(nx, band + 30 * s + (k % 5) * 6 * s), ImVec2(nx + 40 * s, band + 32 * s + (k % 5) * 6 * s),
++                        IM_COL32(255, 255, 255, static_cast<int>(120 * fx)));
++    }
++    const float pulse = 0.75f + 0.25f * std::sin(t * 9.0f);
++    const ImVec2 c(size.x * 0.5f, size.y * 0.46f);
++    const float r = 54 * s;
++    const ImU32 sign = IM_COL32(255, 255, 255, static_cast<int>(235 * fx * pulse));
++    dl->AddTriangleFilled(ImVec2(c.x - 2 * r, c.y), ImVec2(c.x - 0.2f * r, c.y - r), ImVec2(c.x - 0.2f * r, c.y + r), sign);
++    dl->AddTriangleFilled(ImVec2(c.x - 0.2f * r, c.y), ImVec2(c.x + 1.6f * r, c.y - r), ImVec2(c.x + 1.6f * r, c.y + r), sign);
++    const std::string label = PS4Lang::T(std::string("Rewinding..."));
++    const float tw = bold->CalcTextSizeA(44 * s, FLT_MAX, 0, label.c_str()).x;
++    dl->AddText(bold, 44 * s, ImVec2(c.x - tw * 0.5f, c.y + r + 30 * s),
++                IM_COL32(255, 255, 255, static_cast<int>(255 * fx)), label.c_str());
++  }
 +  if (s_appear < 0.5f && DrawBanner(dl, bold, regular, s, now))
 +    ps4_overlay_repaint = 1;
 +  const float a = s_appear;
@@ -12604,19 +12649,12 @@ index 0000000..01fe1eb
 +                                IM_COL32(8, 20, 46, static_cast<int>(150 * a)),
 +                                IM_COL32(2, 6, 16, static_cast<int>(150 * a)),
 +                                IM_COL32(2, 6, 16, static_cast<int>(240 * a)));
-+    // The slab's thickness to the right of its lit edge, and a soft shadow beyond it.
-+    dl->AddRectFilledMultiColor(ImVec2(x0 + panel_w, 0), ImVec2(x0 + panel_w + 16 * s, size.y),
-+                                IM_COL32(30, 70, 130, static_cast<int>(230 * a)),
-+                                IM_COL32(4, 12, 30, static_cast<int>(230 * a)),
-+                                IM_COL32(4, 12, 30, static_cast<int>(230 * a)),
-+                                IM_COL32(30, 70, 130, static_cast<int>(230 * a)));
-+    dl->AddRectFilledMultiColor(ImVec2(x0 + panel_w + 16 * s, 0), ImVec2(x0 + panel_w + 60 * s, size.y),
-+                                IM_COL32(0, 0, 0, static_cast<int>(110 * a)), IM_COL32(0, 0, 0, 0),
-+                                IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, static_cast<int>(110 * a)));
++    // A soft shadow beyond the panel and a thin lit edge.
++    dl->AddRectFilledMultiColor(ImVec2(x0 + panel_w, 0), ImVec2(x0 + panel_w + 70 * s, size.y),
++                                IM_COL32(0, 0, 0, static_cast<int>(120 * a)), IM_COL32(0, 0, 0, 0),
++                                IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, static_cast<int>(120 * a)));
 +    dl->AddLine(ImVec2(x0 + panel_w, 0), ImVec2(x0 + panel_w, size.y),
-+                IM_COL32(140, 210, 255, static_cast<int>(230 * a)), 2.5f * s);
-+    dl->AddLine(ImVec2(x0 + panel_w - 4 * s, 0), ImVec2(x0 + panel_w - 4 * s, size.y),
-+                IM_COL32(255, 255, 255, static_cast<int>(40 * a)), 1.0f * s);
++                IM_COL32(120, 196, 255, static_cast<int>(150 * a)), 1.5f * s);
 +    const ImU32 white = IM_COL32(255, 255, 255, static_cast<int>(255 * a));
 +    const ImU32 dim = IM_COL32(255, 255, 255, static_cast<int>(165 * a));
 +    const ImU32 accent = IM_COL32(120, 196, 255, static_cast<int>(255 * a));
@@ -12667,11 +12705,9 @@ index 0000000..01fe1eb
 +      dl->AddRectFilled(ImVec2(hx0 - 8 * s, hy - 12 * s), ImVec2(hx1 + 8 * s, hy + 62 * s),
 +                        IM_COL32(91, 184, 255, static_cast<int>(28 * ha)), 18 * s);
 +      BevelBox(dl, ImVec2(hx0, hy - 4 * s), ImVec2(hx1, hy + 54 * s),
-+               IM_COL32(110, 190, 255, static_cast<int>(150 * ha)),
-+               IM_COL32(30, 90, 170, static_cast<int>(150 * ha)),
-+               IM_COL32(170, 225, 255, static_cast<int>(240 * ha)), 12 * s, ha, s, true);
-+      dl->AddRectFilled(ImVec2(hx0 + 4 * s, hy + 4 * s), ImVec2(hx0 + 10 * s, hy + 46 * s),
-+                        IM_COL32(210, 240, 255, static_cast<int>(255 * ha)), 3 * s);
++               IM_COL32(52, 120, 210, static_cast<int>(215 * ha)),
++               IM_COL32(18, 52, 120, static_cast<int>(215 * ha)),
++               IM_COL32(130, 200, 255, static_cast<int>(150 * ha)), 14 * s, ha, s, true);
 +    }
 +    s_value_in += (1.0f - s_value_in) * (1.0f - std::exp(-14.0f * dt));
 +    const float panel_x0 = x0;
@@ -12683,23 +12719,14 @@ index 0000000..01fe1eb
 +      if (y < top - row_h || y > bottom)
 +        continue;
 +      // Rows further down arrive a little later (a cascade), all within the page transition.
-+      const float cascade = std::clamp(s_page_in * 1.3f - static_cast<float>(i) * 0.03f, 0.0f, 1.0f);
++      const float on_screen = std::clamp(static_cast<float>(i) - s_scroll, 0.0f, 12.0f);
++      const float cascade = std::clamp(s_page_in * 1.6f - on_screen * 0.05f, 0.0f, 1.0f);
 +      const float x0 = panel_x0 + (1.0f - cascade) * 90.0f * s;
 +      const float row_a = 0.15f + 0.85f * cascade;
 +      const auto fade = [row_a](ImU32 c) {
 +        return (c & 0x00FFFFFFu) | (static_cast<ImU32>(((c >> 24) & 0xFF) * row_a) << 24);
 +      };
 +      const ImU32 white = fade(panel_white), dim = fade(panel_dim), accent = fade(panel_accent);
-+      if (!row.header && !s_tall)
-+      {
-+        // Each row on a faint raised plate.
-+        dl->ChannelsSetCurrent(0);
-+        BevelBox(dl, ImVec2(x0 + 44 * s, y - 2 * s), ImVec2(x0 + panel_w - 44 * s, y + 52 * s),
-+                 IM_COL32(255, 255, 255, static_cast<int>(14 * a * row_a)),
-+                 IM_COL32(0, 0, 0, static_cast<int>(60 * a * row_a)),
-+                 IM_COL32(120, 196, 255, static_cast<int>(26 * a * row_a)), 10 * s, a * row_a * 0.6f,
-+                 s, false);
-+      }
 +      dl->ChannelsSetCurrent(2);
 +      if (row.header && s_tall)
 +      {
@@ -12943,6 +12970,10 @@ index 0000000..01fe1eb
 +    if (s_rewind_loading)
 +    {
 +      s_rewind_loading = false;
++      {
++        std::lock_guard lock(s_mutex);
++        s_rewind_fx_end = Clock::now() + std::chrono::milliseconds(700);
++      }
 +      const size_t older = s_checkpoints.empty() ? 0 : s_checkpoints.size() - 1;
 +      Toast(result == State::PS4Slot::Ready ?
 +                "Rewound to the last checkpoint" +
