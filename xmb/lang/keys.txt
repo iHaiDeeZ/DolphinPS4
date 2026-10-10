@@ -453,3 +453,27 @@ Check it in PC Dolphin (right-click > Properties > Verify) or convert it again, 
 Details are in crash.log and boot-trace.log (in /data/DolphinPS4).
 Details are in dolphin.log and boot-trace.log (in /data/DolphinPS4).
 Circle closes this.
+# --- Controller page, menu styles, GameCube BIOS
+Controller
+Extension
+Button Mapping
+Wii Remote Buttons
+CONTROLLER - THIS GAME
+CONTROLLER - ALL GAMES
+Hold Wii Remote
+Pointed at TV
+Sideways
+Like a Wheel
+Tilt With
+Motion + Stick
+Motion
+Touchpad
+Swing
+Clear
+GameCube Boot Animation
+Plays the GameCube's own start-up animation before a game, when its BIOS is on the PS4: /data/DolphinPS4/User/GC/USA/IPL.bin (EUR or JAP for other regions).
+Carousel
+Carousel: your covers in a row.
+GameCube: a list and a turning cube.
+Wii: a grid of channels, by page.
+Tabs switch with L1 / R1 (not in XMB).

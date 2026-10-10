@@ -451,3 +451,27 @@ Controleer het in Dolphin op de pc (rechtsklik > Eigenschappen > Verifiëren) of
 Details staan in crash.log en boot-trace.log (in /data/DolphinPS4).
 Details staan in dolphin.log en boot-trace.log (in /data/DolphinPS4).
 Cirkel sluit dit.
+# --- Controller page, menu styles, GameCube BIOS
+Controller
+Uitbreiding
+Knoptoewijzing
+Wii Remote-knoppen
+CONTROLLER - DIT SPEL
+CONTROLLER - ALLE SPELLEN
+Wii Remote vasthouden
+Gericht op de tv
+Zijwaarts
+Als een stuur
+Kantelen met
+Beweging + stick
+Beweging
+Touchpad
+Zwaaien
+Wissen
+GameCube-opstartanimatie
+Speelt de opstartanimatie van de GameCube vóór een spel, als het BIOS op de PS4 staat: /data/DolphinPS4/User/GC/USA/IPL.bin (EUR of JAP voor andere regio's).
+Carrousel
+Carrousel: je hoesjes op een rij.
+GameCube: een lijst en een draaiende kubus.
+Wii: een raster van kanalen, per pagina.
+Tabbladen wisselen met L1 / R1 (niet in XMB).

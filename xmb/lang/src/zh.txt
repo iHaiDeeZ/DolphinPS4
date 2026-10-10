@@ -451,3 +451,27 @@ Dolphin 无法读取该文件。文件已损坏、不完整，或不是 GameCube
 详细信息在 crash.log 和 boot-trace.log 中（位于 /data/DolphinPS4）。
 详细信息在 dolphin.log 和 boot-trace.log 中（位于 /data/DolphinPS4）。
 按圆圈键关闭。
+# --- Controller page, menu styles, GameCube BIOS
+控制器
+扩展设备
+按键映射
+Wii 遥控器按键
+控制器 - 此游戏
+控制器 - 所有游戏
+Wii 遥控器握法
+指向电视
+横握
+像方向盘
+倾斜方式
+体感 + 摇杆
+体感
+触摸板
+挥动
+清除
+GameCube 开机动画
+当 PS4 上有 GameCube 的 BIOS 时，在游戏前播放其开机动画：/data/DolphinPS4/User/GC/USA/IPL.bin（其他地区为 EUR 或 JAP）。
+轮播
+轮播：封面排成一行。
+GameCube：列表和旋转的立方体。
+Wii：按页排列的频道网格。
+用 L1 / R1 切换标签（XMB 除外）。

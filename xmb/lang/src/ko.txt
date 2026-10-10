@@ -451,3 +451,27 @@ PC용 Dolphin에서 확인하거나 (오른쪽 클릭 > 속성 > 확인) 다시 
 자세한 내용은 crash.log와 boot-trace.log에 있습니다 (/data/DolphinPS4).
 자세한 내용은 dolphin.log와 boot-trace.log에 있습니다 (/data/DolphinPS4).
 동그라미로 닫습니다.
+# --- Controller page, menu styles, GameCube BIOS
+컨트롤러
+확장 기기
+버튼 매핑
+Wii 리모컨 버튼
+컨트롤러 - 이 게임
+컨트롤러 - 모든 게임
+Wii 리모컨 쥐는 방법
+TV를 향하게
+가로로
+핸들처럼
+기울이기
+모션 + 스틱
+모션
+터치패드
+흔들기
+지우기
+게임큐브 시작 애니메이션
+BIOS가 PS4에 있으면 게임 전에 게임큐브의 시작 애니메이션을 재생합니다: /data/DolphinPS4/User/GC/USA/IPL.bin (다른 지역은 EUR 또는 JAP).
+캐러셀
+캐러셀: 표지를 한 줄로.
+게임큐브: 목록과 회전하는 큐브.
+Wii: 채널 그리드, 페이지별.
+탭은 L1 / R1로 전환 (XMB 제외).

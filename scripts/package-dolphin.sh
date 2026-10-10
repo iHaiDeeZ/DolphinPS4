@@ -49,6 +49,25 @@ cp -r "$SRC/Data/Sys" "$STAGE/Sys"
 # PkgTool's pkg_build crashes ("Sequence contains no elements") on these two folders. Themes are
 # Qt GUI icons (unused here); Load holds optional graphics mods.
 rm -rf "$STAGE/Sys/Themes" "$STAGE/Sys/Load"
+# Dolphin's own graphics mods (bloom / blur / depth of field removal and per-game fixes), chosen
+# per game in the launcher (Triangle > Graphics Mods). Folder names without spaces or
+# punctuation: the mods are matched by the <game ID>.txt files inside, not by folder name.
+mkdir -p "$STAGE/Sys/Load/GraphicMods"
+# Numbered: create-gp4 drops a folder whose name begins another's (Epic_Mickey, Epic_Mickey_2).
+index=0
+for mod in "$SRC/Data/Sys/Load/GraphicMods"/*/; do
+    index=$((index + 1))
+    name=$(printf '%03d_%s' "$index" "$(basename "$mod" | tr -c 'A-Za-z0-9
+' '_')")
+    cp -r "$mod" "$STAGE/Sys/Load/GraphicMods/$name"
+done
+# PkgTool's pkg_build crashes on empty files: the <game ID>.txt markers get a newline.
+find "$STAGE/Sys/Load" -type f -size 0 -exec sh -c 'echo > "$1"' _ {} \;
+# create-gp4 leaves out folders with no files of their own, and PkgTool then can't place their
+# subfolders: each such folder gets a small KEEP file (not a name Dolphin looks for).
+find "$STAGE/Sys/Load" -type d | while read -r dir; do
+    [ -n "$(find "$dir" -maxdepth 1 -type f | head -1)" ] || echo "placeholder for the package tools" > "$dir/KEEP"
+done
 # The XMB launcher's fonts and sounds (DolphinNoGUI/PS4XMB.cpp reads /app0/xmb).
 cp -r "$HERE/../xmb" "$STAGE/xmb"
 # The app version, for the logs and the XMB's About (PlatformPS4.cpp AppVersion).

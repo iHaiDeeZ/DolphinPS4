@@ -451,3 +451,27 @@ PC'deki Dolphin'de kontrol edin (sağ tık > Özellikler > Doğrula) ya da yenid
 Ayrıntılar crash.log ve boot-trace.log dosyalarında (/data/DolphinPS4 içinde).
 Ayrıntılar dolphin.log ve boot-trace.log dosyalarında (/data/DolphinPS4 içinde).
 Daire bunu kapatır.
+# --- Controller page, menu styles, GameCube BIOS
+Kumanda
+Eklenti
+Tuş Atama
+Wii Remote Tuşları
+KUMANDA - BU OYUN
+KUMANDA - TÜM OYUNLAR
+Wii Remote Tutuşu
+TV'ye doğru
+Yan
+Direksiyon gibi
+Eğme
+Hareket + Çubuk
+Hareket
+Dokunmatik Yüzey
+Sallama
+Temizle
+GameCube Açılış Animasyonu
+BIOS'u PS4'teyse oyundan önce GameCube'un açılış animasyonunu oynatır: /data/DolphinPS4/User/GC/USA/IPL.bin (diğer bölgeler için EUR veya JAP).
+Atlıkarınca
+Atlıkarınca: kapakların bir sırada.
+GameCube: bir liste ve dönen bir küp.
+Wii: sayfa sayfa kanal ızgarası.
+Sekmeler L1 / R1 ile değişir (XMB'de değil).

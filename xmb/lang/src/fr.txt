@@ -451,3 +451,27 @@ Vérifiez-le dans Dolphin sur PC (clic droit > Propriétés > Vérifier) ou conv
 Les détails sont dans crash.log et boot-trace.log (dans /data/DolphinPS4).
 Les détails sont dans dolphin.log et boot-trace.log (dans /data/DolphinPS4).
 Rond ferme ceci.
+# --- Controller page, menu styles, GameCube BIOS
+Manette
+Extension
+Attribution des touches
+Boutons de la Wii Remote
+MANETTE - CE JEU
+MANETTE - TOUS LES JEUX
+Tenir la Wii Remote
+Pointée vers la TV
+De côté
+Comme un volant
+Incliner avec
+Mouvement + stick
+Mouvement
+Pavé tactile
+Secouer
+Effacer
+Animation de démarrage GameCube
+Joue l'animation de démarrage de la GameCube avant un jeu, si son BIOS est sur la PS4 : /data/DolphinPS4/User/GC/USA/IPL.bin (EUR ou JAP pour les autres régions).
+Carrousel
+Carrousel : vos jaquettes en rangée.
+GameCube : une liste et un cube qui tourne.
+Wii : une grille de chaînes, par page.
+Les onglets changent avec L1 / R1 (pas en XMB).

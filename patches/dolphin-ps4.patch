@@ -7866,7 +7866,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..085ec74 100644
+index 3bf40ea..d348509 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -8024,7 +8024,7 @@ index 3bf40ea..085ec74 100644
  #endif
        });
  
-@@ -270,7 +368,413 @@ int main(const int argc, char* argv[])
+@@ -270,7 +368,416 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -8058,6 +8058,9 @@ index 3bf40ea..085ec74 100644
 +  Config::SetBase(Config::MAIN_OSD_MESSAGES, true);
 +  // Cheats chosen in the XMB / in-game menu (only enabled codes run; PS4Cheats.cpp).
 +  Config::SetBase(Config::MAIN_ENABLE_CHEATS, true);
++  // Graphics mods chosen per game in the launcher (VideoConfig turns them off for a game without
++  // one switched on).
++  Config::SetBase(Config::GFX_MODS_ENABLE, true);
 +  Config::SetBase(Config::MAIN_SHOW_ACTIVE_TITLE, false);
 +  Config::SetBase(Config::GFX_SHOW_FPS, false);
 +  Config::SetBase(Config::GFX_SHADER_COMPILER_THREADS, 0);
@@ -8438,7 +8441,7 @@ index 3bf40ea..085ec74 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +788,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +791,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -8454,7 +8457,7 @@ index 3bf40ea..085ec74 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +816,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +819,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -10242,10 +10245,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..9297db8
+index 0000000..bb8d51c
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,2668 @@
+@@ -0,0 +1,2720 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10946,7 +10949,13 @@ index 0000000..9297db8
 +Clock::time_point s_toast_until;
 +float s_appear = 0.0f;  // video thread animation
 +float s_scroll = 0.0f;  // video thread animation
++// Video thread animation: the selection highlight glides to the selected row (row index), and a
++// new page slides in from the right (0 -> 1) instead of replacing the old one at once.
++float s_highlight = -1.0f;
++float s_page_in = 1.0f;
++std::string s_drawn_subtitle;
 +Clock::time_point s_last_draw;
++Clock::time_point s_toast_start;
 +
 +// ---- Host thread only. ----
 +Page s_page = Page::Main;
@@ -11350,7 +11359,8 @@ index 0000000..9297db8
 +{
 +  std::lock_guard lock(s_mutex);
 +  s_toast = text;
-+  s_toast_until = Clock::now() + std::chrono::milliseconds(ms);
++  s_toast_start = Clock::now();
++  s_toast_until = s_toast_start + std::chrono::milliseconds(ms);
 +}
 +
 +// Host thread, s_mutex not held (Core calls wait for the video thread, which takes s_mutex).
@@ -12404,7 +12414,20 @@ index 0000000..9297db8
 +  {
 +    dl->AddRectFilled(ImVec2(0, 0), size, IM_COL32(0, 0, 0, static_cast<int>(150 * a)));
 +    const float panel_w = 860.0f * s;
-+    const float x0 = -panel_w * (1.0f - a);
++    // Ease-out cubic: the panel arrives quickly and settles softly.
++    const float eased = 1.0f - (1.0f - a) * (1.0f - a) * (1.0f - a);
++    const float x0 = -panel_w * (1.0f - eased);
++    // A new page (another subtitle): its rows slide in from the right and fade in.
++    if (s_subtitle != s_drawn_subtitle)
++    {
++      if (!s_drawn_subtitle.empty() && a > 0.9f)
++        s_page_in = 0.0f;
++      s_drawn_subtitle = s_subtitle;
++      s_highlight = -1.0f;
++    }
++    s_page_in += (1.0f - s_page_in) * (1.0f - std::exp(-12.0f * dt));
++    const float page_dx = (1.0f - s_page_in) * 90.0f * s;
++    const float page_a = 0.25f + 0.75f * s_page_in;
 +    dl->AddRectFilledMultiColor(ImVec2(x0, 0), ImVec2(x0 + panel_w, size.y),
 +                                IM_COL32(8, 20, 46, static_cast<int>(240 * a)),
 +                                IM_COL32(8, 20, 46, static_cast<int>(150 * a)),
@@ -12446,13 +12469,41 @@ index 0000000..9297db8
 +    const float target = std::clamp(static_cast<float>(s_selected) - visible * 0.5f + 1.0f, 0.0f,
 +                                    std::max(0.0f, static_cast<float>(s_rows.size()) - visible));
 +    s_scroll += (target - s_scroll) * (1.0f - std::exp(-16.0f * dt));
++    if (s_highlight < 0.0f)
++      s_highlight = static_cast<float>(s_selected);
++    s_highlight += (static_cast<float>(s_selected) - s_highlight) * (1.0f - std::exp(-20.0f * dt));
 +    dl->PushClipRect(ImVec2(x0, top - 10 * s), ImVec2(x0 + panel_w, bottom + 10 * s), true);
++    if (!s_tall && s_selected >= 0 && s_selected < static_cast<int>(s_rows.size()) &&
++        !s_rows[s_selected].header)
++    {
++      // The highlight, drawn once at its animated place (a soft glow and an accent edge).
++      const float hy = top + (s_highlight - s_scroll) * row_h;
++      const float hx0 = x0 + 40 * s + page_dx, hx1 = x0 + panel_w - 40 * s + page_dx;
++      const int ha = static_cast<int>(70 * a * page_a);
++      dl->AddRectFilled(ImVec2(hx0 - 6 * s, hy - 10 * s), ImVec2(hx1 + 6 * s, hy + 60 * s),
++                        IM_COL32(91, 184, 255, ha / 4), 16 * s);
++      dl->AddRectFilledMultiColor(ImVec2(hx0, hy - 4 * s), ImVec2(hx1, hy + 54 * s),
++                                  IM_COL32(91, 184, 255, ha + 20), IM_COL32(91, 184, 255, ha / 2),
++                                  IM_COL32(91, 184, 255, ha / 2), IM_COL32(91, 184, 255, ha + 20));
++      dl->AddRectFilled(ImVec2(hx0, hy - 4 * s), ImVec2(hx0 + 6 * s, hy + 54 * s),
++                        IM_COL32(150, 215, 255, static_cast<int>(255 * a * page_a)), 3 * s);
++    }
++    const float panel_x0 = x0;
++    const ImU32 panel_white = white, panel_dim = dim, panel_accent = accent;
 +    for (size_t i = 0; i < s_rows.size(); i++)
 +    {
 +      const Row& row = s_rows[i];
 +      const float y = top + (static_cast<float>(i) - s_scroll) * row_h;
 +      if (y < top - row_h || y > bottom)
 +        continue;
++      // Rows further down arrive a little later (a cascade), all within the page transition.
++      const float cascade = std::clamp(s_page_in * 1.3f - static_cast<float>(i) * 0.03f, 0.0f, 1.0f);
++      const float x0 = panel_x0 + (1.0f - cascade) * 90.0f * s;
++      const float row_a = 0.15f + 0.85f * cascade;
++      const auto fade = [row_a](ImU32 c) {
++        return (c & 0x00FFFFFFu) | (static_cast<ImU32>(((c >> 24) & 0xFF) * row_a) << 24);
++      };
++      const ImU32 white = fade(panel_white), dim = fade(panel_dim), accent = fade(panel_accent);
 +      if (row.header && s_tall)
 +      {
 +        // The Achievements page's message (not logged in, not supported, ...).
@@ -12479,13 +12530,9 @@ index 0000000..9297db8
 +        continue;
 +      }
 +      const bool sel = static_cast<int>(i) == s_selected;
-+      if (sel)
-+      {
-+        dl->AddRectFilled(ImVec2(x0 + 40 * s, y - 4 * s),
-+                          ImVec2(x0 + panel_w - 40 * s, y + 54 * s),
-+                          IM_COL32(91, 184, 255, static_cast<int>(70 * a)), 12 * s);
-+      }
-+      float label_x = x0 + 70 * s;
++      // The label grows as the highlight reaches it (instead of jumping from 32 to 36).
++      const float focus = std::max(0.0f, 1.0f - std::abs(static_cast<float>(i) - s_highlight));
++      float label_x = x0 + 70 * s + 8 * s * focus;
 +      if (AbstractTexture* badge = BadgeTexture(row.badge))
 +      {
 +        dl->AddImageRounded(ImTextureRef(*badge), ImVec2(label_x, y + 2 * s),
@@ -12493,7 +12540,7 @@ index 0000000..9297db8
 +                            IM_COL32(255, 255, 255, static_cast<int>(255 * a)), 6 * s);
 +        label_x += 60 * s;
 +      }
-+      dl->AddText(sel ? bold : regular, (sel ? 36 : 32) * s, ImVec2(label_x, y + 4 * s),
++      dl->AddText(sel ? bold : regular, (32 + 4 * focus) * s, ImVec2(label_x, y + 4 * s),
 +                  sel ? white : dim, PS4Lang::T(row.label).c_str());
 +      if (row.tag != 0)
 +      {
@@ -12541,11 +12588,19 @@ index 0000000..9297db8
 +  }
 +  if (toast)
 +  {
++    const float since = std::chrono::duration<float>(now - s_toast_start).count();
++    const float left = std::chrono::duration<float>(s_toast_until - now).count();
++    const float in = std::min(1.0f, since / 0.18f), out = std::min(1.0f, left / 0.3f);
++    const float ta = std::min(in, out);
++    const float rise = (1.0f - (1.0f - in) * (1.0f - in)) * 24 * s;
 +    const float tw = bold->CalcTextSizeA(32 * s, FLT_MAX, 0, PS4Lang::T(s_toast).c_str()).x;
-+    const ImVec2 p(size.x - tw - 120 * s, size.y - 150 * s);
++    const ImVec2 p(size.x - tw - 120 * s, size.y - 126 * s - rise);
 +    dl->AddRectFilled(ImVec2(p.x - 30 * s, p.y - 18 * s), ImVec2(p.x + tw + 30 * s, p.y + 56 * s),
-+                      IM_COL32(8, 20, 46, 225), 14 * s);
-+    dl->AddText(bold, 32 * s, p, IM_COL32(255, 255, 255, 255), PS4Lang::T(s_toast).c_str());
++                      IM_COL32(8, 20, 46, static_cast<int>(225 * ta)), 14 * s);
++    dl->AddRect(ImVec2(p.x - 30 * s, p.y - 18 * s), ImVec2(p.x + tw + 30 * s, p.y + 56 * s),
++                IM_COL32(120, 196, 255, static_cast<int>(110 * ta)), 14 * s, 0, 1.5f * s);
++    dl->AddText(bold, 32 * s, p, IM_COL32(255, 255, 255, static_cast<int>(255 * ta)),
++                PS4Lang::T(s_toast).c_str());
 +  }
 +  if (hint_alpha > 0.0f && s_appear < 0.5f && !toast)
 +  {
@@ -15449,10 +15504,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..230eab3
+index 0000000..a313b9e
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,6037 @@
+@@ -0,0 +1,6526 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -15497,6 +15552,8 @@ index 0000000..230eab3
 +#include "DiscIO/VolumeDisc.h"
 +#include "DiscIO/RiivolutionParser.h"
 +#include "DiscIO/NANDImporter.h"
++#include "VideoCommon/GraphicsModSystem/Config/GraphicsMod.h"
++#include "VideoCommon/GraphicsModSystem/Config/GraphicsModGroup.h"
 +#include "Common/FileSearch.h"
 +#include "Common/FileUtil.h"
 +#include "Common/HttpRequest.h"
@@ -15600,6 +15657,79 @@ index 0000000..230eab3
 +  dl->PrimWriteVtx(c, uv_c, cc);
 +  dl->PrimWriteVtx(d, uv_d, cd);
 +  dl->PopTexture();
++}
++
++// One face of a box: a texture (a game's cover) or a vertical gradient.
++struct BoxFace
++{
++  ImTextureID texture{};
++  ImU32 top = 0, bottom = 0;
++};
++
++// A box (half sizes hx, hy, hz) turned by ry around the vertical axis and tilted by rx, seen in
++// perspective from `distance` in front of `center`. Faces: 0 front, 1 back, 2 left, 3 right,
++// 4 top, 5 bottom; only the ones facing the viewer are drawn, lit from the front.
++void DrawBox(ImDrawList* dl, ImVec2 center, float hx, float hy, float hz, float ry, float rx,
++             float distance, const BoxFace faces[6], float alpha, ImU32 edge)
++{
++  // Each face's corners as seen from outside it: top-left, top-right, bottom-right, bottom-left.
++  static const float CORNERS[6][4][3] = {
++      {{-1, 1, 1}, {1, 1, 1}, {1, -1, 1}, {-1, -1, 1}},        // front (+Z)
++      {{1, 1, -1}, {-1, 1, -1}, {-1, -1, -1}, {1, -1, -1}},    // back (-Z)
++      {{-1, 1, -1}, {-1, 1, 1}, {-1, -1, 1}, {-1, -1, -1}},    // left (-X)
++      {{1, 1, 1}, {1, 1, -1}, {1, -1, -1}, {1, -1, 1}},        // right (+X)
++      {{-1, 1, -1}, {1, 1, -1}, {1, 1, 1}, {-1, 1, 1}},        // top (+Y)
++      {{-1, -1, 1}, {1, -1, 1}, {1, -1, -1}, {-1, -1, -1}}};   // bottom (-Y)
++  static const float NORMALS[6][3] = {{0, 0, 1},  {0, 0, -1}, {-1, 0, 0},
++                                      {1, 0, 0},  {0, 1, 0},  {0, -1, 0}};
++  const float cy = std::cos(ry), sy = std::sin(ry), cx = std::cos(rx), sx = std::sin(rx);
++  auto turn = [&](float x, float y, float z, float* out) {
++    const float x1 = x * cy + z * sy, z1 = -x * sy + z * cy;
++    out[0] = x1;
++    out[1] = y * cx - z1 * sx;
++    out[2] = y * sx + z1 * cx;
++  };
++  for (int f = 0; f < 6; f++)
++  {
++    ImVec2 q[4];
++    for (int k = 0; k < 4; k++)
++    {
++      float v[3];
++      turn(CORNERS[f][k][0] * hx, CORNERS[f][k][1] * hy, CORNERS[f][k][2] * hz, v);
++      const float scale = distance / std::max(1.0f, distance - v[2]);
++      q[k] = ImVec2(center.x + v[0] * scale, center.y - v[1] * scale);
++    }
++    // Facing the viewer: clockwise on screen.
++    const float cross = (q[1].x - q[0].x) * (q[2].y - q[0].y) - (q[1].y - q[0].y) * (q[2].x - q[0].x);
++    if (cross <= 0.0f)
++      continue;
++    float n[3];
++    turn(NORMALS[f][0], NORMALS[f][1], NORMALS[f][2], n);
++    const float light = std::clamp(0.45f + 0.55f * n[2] + 0.18f * n[1], 0.25f, 1.0f);
++    const auto lit = [light, alpha](ImU32 c) {
++      const int r = static_cast<int>(((c >> IM_COL32_R_SHIFT) & 0xFF) * light);
++      const int g = static_cast<int>(((c >> IM_COL32_G_SHIFT) & 0xFF) * light);
++      const int b = static_cast<int>(((c >> IM_COL32_B_SHIFT) & 0xFF) * light);
++      const int a = static_cast<int>(((c >> IM_COL32_A_SHIFT) & 0xFF) * alpha);
++      return IM_COL32(r, g, b, a);
++    };
++    if (faces[f].texture != ImTextureID{})
++    {
++      dl->AddImageQuad(ImTextureRef(faces[f].texture), q[0], q[1], q[2], q[3], ImVec2(0, 0),
++                       ImVec2(1, 0), ImVec2(1, 1), ImVec2(0, 1), lit(IM_COL32(255, 255, 255, 255)));
++    }
++    else
++    {
++      QuadMultiColor(dl, q[0], q[1], q[2], q[3], lit(faces[f].top), lit(faces[f].top),
++                     lit(faces[f].bottom), lit(faces[f].bottom));
++    }
++    if ((edge >> IM_COL32_A_SHIFT) != 0)
++    {
++      const int ea = static_cast<int>(((edge >> IM_COL32_A_SHIFT) & 0xFF) * alpha);
++      dl->AddQuad(q[0], q[1], q[2], q[3], (edge & 0x00FFFFFFu) | (static_cast<ImU32>(ea) << 24),
++                  1.5f);
++    }
++  }
 +}
 +
 +// A GameCube memory card, upright, centred on c (h tall): the body, its label and the notch.
@@ -15935,7 +16065,9 @@ index 0000000..230eab3
 +  bool auto_update = true;  // look for a new version on GitHub when the app opens
 +  std::string games_dir;    // Settings -> Game Folder; empty = data_dir/games
 +  std::string last_game;
-+  std::string style = "library";  // Settings -> Menu Style: "library" (covers) or "xmb"
++  // Settings -> Menu Style: "library" (Carousel: covers in a row), "xmb", "gamecube" (a list
++  // and a turning cube), "wii" (a grid of channel tiles).
++  std::string style = "library";
 +  std::string sort = "title";     // game order: "title", "recent" (last played first), "platform"
 +  std::string default_game;       // starts by itself when the app opens (Set as Default ISO)
 +
@@ -15968,7 +16100,7 @@ index 0000000..230eab3
 +      else if (key == "last_game")
 +        last_game = value;
 +      else if (key == "style")
-+        style = value == "xmb" ? "xmb" : "library";
++        style = value == "xmb" || value == "gamecube" || value == "wii" ? value : "library";
 +      else if (key == "sort")
 +        sort = value;
 +      else if (key == "default_game")
@@ -16004,6 +16136,7 @@ index 0000000..230eab3
 +  float banner_aspect = 3.0f;
 +  ImTextureID cover{};  // box art (covers/<ID>.png)
 +  float cover_aspect = 0.7f;
++  float cover_time = -10.0f;  // when the cover was loaded (m_time): it fades in
 +};
 +
 +enum class Category
@@ -16124,6 +16257,10 @@ index 0000000..230eab3
 +  void BuildCheatRows();
 +  void UpdateCheatDownload();
 +  void OpenRiivolutionList(const Game& game);
++  // Triangle > Graphics Mods: Dolphin's graphics mods for the game (bloom, blur, depth of field...).
++  void OpenGraphicsModsList(const Game& game);
++  void BuildGraphicsModRows();
++  std::unique_ptr<GraphicsModGroupConfig> m_graphics_mods;
 +  void OpenAchievementList(const Game& game);
 +  void OpenAchievementKey(const std::string& key);
 +  // RetroAchievements account (top right, beside the clock): read in BuildItems.
@@ -16237,7 +16374,9 @@ index 0000000..230eab3
 +  std::string m_direct_launch;  // "nand:<title ID>": started without a game
 +  void UpdateWiimmfiDownload();
 +  void LaunchWiimmfi();
-+  void LoadCovers();
++  // Loads up to `budget` covers not loaded yet; true if more are left.
++  bool LoadCovers(int budget = 1 << 30);
++  bool m_covers_pending = false;  // covers still to load, a few per frame (no pause)
 +  void BuildSettingRows();
 +  void ChangeSettingRow(int direction);
 +  void MoveSettingRow(int direction);
@@ -16292,6 +16431,11 @@ index 0000000..230eab3
 +  void DrawLibraryBackground();
 +  void DrawLibrary(ImDrawList* dl, float dt);
 +  void DrawLibraryGames(ImDrawList* dl, float alpha);
++  void DrawGameCubeGames(ImDrawList* dl, float alpha, float dt);
++  void DrawWiiGames(ImDrawList* dl, float alpha, float dt);
++  void DrawGameCubeBackground();
++  void DrawGameInfo(ImDrawList* dl, const Game& game, float cx, float y, float alpha);
++  std::string StyleName() const;
 +  void DrawLibraryCards(ImDrawList* dl, float alpha);
 +  void DrawLibraryList(ImDrawList* dl, float alpha);
 +  void DrawLibraryHints(ImDrawList* dl);
@@ -16350,6 +16494,12 @@ index 0000000..230eab3
 +  // When each game was last played (data_dir/played.ini), for "Played today" and the order.
 +  std::map<std::string, int64_t> m_played;
 +  float m_tab_pos = 0.0f;  // Library: the tab highlight (animated)
++  // GameCube style: the cube turns a quarter to bring the next game's cover round.
++  int m_cube_selected = -1, m_cube_previous = -1;
++  float m_cube_turn = 0.0f;  // +1 / -1 at a change, eased to 0
++  // Wii style: the page the grid shows (animated) and the gliding selection frame.
++  float m_wii_page = 0.0f;
++  ImVec2 m_wii_frame{-1.0f, -1.0f};
 +  float m_sort_shown = 0.0f;  // Library: how long the new game order is still shown
 +
 +  // Cheats panel.
@@ -16615,7 +16765,7 @@ index 0000000..230eab3
 +  m_games.clear();
 +  BuildGames(m_scan(GamesFolder()));
 +  LoadBanners();
-+  LoadCovers();
++  m_covers_pending = true;
 +  BuildItems();
 +  m_selected[games_index] = 0;
 +  m_item_pos[games_index] = 0.0f;
@@ -16809,7 +16959,7 @@ index 0000000..230eab3
 +  }
 +  settings.push_back({"Sound Effects", m_prefs.sounds ? "On" : "Off", -1, -1, SET_SOUNDS});
 +  settings.push_back({"Volume", std::to_string(m_prefs.volume), -1, -1, SET_VOLUME});
-+  settings.push_back({"Menu Style", Library() ? "Library" : "XMB", -1, -1, SET_STYLE});
++  settings.push_back({"Menu Style", StyleName(), -1, -1, SET_STYLE});
 +  settings.push_back({"Clock", m_prefs.clock ? "On" : "Off", -1, -1, SET_CLOCK});
 +  settings.push_back({"Controls", "Remap the GameCube and Wii buttons", -1, -1, SET_CONTROLS});
 +  settings.push_back({"RetroAchievements", "Earn achievements (retroachievements.org)", -1, -1,
@@ -16992,10 +17142,14 @@ index 0000000..230eab3
 +  }
 +  case SET_STYLE:
 +    m_panel.title = "Menu Style";
-+    m_panel.options = {"Library", "XMB"};
-+    m_panel.selected = Library() ? 0 : 1;
-+    m_panel.lines = {"", "Library: your covers in a row,", "tabs switched with L1 / R1.", "",
-+                     "XMB: the PSP-style columns."};
++    m_panel.options = {"Carousel", "XMB", "GameCube", "Wii"};
++    m_panel.selected = m_prefs.style == "xmb"      ? 1 :
++                       m_prefs.style == "gamecube" ? 2 :
++                       m_prefs.style == "wii"      ? 3 :
++                                                     0;
++    m_panel.lines = {"", "Carousel: your covers in a row.", "XMB: the PSP-style columns.",
++                     "GameCube: a list and a turning cube.", "Wii: a grid of channels, by page.",
++                     "", "Tabs switch with L1 / R1 (not in XMB)."};
 +    break;
 +  case SET_CLOCK:
 +    m_panel.title = "Clock";
@@ -17471,6 +17625,20 @@ index 0000000..230eab3
 +    BuildCheatRows();
 +    return;
 +  }
++  if (row.key.rfind("gmod:", 0) == 0 && m_graphics_mods)
++  {
++    auto& mods = m_graphics_mods->GetMods();
++    const size_t index = std::strtoul(row.key.c_str() + 5, nullptr, 10);
++    if (index < mods.size())
++    {
++      mods[index].m_enabled = !mods[index].m_enabled;
++      m_graphics_mods->Save();
++      Log("graphics mod " + mods[index].m_title + (mods[index].m_enabled ? " on" : " off") +
++          " (" + m_graphics_mods->GetGameID() + ")");
++      BuildGraphicsModRows();
++    }
++    return;
++  }
 +  if (row.key.rfind("riiv:", 0) == 0)
 +  {
 +    // riiv:<mod>:<section>:<option>: Off (0) and the option's choices (1-based), in turn.
@@ -17642,6 +17810,37 @@ index 0000000..230eab3
 +  m_panel.rows = std::move(rows);
 +  m_panel.selected = 0;
 +  MoveSettingRow(0);
++}
++
++void Menu::OpenGraphicsModsList(const Game& game)
++{
++  m_panel = {};
++  m_panel.open = true;
++  m_panel.title = "Graphics Mods";
++  m_graphics_mods = std::make_unique<GraphicsModGroupConfig>(game.id);
++  m_graphics_mods->Load();
++  BuildGraphicsModRows();
++  if (m_panel.rows.empty())
++  {
++    m_panel.lines = {"", "No graphics mods for this game.", "",
++                     "Dolphin's own mods cover some games; others go in",
++                     "/data/DolphinPS4/User/Load/GraphicMods/"};
++  }
++  m_panel.selected = 0;
++  MoveSettingRow(0);
++}
++
++void Menu::BuildGraphicsModRows()
++{
++  std::vector<SettingRow> rows;
++  const auto& mods = m_graphics_mods->GetMods();
++  for (size_t i = 0; i < mods.size(); i++)
++  {
++    SettingRow row{mods[i].m_title, mods[i].m_enabled ? "On" : "Off", "gmod:" + std::to_string(i)};
++    row.tag = mods[i].m_enabled ? 1 : -1;
++    rows.push_back(std::move(row));
++  }
++  m_panel.rows = std::move(rows);
 +}
 +
 +void Menu::OpenRiivolutionList(const Game& game)
@@ -17921,7 +18120,13 @@ index 0000000..230eab3
 +  }
 +  m_cover_thread.join();
 +  const PS4Covers::Result result = m_cover_result;
-+  LoadCovers();
++  // Covers that were missing are tried again, a few per frame.
++  for (Game& game : m_games)
++  {
++    if (game.cover == ImTextureID{})
++      game.cover_time = -10.0f;
++  }
++  m_covers_pending = true;
 +  Log("covers: " + std::to_string(result.downloaded) + " downloaded, " +
 +      std::to_string(result.already) + " already there, " + std::to_string(result.not_found) +
 +      " not on GameTDB, " + std::to_string(result.failed) + " failed " + result.error);
@@ -17944,22 +18149,24 @@ index 0000000..230eab3
 +}
 +
 +// Box art: data_dir/covers/<game ID>.png (downloaded or the user's own).
-+void Menu::LoadCovers()
++bool Menu::LoadCovers(int budget)
 +{
 +  for (Game& game : m_games)
 +  {
-+    if (game.id.empty())
++    if (game.id.empty() || game.cover != ImTextureID{} || game.cover_time > -5.0f)
 +      continue;
-+    if (game.cover != ImTextureID{})
-+      continue;
++    if (budget-- <= 0)
++      return true;
 +    float aspect = 0.7f;
 +    const ImTextureID cover = LoadPngTexture(m_data_dir + "/covers/" + game.id + ".png", &aspect);
++    game.cover_time = m_time;  // tried (no file: not tried again until the list is rebuilt)
 +    if (cover != ImTextureID{})
 +    {
 +      game.cover = cover;
 +      game.cover_aspect = aspect;
 +    }
 +  }
++  return false;
 +}
 +
 +void Menu::ApplySettingOption(int setting, int option)
@@ -17984,7 +18191,7 @@ index 0000000..230eab3
 +    m_first_language = false;
 +    break;
 +  case SET_STYLE:
-+    m_prefs.style = option == 0 ? "library" : "xmb";
++    m_prefs.style = option == 1 ? "xmb" : option == 2 ? "gamecube" : option == 3 ? "wii" : "library";
 +    Log("menu style: " + m_prefs.style);
 +    break;
 +  case SET_RESET_ALL:
@@ -18276,6 +18483,13 @@ index 0000000..230eab3
 +        Play("confirm");
 +        return;
 +      }
++      else if (m_panel.title == "Game" && m_panel.options[m_panel.selected] == "Graphics Mods")
++      {
++        const Item& item = m_items[m_category][m_selected[m_category]];
++        OpenGraphicsModsList(m_games[item.game]);
++        Play("confirm");
++        return;
++      }
 +      else if (m_panel.title == "Game" && m_panel.options[m_panel.selected] == "Riivolution Patches")
 +      {
 +        const Item& item = m_items[m_category][m_selected[m_category]];
@@ -18354,7 +18568,14 @@ index 0000000..230eab3
 +    prev_item = games ? BTN_LEFT : BTN_UP;
 +    next_item = games ? BTN_RIGHT : BTN_DOWN;
 +    prev_page = next_page = 0;
++    if (games && m_prefs.style == "gamecube")
++    {
++      prev_item = BTN_UP | BTN_LEFT;
++      next_item = BTN_DOWN | BTN_RIGHT;
++    }
 +  }
++  // Wii style: Up / Down move a row of the grid (four channels).
++  const bool wii_grid = games && Library() && m_prefs.style == "wii";
 +  if ((pressed & prev_tab) && prev_category >= 0)
 +  {
 +    m_category = prev_category;
@@ -18364,6 +18585,22 @@ index 0000000..230eab3
 +  {
 +    m_category = next_category;
 +    Play("category");
++  }
++  else if (wii_grid && (pressed & BTN_UP))
++  {
++    if (selected >= 4)
++    {
++      selected -= 4;
++      Play("move");
++    }
++  }
++  else if (wii_grid && (pressed & BTN_DOWN))
++  {
++    if (selected / 4 < (count - 1) / 4)
++    {
++      selected = std::min(count - 1, selected + 4);
++      Play("move");
++    }
 +  }
 +  else if ((pressed & prev_item) && selected > 0)
 +  {
@@ -18433,6 +18670,7 @@ index 0000000..230eab3
 +        m_panel.options.push_back("Play Online (Wiimmfi)");
 +      }
 +      m_panel.options.push_back("Controls");
++      m_panel.options.push_back("Graphics Mods");
 +      {
 +        const Game& game = m_games[items[selected].game];
 +        if (PS4Achievements::Load(m_data_dir, game.id.empty() ? game.title : game.id, nullptr))
@@ -19208,6 +19446,13 @@ index 0000000..230eab3
 +        help = "Applies the next time the game starts, or now from the in-game menu (L3+R3).";
 +      else if (row.key.rfind("riiv:", 0) == 0)
 +        help = "Applies the next time the game starts.";
++      else if (row.key.rfind("gmod:", 0) == 0 && m_graphics_mods)
++      {
++        const size_t index = std::strtoul(row.key.c_str() + 5, nullptr, 10);
++        const auto& mods = m_graphics_mods->GetMods();
++        if (index < mods.size())
++          help = mods[index].m_description + " (Applies the next time the game starts.)";
++      }
 +      else if (row.key.rfind("ach:", 0) == 0)
 +      {
 +        const size_t index = std::strtoul(row.key.c_str() + 4, nullptr, 10);
@@ -19320,7 +19565,9 @@ index 0000000..230eab3
 +
 +void Menu::Draw(float dt)
 +{
-+  if (Library())
++  if (Library() && m_prefs.style == "gamecube" && m_wallpaper == ImTextureID{})
++    DrawGameCubeBackground();
++  else if (Library())
 +    DrawLibraryBackground();
 +  else
 +    DrawBackground();
@@ -19675,8 +19922,17 @@ index 0000000..230eab3
 +  }
 +  if (game.cover != ImTextureID{})
 +  {
++    const float appear = std::clamp((m_time - game.cover_time) / 0.35f, 0.0f, 1.0f);
++    if (appear < 1.0f)
++    {
++      // The tile underneath while the cover fades in.
++      QuadMultiColor(dl, a, b, c, d, game.wii ? Rgba(0xF4F6F8, alpha) : Rgba(0x5B3FC4, alpha),
++                     game.wii ? Rgba(0xF4F6F8, alpha) : Rgba(0x5B3FC4, alpha),
++                     game.wii ? Rgba(0xC8D0DA, alpha) : Rgba(0x2A1C66, alpha),
++                     game.wii ? Rgba(0xC8D0DA, alpha) : Rgba(0x2A1C66, alpha));
++    }
 +    dl->AddImageQuad(ImTextureRef(game.cover), a, b, c, d, ImVec2(0, 0), ImVec2(1, 0), ImVec2(1, 1),
-+                     ImVec2(0, 1), white);
++                     ImVec2(0, 1), IM_COL32(255, 255, 255, static_cast<int>(a255 * appear)));
 +    // Reflection: the cover upside down under it, fading out.
 +    const float r = 0.30f;
 +    const ImVec2 ra(d.x, d.y + 6), rb(c.x, c.y + 6);
@@ -19804,7 +20060,12 @@ index 0000000..230eab3
 +  switch (TABS[tab])
 +  {
 +  case Category::Games:
-+    DrawLibraryGames(dl, alpha);
++    if (m_prefs.style == "gamecube")
++      DrawGameCubeGames(dl, alpha, dt);
++    else if (m_prefs.style == "wii")
++      DrawWiiGames(dl, alpha, dt);
++    else
++      DrawLibraryGames(dl, alpha);
 +    break;
 +  case Category::MemoryCards:
 +    DrawLibraryCards(dl, alpha);
@@ -19915,6 +20176,287 @@ index 0000000..230eab3
 +  const float px = W * 0.5f - (cw + 14 + pw) * 0.5f;
 +  PS4Glyphs::Draw(dl, m_bold, "Cross", px, by + bh * 0.5f, 38, alpha);
 +  Text(dl, m_bold, 32, ImVec2(px + cw + 14, by + 12), Rgba(theme.text, alpha), "Play");
++}
++
++
++std::string Menu::StyleName() const
++{
++  return m_prefs.style == "xmb"      ? "XMB" :
++         m_prefs.style == "gamecube" ? "GameCube" :
++         m_prefs.style == "wii"      ? "Wii" :
++                                       "Carousel";
++}
++
++// Title, platform / last played line and the Play button, centred on cx from y down.
++void Menu::DrawGameInfo(ImDrawList* dl, const Game& game, float cx, float y, float alpha)
++{
++  const Theme& theme = CurrentTheme();
++  const float title_size = TextWidth(m_bold, 44, game.title) > 860.0f ? 34.0f : 44.0f;
++  const float tw = std::min(TextWidth(m_bold, title_size, game.title), 900.0f);
++  Text(dl, m_bold, title_size, ImVec2(cx - tw * 0.5f, y), Rgba(theme.text, alpha), game.title);
++  std::string info = std::string(game.wii ? "Wii" : "GameCube") + "  -  " + PlayedText(Played(game.path));
++  const std::string played = PS4PlayTime::Text(PlayTime(game));
++  if (!played.empty())
++    info += "  -  " + played;
++  if (game.discs > 1)
++    info += "  -  " + std::to_string(game.discs) + " discs";
++  const float iw = TextWidth(m_font, 26, info);
++  Text(dl, m_font, 26, ImVec2(cx - iw * 0.5f, y + 58), Rgba(theme.text, alpha * 0.72f), info);
++  const float bw = 210.0f, bh = 60.0f, by = y + 104;
++  const float pulse = 0.85f + 0.15f * std::sin(m_time * 3.0f);
++  const ImVec2 b0(cx - bw * 0.5f, by), b1(cx + bw * 0.5f, by + bh);
++  dl->AddRectFilled(b0, b1, Rgba(theme.wave, alpha * 0.18f * pulse), 14.0f);
++  dl->AddRect(b0, b1, Rgba(theme.wave, alpha * 0.95f), 14.0f, 0, 2.5f);
++  const float cw = PS4Glyphs::Width("Cross", 36);
++  const float pw = TextWidth(m_bold, 30, "Play");
++  const float px = cx - (cw + 14 + pw) * 0.5f;
++  PS4Glyphs::Draw(dl, m_bold, "Cross", px, by + bh * 0.5f, 36, alpha);
++  Text(dl, m_bold, 30, ImVec2(px + cw + 14, by + 12), Rgba(theme.text, alpha), "Play");
++}
++
++// GameCube style background: deep indigo, cubes drifting up and turning slowly.
++void Menu::DrawGameCubeBackground()
++{
++  ImDrawList* dl = ImGui::GetBackgroundDrawList();
++  dl->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(W, H * 0.55f), Rgba(0x120C2E), Rgba(0x1A1146),
++                              Rgba(0x2A1C66), Rgba(0x1E1450));
++  dl->AddRectFilledMultiColor(ImVec2(0, H * 0.55f), ImVec2(W, H), Rgba(0x1E1450), Rgba(0x2A1C66),
++                              Rgba(0x0A0718), Rgba(0x07050F));
++  // A soft light behind the cube.
++  for (int i = 8; i >= 1; i--)
++    dl->AddCircleFilled(ImVec2(W * 0.66f, 470), 60.0f * i, Rgba(0x6A4CFF, 0.018f), 48);
++  for (int i = 0; i < 14; i++)
++  {
++    const float seed = static_cast<float>(i) * 12.9898f;
++    const float fx = std::fmod(std::abs(std::sin(seed) * 43758.5453f), 1.0f);
++    const float speed = 14.0f + 18.0f * std::fmod(std::abs(std::sin(seed * 1.7f) * 9631.3f), 1.0f);
++    const float size = 14.0f + 26.0f * std::fmod(std::abs(std::sin(seed * 2.3f) * 7123.1f), 1.0f);
++    const float span = H + 200.0f;
++    const float y = H + 100.0f - std::fmod(m_time * speed + fx * span, span);
++    const float x = 60.0f + fx * (W - 120.0f) + 30.0f * std::sin(m_time * 0.3f + seed);
++    BoxFace faces[6];
++    for (BoxFace& face : faces)
++    {
++      face.top = Rgba(0x8C6CFF, 0.30f);
++      face.bottom = Rgba(0x5B3FC4, 0.22f);
++    }
++    DrawBox(dl, ImVec2(x, y), size, size, size, m_time * 0.4f + seed, m_time * 0.27f + seed * 0.5f,
++            900.0f, faces, 1.0f, Rgba(0xB9A6FF, 0.25f));
++  }
++}
++
++// GameCube style: the games in a list on the left; the selected one's cover on a cube that turns
++// a quarter to bring the next cover round.
++void Menu::DrawGameCubeGames(ImDrawList* dl, float alpha, float dt)
++{
++  const Theme& theme = CurrentTheme();
++  const int c = static_cast<int>(Category::Games);
++  const auto& items = m_items[c];
++  const int count = static_cast<int>(items.size());
++  if (count == 0 || items[0].game < 0)
++  {
++    DrawLibraryGames(dl, alpha);  // the "no games yet" message
++    return;
++  }
++  const int selected = m_selected[c];
++  const float pos = m_item_pos[c];
++
++  // The list.
++  constexpr float LIST_X = 90.0f, LIST_W = 640.0f, ROW_H = 66.0f, MID_Y = 540.0f;
++  dl->PushClipRect(ImVec2(0, 150), ImVec2(LIST_X + LIST_W + 40, 950), true);
++  {
++    const float hy = MID_Y + (static_cast<float>(selected) - pos) * ROW_H;
++    const ImVec2 h0(LIST_X - 14, hy - 8), h1(LIST_X + LIST_W, hy + ROW_H - 10);
++    dl->AddRectFilled(ImVec2(h0.x - 6, h0.y - 6), ImVec2(h1.x + 6, h1.y + 6),
++                      Rgba(0x6A4CFF, alpha * 0.12f), 18.0f);
++    dl->AddRectFilledMultiColor(h0, h1, Rgba(0x6A4CFF, alpha * 0.55f), Rgba(0x6A4CFF, alpha * 0.15f),
++                                Rgba(0x6A4CFF, alpha * 0.15f), Rgba(0x6A4CFF, alpha * 0.55f));
++    dl->AddRect(h0, h1, Rgba(0xB9A6FF, alpha * 0.9f), 12.0f, 0, 2.0f);
++  }
++  for (int i = 0; i < count; i++)
++  {
++    const float d = static_cast<float>(i) - pos;
++    const float y = MID_Y + d * ROW_H;
++    if (y < 120.0f || y > 980.0f)
++      continue;
++    const Game& game = m_games[items[i].game];
++    const float focus = std::max(0.0f, 1.0f - std::abs(d));
++    const float fade = std::clamp(1.0f - (std::abs(d) - 4.0f) / 3.0f, 0.0f, 1.0f);
++    const float size = 28.0f + 6.0f * focus;
++    const std::string tag = game.wii ? "Wii" : "GC";
++    Text(dl, m_bold, 20, ImVec2(LIST_X + 8 * focus, y + 14), Rgba(0xB9A6FF, alpha * fade * 0.9f), tag,
++         false);
++    Text(dl, i == selected ? m_bold : m_font, size, ImVec2(LIST_X + 54 + 10 * focus, y + 6),
++         Rgba(theme.text, alpha * fade * (0.6f + 0.4f * focus)), game.title, false);
++  }
++  dl->PopClipRect();
++
++  // The cube: a quarter turn when the selection changes, then a slow sway.
++  if (m_cube_selected != selected)
++  {
++    if (m_cube_selected >= 0 && m_cube_selected < count)
++    {
++      m_cube_previous = m_cube_selected;
++      m_cube_turn = selected > m_cube_selected ? 1.0f : -1.0f;
++    }
++    m_cube_selected = selected;
++  }
++  Approach(m_cube_turn, 0.0f, 7.0f, dt);
++  const Game& game = m_games[items[selected].game];
++  const float aspect = game.cover != ImTextureID{} ? std::clamp(game.cover_aspect, 0.55f, 1.0f) : 0.7f;
++  const float hy = 230.0f, hx = hy * aspect, hz = hx;
++  const ImVec2 center(W * 0.66f, 450.0f + 8.0f * std::sin(m_time * 1.1f));
++  BoxFace faces[6];
++  for (BoxFace& face : faces)
++  {
++    face.top = Rgba(0x7A5CF0);
++    face.bottom = Rgba(0x3A2890);
++  }
++  faces[4].top = faces[4].bottom = Rgba(0x9C84FF);
++  faces[0].texture = game.cover;
++  if (m_cube_previous >= 0 && m_cube_previous < count && std::abs(m_cube_turn) > 0.01f)
++  {
++    const ImTextureID previous = m_games[items[m_cube_previous].game].cover;
++    faces[m_cube_turn > 0.0f ? 2 : 3].texture = previous;
++  }
++  const float ry = m_cube_turn * 1.5707963f + 0.30f * std::sin(m_time * 0.5f);
++  const float rx = -0.12f + 0.05f * std::sin(m_time * 0.37f);
++  // Shadow on the floor.
++  dl->AddCircleFilled(ImVec2(center.x, center.y + hy + 70), hx * 1.1f, Rgba(0x000000, alpha * 0.25f),
++                      40);
++  DrawBox(dl, center, hx, hy, hz, ry, rx, 1500.0f, faces, alpha, Rgba(0xD8CCFF, 0.55f));
++  if (game.cover == ImTextureID{})
++  {
++    const float tw = std::min(TextWidth(m_bold, 30, game.title), hx * 1.8f);
++    Text(dl, m_bold, 30, ImVec2(center.x - tw * 0.5f, center.y - 15), Rgba(0xFFFFFF, alpha * 0.9f),
++         game.title);
++  }
++  DrawGameInfo(dl, game, center.x, 780.0f, alpha);
++}
++
++// Wii style: channel tiles, four by three per page; the pages slide sideways.
++void Menu::DrawWiiGames(ImDrawList* dl, float alpha, float dt)
++{
++  const Theme& theme = CurrentTheme();
++  const int c = static_cast<int>(Category::Games);
++  const auto& items = m_items[c];
++  const int count = static_cast<int>(items.size());
++  if (count == 0 || items[0].game < 0)
++  {
++    DrawLibraryGames(dl, alpha);
++    return;
++  }
++  const int selected = m_selected[c];
++  constexpr int COLS = 4, ROWS = 3, PER_PAGE = COLS * ROWS;
++  constexpr float TW = 372.0f, TH = 206.0f, GAP = 26.0f, TOP = 262.0f;
++  const float left = (W - (COLS * TW + (COLS - 1) * GAP)) * 0.5f;
++  const int page = selected / PER_PAGE, pages = (count + PER_PAGE - 1) / PER_PAGE;
++  Approach(m_wii_page, static_cast<float>(page), 9.0f, dt);
++
++  // The selected channel's name above the grid.
++  const Game& sel_game = m_games[items[selected].game];
++  {
++    const float size = TextWidth(m_bold, 44, sel_game.title) > W - 300 ? 34.0f : 44.0f;
++    Text(dl, m_bold, size, ImVec2(left, 150), Rgba(theme.text, alpha), sel_game.title);
++    std::string info = std::string(sel_game.wii ? "Wii" : "GameCube") + "  -  " +
++                       PlayedText(Played(sel_game.path));
++    const std::string played = PS4PlayTime::Text(PlayTime(sel_game));
++    if (!played.empty())
++      info += "  -  " + played;
++    Text(dl, m_font, 26, ImVec2(left + 2, 206), Rgba(theme.text, alpha * 0.72f), info);
++  }
++
++  auto tile_pos = [&](int i, float page_pos) {
++    const int p = i / PER_PAGE, r = (i % PER_PAGE) / COLS, col = i % COLS;
++    return ImVec2(left + col * (TW + GAP) + (static_cast<float>(p) - page_pos) * W,
++                  TOP + r * (TH + GAP));
++  };
++  const ImVec2 target = tile_pos(selected, static_cast<float>(page));
++  if (m_wii_frame.x < 0.0f)
++    m_wii_frame = target;
++  Approach(m_wii_frame.x, target.x, 16.0f, dt);
++  Approach(m_wii_frame.y, target.y, 16.0f, dt);
++
++  for (int i = 0; i < count; i++)
++  {
++    ImVec2 p0 = tile_pos(i, m_wii_page);
++    if (p0.x > W || p0.x + TW < 0.0f)
++      continue;
++    const Game& game = m_games[items[i].game];
++    const bool sel = i == selected;
++    float grow = sel ? 0.035f + 0.008f * std::sin(m_time * 3.0f) : 0.0f;
++    const ImVec2 mid(p0.x + TW * 0.5f, p0.y + TH * 0.5f);
++    const ImVec2 a(mid.x - TW * 0.5f * (1 + grow), mid.y - TH * 0.5f * (1 + grow));
++    const ImVec2 b(mid.x + TW * 0.5f * (1 + grow), mid.y + TH * 0.5f * (1 + grow));
++    // The tile: white glass, the cover's colours behind the art, the art itself.
++    dl->AddRectFilled(ImVec2(a.x + 6, a.y + 8), ImVec2(b.x + 6, b.y + 8), Rgba(0x000000, alpha * 0.25f),
++                      20.0f);
++    dl->AddRectFilledMultiColor(a, b, Rgba(0xFFFFFF, alpha * 0.95f), Rgba(0xFFFFFF, alpha * 0.95f),
++                                Rgba(0xDCE3EA, alpha * 0.95f), Rgba(0xDCE3EA, alpha * 0.95f));
++    if (game.cover != ImTextureID{})
++    {
++      const float ca = std::clamp(game.cover_aspect, 0.55f, 1.0f);
++      const float band = std::clamp(ca * TH / TW, 0.2f, 1.0f);  // the cover's middle, tile-shaped
++      dl->AddImageRounded(ImTextureRef(game.cover), a, b, ImVec2(0, 0.5f - band * 0.5f),
++                          ImVec2(1, 0.5f + band * 0.5f), IM_COL32(255, 255, 255, static_cast<int>(alpha * 90)),
++                          18.0f);
++      const float ah = (b.y - a.y) - 22.0f, aw = ah * ca;
++      dl->AddImage(ImTextureRef(game.cover), ImVec2(mid.x - aw * 0.5f, mid.y - ah * 0.5f),
++                   ImVec2(mid.x + aw * 0.5f, mid.y + ah * 0.5f), ImVec2(0, 0), ImVec2(1, 1),
++                   IM_COL32(255, 255, 255, static_cast<int>(alpha * 255)));
++    }
++    else
++    {
++      const ImTextureID platform = game.wii ? m_icon_wii : m_icon_gc;
++      if (platform != ImTextureID{})
++      {
++        dl->AddImage(ImTextureRef(platform), ImVec2(mid.x - 44, a.y + 26), ImVec2(mid.x + 44, a.y + 114),
++                     ImVec2(0, 0), ImVec2(1, 1), IM_COL32(70, 80, 95, static_cast<int>(alpha * 255)));
++      }
++      const float tw = std::min(TextWidth(m_bold, 24, game.title), TW - 30);
++      Text(dl, m_bold, 24, ImVec2(mid.x - tw * 0.5f, b.y - 60), Rgba(0x3A4250, alpha), game.title);
++    }
++    dl->AddRect(a, b, sel ? Rgba(theme.wave, alpha) : Rgba(0xB8C2CC, alpha * 0.9f), 20.0f, 0,
++                sel ? 3.0f : 2.0f);
++  }
++  // The selection frame glides from tile to tile.
++  {
++    const ImVec2 f0(m_wii_frame.x - 10, m_wii_frame.y - 10), f1(m_wii_frame.x + TW + 10, m_wii_frame.y + TH + 10);
++    const float pulse = 0.6f + 0.4f * std::sin(m_time * 3.0f);
++    for (int i = 3; i >= 1; i--)
++    {
++      const float g = i * 5.0f;
++      dl->AddRect(ImVec2(f0.x - g, f0.y - g), ImVec2(f1.x + g, f1.y + g),
++                  Rgba(theme.wave, alpha * 0.10f * (4 - i) * pulse), 26.0f + g, 0, 4.0f);
++    }
++    dl->AddRect(f0, f1, Rgba(theme.wave, alpha * 0.95f), 26.0f, 0, 4.0f);
++  }
++  // Page arrows and dots, as on the Wii Menu.
++  const float arrow_y = TOP + (ROWS * TH + (ROWS - 1) * GAP) * 0.5f;
++  if (page > 0)
++  {
++    const ImVec2 c0(left * 0.5f, arrow_y);
++    dl->AddCircleFilled(c0, 34, Rgba(0xFFFFFF, alpha * 0.85f), 40);
++    dl->AddTriangleFilled(ImVec2(c0.x + 9, c0.y - 15), ImVec2(c0.x + 9, c0.y + 15), ImVec2(c0.x - 13, c0.y),
++                          Rgba(theme.wave, alpha));
++  }
++  if (page < pages - 1)
++  {
++    const ImVec2 c0(W - left * 0.5f, arrow_y);
++    dl->AddCircleFilled(c0, 34, Rgba(0xFFFFFF, alpha * 0.85f), 40);
++    dl->AddTriangleFilled(ImVec2(c0.x - 9, c0.y - 15), ImVec2(c0.x - 9, c0.y + 15), ImVec2(c0.x + 13, c0.y),
++                          Rgba(theme.wave, alpha));
++  }
++  if (pages > 1)
++  {
++    const float dots_w = pages * 26.0f;
++    for (int i = 0; i < pages; i++)
++    {
++      const float on = std::max(0.0f, 1.0f - std::abs(static_cast<float>(i) - m_wii_page));
++      dl->AddCircleFilled(ImVec2(W * 0.5f - dots_w * 0.5f + i * 26.0f + 13.0f, 948.0f), 6.0f + 3.0f * on,
++                          Rgba(theme.text, alpha * (0.35f + 0.65f * on)), 20);
++    }
++  }
 +}
 +
 +void Menu::DrawLibraryCards(ImDrawList* dl, float alpha)
@@ -21416,6 +21958,8 @@ index 0000000..230eab3
 +      HandleInput(m_input.Poll(dt));
 +    }
 +    UpdateCoverDownload();
++    if (m_covers_pending)
++      m_covers_pending = LoadCovers(2);
 +    UpdateUpdater(dt);
 +    UpdateCheatDownload();
 +    UpdateCenterFetch();
@@ -31570,3 +32114,46 @@ index ac09506..f8838d6 100644
      if ((uid_data->components & VB_HAS_NORMAL) != 0)
        out.Write("ATTRIBUTE_LOCATION({:s}) in float3 rawnormal;\n", ShaderAttrib::Normal);
      if ((uid_data->components & VB_HAS_TANGENT) != 0)
+diff --git a/Source/Core/VideoCommon/VideoConfig.cpp b/Source/Core/VideoCommon/VideoConfig.cpp
+index c56f32c..501c0db 100644
+--- a/Source/Core/VideoCommon/VideoConfig.cpp
++++ b/Source/Core/VideoCommon/VideoConfig.cpp
+@@ -25,6 +25,8 @@
+ #include "VideoCommon/Fifo.h"
+ #include "VideoCommon/FramebufferManager.h"
+ #include "VideoCommon/FreeLookCamera.h"
++#include "VideoCommon/GraphicsModSystem/Config/GraphicsMod.h"
++#include "VideoCommon/GraphicsModSystem/Config/GraphicsModGroup.h"
+ #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModManager.h"
+ #include "VideoCommon/OnScreenDisplay.h"
+ #include "VideoCommon/PixelShaderManager.h"
+@@ -198,6 +200,29 @@ void VideoConfig::Refresh()
+   bPerfQueriesEnable = Config::Get(Config::GFX_PERF_QUERIES_ENABLE);
+ 
+   bGraphicMods = Config::Get(Config::GFX_MODS_ENABLE);
++#ifdef __ORBIS__
++  // PS4: graphics mods only for a game with one switched on (launcher: Triangle > Graphics
++  // Mods), so other games don't pay for the per-draw checks. Looked up once per game.
++  if (bGraphicMods)
++  {
++    static std::string s_checked_game;
++    static bool s_any_enabled = false;
++    const std::string game_id = SConfig::GetInstance().GetGameID();
++    if (game_id != s_checked_game)
++    {
++      s_checked_game = game_id;
++      s_any_enabled = false;
++      if (!game_id.empty())
++      {
++        GraphicsModGroupConfig mods(game_id);
++        mods.Load();
++        for (const auto& mod : mods.GetMods())
++          s_any_enabled |= mod.m_enabled;
++      }
++    }
++    bGraphicMods = s_any_enabled;
++  }
++#endif
+ 
+   customDriverLibraryName = Config::Get(Config::GFX_DRIVER_LIB_NAME);
+ 

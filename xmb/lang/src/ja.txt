@@ -451,3 +451,27 @@ PC版Dolphinで確認する（右クリック > プロパティ > 検証）か�
 詳細はcrash.logとboot-trace.logにあります（/data/DolphinPS4内）。
 詳細はdolphin.logとboot-trace.logにあります（/data/DolphinPS4内）。
 ○ボタンで閉じます。
+# --- Controller page, menu styles, GameCube BIOS
+コントローラー
+拡張コントローラー
+ボタン割り当て
+Wiiリモコンのボタン
+コントローラー - このゲーム
+コントローラー - すべてのゲーム
+Wiiリモコンの持ち方
+テレビに向ける
+横持ち
+ハンドルのように
+傾きの操作
+モーション + スティック
+モーション
+タッチパッド
+振る
+消去
+ゲームキューブ起動アニメーション
+BIOSがPS4にある場合、ゲームの前にゲームキューブの起動アニメーションを再生します: /data/DolphinPS4/User/GC/USA/IPL.bin(他の地域はEURまたはJAP)。
+カルーセル
+カルーセル: カバーを横一列に表示。
+ゲームキューブ: リストと回転するキューブ。
+Wii: チャンネルのグリッド、ページ単位。
+タブはL1 / R1で切り替え(XMBを除く)。
