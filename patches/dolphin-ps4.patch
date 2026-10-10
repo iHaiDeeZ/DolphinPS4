@@ -10277,10 +10277,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..aa976f6
+index 0000000..25ff539
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,3022 @@
+@@ -0,0 +1,3026 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11840,18 +11840,22 @@ index 0000000..aa976f6
 +  }
 +  else
 +  {
++    // Every player's Wii Remote at once (the layout files already hold it for all four).
 +    const auto lock = ControllerEmu::EmulatedController::GetStateLock();
-+    auto* attachments = static_cast<ControllerEmu::Attachments*>(
-+        Wiimote::GetWiimoteGroup(0, WiimoteEmu::WiimoteGroup::Attachments));
-+    attachments->SetSelectedAttachment(nunchuk ? WiimoteEmu::ExtensionNumber::NUNCHUK :
-+                                                 WiimoteEmu::ExtensionNumber::NONE);
-+    auto* options = Wiimote::GetWiimoteGroup(0, WiimoteEmu::WiimoteGroup::Options);
-+    for (auto& setting : options->numeric_settings)
++    for (int player = 0; player < 4; player++)
 +    {
-+      if (std::string(setting->GetININame()) == "Sideways Wiimote")
-+        static_cast<ControllerEmu::NumericSetting<bool>*>(setting.get())->SetValue(sideways);
-+      else if (std::string(setting->GetININame()) == "Upright Wiimote")
-+        static_cast<ControllerEmu::NumericSetting<bool>*>(setting.get())->SetValue(upright);
++      auto* attachments = static_cast<ControllerEmu::Attachments*>(
++          Wiimote::GetWiimoteGroup(player, WiimoteEmu::WiimoteGroup::Attachments));
++      attachments->SetSelectedAttachment(nunchuk ? WiimoteEmu::ExtensionNumber::NUNCHUK :
++                                                   WiimoteEmu::ExtensionNumber::NONE);
++      auto* options = Wiimote::GetWiimoteGroup(player, WiimoteEmu::WiimoteGroup::Options);
++      for (auto& setting : options->numeric_settings)
++      {
++        if (std::string(setting->GetININame()) == "Sideways Wiimote")
++          static_cast<ControllerEmu::NumericSetting<bool>*>(setting.get())->SetValue(sideways);
++        else if (std::string(setting->GetININame()) == "Upright Wiimote")
++          static_cast<ControllerEmu::NumericSetting<bool>*>(setting.get())->SetValue(upright);
++      }
 +    }
 +  }
 +  Toast(key == "wii_extension" ? (nunchuk ? "Nunchuk plugged in" : "Nunchuk unplugged") :
