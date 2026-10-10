@@ -8716,10 +8716,10 @@ index 0000000..276a9b6
 +}  // namespace PS4Cheats
 diff --git a/Source/Core/DolphinNoGUI/PS4Controls.cpp b/Source/Core/DolphinNoGUI/PS4Controls.cpp
 new file mode 100755
-index 0000000..671c7b4
+index 0000000..d015aff
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Controls.cpp
-@@ -0,0 +1,820 @@
+@@ -0,0 +1,852 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -8784,9 +8784,9 @@ index 0000000..671c7b4
 +IR/Down = `Right Y+`
 +IR/Left = `Right X-`
 +IR/Right = `Right X+`
-+Shake/X = R3
-+Shake/Y = R3
-+Shake/Z = R3
++Shake/X = `Circle | R3`
++Shake/Y = `Circle | R3`
++Shake/Z = `Circle | R3`
 +IMUIR/Recenter = R1
 +Rumble/Motor = `Motor L`
 +Extension = Nunchuk
@@ -9039,6 +9039,28 @@ index 0000000..671c7b4
 +      }
 +    }
 +  }
++  // Layouts from before Circle shook the Wii Remote ("Shake the Wii Remote" prompts): Circle,
++  // free in the Wii layout, as well as R3 - unless the player gave Circle to something else.
++  {
++    Common::IniFile ini;
++    if (ini.Load(LivePath(Device::Wii)))
++    {
++      Common::IniFile::Section* section = ini.GetSection("Wiimote1");
++      std::string shake;
++      bool circle_used = false;
++      if (section)
++      {
++        for (const auto& [key, value] : section->GetValues())
++          circle_used |= value.find("Circle") != std::string::npos;
++      }
++      if (section && section->Get("Shake/X", &shake) && Strip(shake) == "R3" && !circle_used)
++      {
++        for (const char* key : {"Shake/X", "Shake/Y", "Shake/Z"})
++          section->Set(key, std::string("`Circle | R3`"));
++        SaveIni(ini, LivePath(Device::Wii));
++      }
++    }
++  }
 +  // Layouts from before the motion pointer: R1 (free in the Wii layout) re-centres it.
 +  {
 +    Common::IniFile ini;
@@ -9270,6 +9292,16 @@ index 0000000..671c7b4
 +  const std::string name = Strip(expression);
 +  if (name.empty())
 +    return "None";
++  // Either of two inputs ("Circle | R3"): each one by its shown name.
++  if (const size_t bar = name.find('|'); bar != std::string::npos)
++  {
++    std::string left = name.substr(0, bar), right = name.substr(bar + 1);
++    while (!left.empty() && left.back() == ' ')
++      left.pop_back();
++    while (!right.empty() && right.front() == ' ')
++      right.erase(0, 1);
++    return Describe(left) + " / " + Describe(right);
++  }
 +  struct Name
 +  {
 +    const char* raw;
