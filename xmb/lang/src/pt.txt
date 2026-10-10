@@ -483,3 +483,14 @@ Rápido pula o arredondamento dos cálculos de ponto flutuante para precisão si
 Mods gráficos
 Nenhum mod gráfico para este jogo.
 Os mods do Dolphin cobrem alguns jogos; outros vão em
+# --- Rewind
+Retroceder
+Volta ao último checkpoint; pressione de novo em poucos segundos para voltar mais (até 3 minutos). Enquanto estiver definido, um checkpoint é criado a cada minuto de jogo (uma pausa curta). X: pressione os seus. Quadrado: Desligado.
+Retrocedendo...
+Voltou ao último checkpoint
+Voltou ao último checkpoint ({} mais antigos: pressione de novo)
+Ainda não há checkpoint: o primeiro é criado após um minuto de jogo
+Não há checkpoint mais antigo
+Falha ao retroceder
+O modo Hardcore está ativo: sem retroceder.
+{}: Desligado

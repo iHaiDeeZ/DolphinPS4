@@ -482,3 +482,14 @@ Snel slaat het afronden van drijvendekommaberekeningen naar enkele precisie over
 Grafische mods
 Geen grafische mods voor dit spel.
 Dolphins eigen mods dekken enkele spellen; andere horen in
+# --- Rewind
+Terugspoelen
+Gaat terug naar het laatste controlepunt; druk binnen enkele seconden opnieuw om verder terug te gaan (tot 3 minuten). Zolang dit is ingesteld, wordt elke speelminuut een controlepunt gemaakt (een korte pauze). Kruis: druk je eigen knoppen. Vierkant: Uit.
+Terugspoelen...
+Teruggespoeld naar het laatste controlepunt
+Teruggespoeld naar het laatste controlepunt ({} oudere: druk opnieuw)
+Nog geen controlepunt: het eerste komt na een minuut spelen
+Geen ouder controlepunt
+Terugspoelen mislukt
+Hardcore-modus staat aan: niet terugspoelen.
+{}: Uit

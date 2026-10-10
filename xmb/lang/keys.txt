@@ -484,3 +484,14 @@ Fast skips rounding float math to single precision: up to ~20% faster in float-h
 Graphics Mods
 No graphics mods for this game.
 Dolphin's own mods cover some games; others go in
+# --- Rewind
+Rewind
+Goes back to the last checkpoint; press again within a few seconds to go further back (up to 3 minutes). While it is set, a checkpoint is taken every minute of play (a short pause). Cross: press your own. Square: Off.
+Rewinding...
+Rewound to the last checkpoint
+Rewound to the last checkpoint ({} older: press again)
+No checkpoint yet: the first one is taken after a minute of play
+No older checkpoint
+Rewind failed
+Hardcore Mode is on: no rewinding.
+{}: Off

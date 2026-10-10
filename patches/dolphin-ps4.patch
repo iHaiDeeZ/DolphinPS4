@@ -10277,10 +10277,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..acc8378
+index 0000000..01fe1eb
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,2789 @@
+@@ -0,0 +1,2936 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10305,6 +10305,7 @@ index 0000000..acc8378
 +#include "Core/ConfigManager.h"
 +#include "Core/Core.h"
 +#include "Core/State.h"
++#include "Common/FileUtil.h"
 +#include "Core/HW/Wiimote.h"
 +#include "Core/HW/WiimoteEmu/ExtensionPort.h"
 +#include "Core/HW/WiimoteEmu/WiimoteEmu.h"
@@ -11013,6 +11014,18 @@ index 0000000..acc8378
 +bool s_hint_started = false;
 +Clock::time_point s_hint_start;
 +int s_saving_slot = 0;  // a save to this slot is being written
++// Rewind (hotkey_rewind): while it is set, a checkpoint state every minute of play (up to three,
++// newest first, in User/StateSaves/<game>.rewindN); the hotkey loads the newest, pressed again
++// soon after the one before it.
++std::vector<std::string> s_checkpoints;
++Clock::time_point s_rewind_tick, s_last_rewind;
++float s_checkpoint_clock = 0.0f;  // seconds of play since the last checkpoint
++bool s_rewound = false;           // a rewind happened (the next press within 6 s goes further)
++bool s_checkpoint_saving = false;
++bool s_rewind_loading = false;
++bool s_rewind_cleaned = false;
++constexpr float CHECKPOINT_SECONDS = 60.0f;
++constexpr size_t MAX_CHECKPOINTS = 3;
 +int s_loading_slot = 0;  // a load of this slot was requested
 +// A load failed halfway (State::PS4Slot::Broken): the CPU thread has stopped for good, and the app
 +// restarts into the XMB once the message has been shown.
@@ -11912,10 +11925,16 @@ index 0000000..acc8378
 +// While a game runs (menu closed): Save State / Load State on their hotkeys, current slot.
 +void CheckHotkeys(Core::System& system, uint32_t held, uint32_t pressed)
 +{
-+  static std::string s_save_text, s_load_text;
-+  static uint32_t s_save_mask = 0, s_load_mask = 0;
++  static std::string s_save_text, s_load_text, s_rewind_text;
++  static uint32_t s_save_mask = 0, s_load_mask = 0, s_rewind_mask = 0;
 +  const std::string save = PS4Settings::Get("hotkey_save");
 +  const std::string load = PS4Settings::Get("hotkey_load");
++  const std::string rewind = PS4Settings::Get("hotkey_rewind");
++  if (rewind != s_rewind_text)
++  {
++    s_rewind_text = rewind;
++    s_rewind_mask = PS4Settings::HotkeyMask(rewind);
++  }
 +  if (save != s_save_text)
 +  {
 +    s_save_text = save;
@@ -11929,6 +11948,46 @@ index 0000000..acc8378
 +  const auto fired = [&](uint32_t mask) {
 +    return __builtin_popcount(mask) >= 2 && (held & mask) == mask && (pressed & mask);
 +  };
++  if (fired(s_rewind_mask))
++  {
++    ps4_pad_block = 1;
++#ifdef USE_RETRO_ACHIEVEMENTS
++    if (AchievementManager::GetInstance().IsHardcoreModeActive())
++    {
++      Toast("Hardcore Mode is on: no rewinding.", 4000);
++      return;
++    }
++#endif
++    if (ps4_state_busy > 0)
++    {
++      Toast("Still saving, please wait...");
++      return;
++    }
++    // Pressed again soon after a rewind: one checkpoint further back.
++    const bool further = s_rewound && Clock::now() - s_last_rewind < std::chrono::seconds(6);
++    const size_t index = further ? 1 : 0;
++    if (s_checkpoints.empty())
++    {
++      Toast("No checkpoint yet: the first one is taken after a minute of play", 4000);
++      return;
++    }
++    if (index >= s_checkpoints.size())
++    {
++      Toast("No older checkpoint", 3000);
++      return;
++    }
++    // The checkpoints after the one loaded are from a future that no longer happens.
++    s_checkpoints.erase(s_checkpoints.begin(), s_checkpoints.begin() + index);
++    Log("rewind: loading " + s_checkpoints.front() + " (" + std::to_string(s_checkpoints.size()) +
++        " checkpoints)");
++    s_rewound = true;
++    s_last_rewind = Clock::now();
++    s_checkpoint_clock = 0.0f;
++    s_rewind_loading = true;
++    State::LoadAs(system, s_checkpoints.front());
++    Toast("Rewinding...");
++    return;
++  }
 +  if (fired(s_save_mask))
 +  {
 +    ps4_pad_block = 1;  // the game sees a neutral pad until the buttons are released
@@ -11971,6 +12030,64 @@ index 0000000..acc8378
 +    State::Load(system, static_cast<u32>(s_slot));
 +    Toast("Loading slot " + std::to_string(s_slot) + "...");
 +  }
++}
++
++// Rewind checkpoints: a state every minute of play while a rewind hotkey is set (polled while
++// the game runs and the menu is closed). Old checkpoint files of this game go at the start.
++void RewindTick(Core::System& system)
++{
++  const auto now = Clock::now();
++  const float dt =
++      std::clamp(std::chrono::duration<float>(now - s_rewind_tick).count(), 0.0f, 1.0f);
++  s_rewind_tick = now;
++  const std::string game = SConfig::GetInstance().GetGameID();
++  if (game.empty())
++    return;
++  const auto path = [&game](size_t n) {
++    return File::GetUserPath(D_STATESAVES_IDX) + game + ".rewind" + std::to_string(n);
++  };
++  if (!s_rewind_cleaned)
++  {
++    s_rewind_cleaned = true;
++    for (size_t n = 0; n <= MAX_CHECKPOINTS; n++)
++      File::Delete(path(n));
++  }
++  const std::string key = PS4Settings::Get("hotkey_rewind");
++  if (key.empty() || key == "off")
++  {
++    s_checkpoint_clock = 0.0f;
++    return;
++  }
++#ifdef USE_RETRO_ACHIEVEMENTS
++  if (AchievementManager::GetInstance().IsHardcoreModeActive())
++    return;
++#endif
++  if (s_checkpoint_saving)
++  {
++    if (ps4_state_busy == 0)
++      s_checkpoint_saving = false;
++    return;
++  }
++  s_checkpoint_clock += dt;
++  if (s_checkpoint_clock < CHECKPOINT_SECONDS || ps4_state_busy > 0)
++    return;
++  s_checkpoint_clock = 0.0f;
++  if (s_checkpoints.size() >= MAX_CHECKPOINTS)
++  {
++    File::Delete(s_checkpoints.back());
++    s_checkpoints.pop_back();
++  }
++  // A file name none of the kept checkpoints uses.
++  std::string file;
++  for (size_t n = 0; n <= MAX_CHECKPOINTS && file.empty(); n++)
++  {
++    if (std::find(s_checkpoints.begin(), s_checkpoints.end(), path(n)) == s_checkpoints.end())
++      file = path(n);
++  }
++  s_checkpoints.insert(s_checkpoints.begin(), file);
++  s_checkpoint_saving = true;
++  Log("rewind: checkpoint " + file);
++  State::SaveAs(system, file);
 +}
 +
 +void Activate(Core::System& system)
@@ -12823,8 +12940,21 @@ index 0000000..acc8378
 +    }
 +    Log("state " + std::to_string(s_loading_slot) + " load result " +
 +        std::to_string(int(result)));
-+    Toast(SlotProblem(s_loading_slot, result, made_by),
-+          result == State::PS4Slot::Ready ? 2200 : 6000);
++    if (s_rewind_loading)
++    {
++      s_rewind_loading = false;
++      const size_t older = s_checkpoints.empty() ? 0 : s_checkpoints.size() - 1;
++      Toast(result == State::PS4Slot::Ready ?
++                "Rewound to the last checkpoint" +
++                    (older > 0 ? " (" + std::to_string(older) + " older: press again)" : std::string()) :
++                std::string("Rewind failed"),
++            result == State::PS4Slot::Ready ? 2600 : 6000);
++    }
++    else
++    {
++      Toast(SlotProblem(s_loading_slot, result, made_by),
++            result == State::PS4Slot::Ready ? 2200 : 6000);
++    }
 +    if (result == State::PS4Slot::Broken && !s_broken)
 +    {
 +      s_broken = true;
@@ -12961,6 +13091,10 @@ index 0000000..acc8378
 +    {
 +      CheckHotkeys(system, held, pressed);
 +    }
++    if (Core::GetState(system) == Core::State::Running)
++      RewindTick(system);
++    else
++      s_rewind_tick = Clock::now();
 +  }
 +  else if (!s_capture_key.empty())
 +  {
@@ -13039,6 +13173,19 @@ index 0000000..acc8378
 +             s_ctl_capture_row < 0)
 +    {
 +      ClearControl(s_settings_selected);
++      rebuild = true;
++    }
++    else if ((pressed & ORBIS_PAD_BUTTON_SQUARE) && s_page == Page::Settings &&
++             s_capture_key.empty() && s_settings_selected >= 0 &&
++             s_settings_selected < static_cast<int>(s_row_keys.size()) &&
++             PS4Settings::IsHotkey(s_row_keys[s_settings_selected]))
++    {
++      // A hotkey: unbound.
++      const std::string& key = s_row_keys[s_settings_selected];
++      PS4Settings::Set(key, "off", {});
++      const PS4Settings::Setting* setting = PS4Settings::Find(key);
++      Toast((setting ? std::string(setting->label) : key) + ": Off");
++      Log("hotkey " + key + "=off");
 +      rebuild = true;
 +    }
 +    else if (pressed & ORBIS_PAD_BUTTON_CIRCLE)
@@ -14022,10 +14169,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..84a8228
+index 0000000..cdfd4ec
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,982 @@
+@@ -0,0 +1,997 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -14269,7 +14416,22 @@ index 0000000..84a8228
 +      {"Options + R1", "Options + R1"}},
 +     "off", true,
 +     "Buttons pressed together load the current slot while you play. Cross: press your own."},
-+};
++    {"hotkey_rewind", "Rewind", "Hotkeys",
++     {{"off", "Off"},
++      {"Touchpad + L1", "Touchpad + L1"},
++      {"Touchpad + R1", "Touchpad + R1"},
++      {"L3 + Left", "L3 + Left"},
++      {"L3 + Right", "L3 + Right"},
++      {"R3 + Left", "R3 + Left"},
++      {"R3 + Right", "R3 + Right"},
++      {"L1 + R1 + Square", "L1 + R1 + Square"},
++      {"L1 + R1 + Triangle", "L1 + R1 + Triangle"},
++      {"Options + L1", "Options + L1"},
++      {"Options + R1", "Options + R1"}},
++     "off", true,
++     "Goes back to the last checkpoint; press again within a few seconds to go further back (up to "
++     "3 minutes). While it is set, a checkpoint is taken every minute of play (a short pause). "
++     "Cross: press your own. Square: Off."},
 +
 +const std::vector<const char*> CATEGORIES = {"Video", "Graphics", "Performance", "System",
 +                                             "Diagnostics", "Hotkeys"};
@@ -15610,10 +15772,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..65cf06f
+index 0000000..5a1ebfc
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,6630 @@
+@@ -0,0 +1,6641 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -18499,6 +18661,17 @@ index 0000000..65cf06f
 +        m_panel.open = false;
 +        Play("back");
 +      }
++      return;
++    }
++    // Settings: Square unbinds the selected hotkey.
++    if ((pressed & BTN_SQUARE) && !m_capture && m_combo_key.empty() &&
++        m_panel.selected >= 0 && m_panel.selected < static_cast<int>(m_panel.rows.size()) &&
++        PS4Settings::IsHotkey(m_panel.rows[m_panel.selected].key))
++    {
++      PS4Settings::Set(m_panel.rows[m_panel.selected].key, "off", {});
++      Log("hotkey " + m_panel.rows[m_panel.selected].key + "=off");
++      BuildSettingRows();
++      Play("back");
 +      return;
 +    }
 +    // Controls: Square clears the selected button's mapping (it then does nothing).

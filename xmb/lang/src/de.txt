@@ -482,3 +482,14 @@ Schnell lässt das Runden von Gleitkommazahlen auf einfache Genauigkeit weg: bis
 Grafik-Mods
 Keine Grafik-Mods für dieses Spiel.
 Dolphins eigene Mods decken einige Spiele ab; andere kommen nach
+# --- Rewind
+Zurückspulen
+Springt zum letzten Kontrollpunkt zurück; innerhalb weniger Sekunden erneut drücken, um weiter zurückzugehen (bis zu 3 Minuten). Solange belegt, wird jede Spielminute ein Kontrollpunkt angelegt (kurze Pause). Kreuz: eigene Tasten drücken. Quadrat: Aus.
+Spule zurück...
+Zum letzten Kontrollpunkt zurückgespult
+Zum letzten Kontrollpunkt zurückgespult ({} ältere: erneut drücken)
+Noch kein Kontrollpunkt: der erste kommt nach einer Spielminute
+Kein älterer Kontrollpunkt
+Zurückspulen fehlgeschlagen
+Hardcore-Modus ist an: kein Zurückspulen.
+{}: Aus

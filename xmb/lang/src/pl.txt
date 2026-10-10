@@ -482,3 +482,14 @@ Szybkie pomija zaokrąglanie obliczeń zmiennoprzecinkowych do pojedynczej precy
 Mody graficzne
 Brak modów graficznych dla tej gry.
 Mody Dolphina obejmują niektóre gry; inne umieść w
+# --- Rewind
+Przewijanie
+Wraca do ostatniego punktu kontrolnego; naciśnij ponownie w ciągu kilku sekund, by cofnąć się dalej (do 3 minut). Gdy jest przypisane, co minutę gry tworzony jest punkt kontrolny (krótka pauza). Krzyżyk: naciśnij własne przyciski. Kwadrat: Wył.
+Przewijanie...
+Cofnięto do ostatniego punktu kontrolnego
+Cofnięto do ostatniego punktu kontrolnego ({} starszych: naciśnij ponownie)
+Brak punktu kontrolnego: pierwszy powstaje po minucie gry
+Brak starszego punktu kontrolnego
+Przewijanie nie powiodło się
+Tryb Hardcore jest włączony: bez przewijania.
+{}: Wył.

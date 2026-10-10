@@ -482,3 +482,14 @@ Rápido omite redondear los cálculos de coma flotante a precisión simple: hast
 Mods gráficos
 No hay mods gráficos para este juego.
 Los mods de Dolphin cubren algunos juegos; los demás van en
+# --- Rewind
+Rebobinar
+Vuelve al último punto de control; pulsa otra vez en pocos segundos para ir más atrás (hasta 3 minutos). Mientras esté asignado, se crea un punto de control cada minuto de juego (una breve pausa). Cruz: pulsa los tuyos. Cuadrado: Desactivado.
+Rebobinando...
+Rebobinado al último punto de control
+Rebobinado al último punto de control ({} más antiguos: pulsa otra vez)
+Aún no hay punto de control: el primero se crea tras un minuto de juego
+No hay un punto de control más antiguo
+Error al rebobinar
+El modo Hardcore está activado: no se puede rebobinar.
+{}: Desactivado

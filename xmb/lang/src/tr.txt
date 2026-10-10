@@ -482,3 +482,14 @@ Hızlı, kayan nokta hesaplarının tek duyarlılığa yuvarlanmasını atlar: y
 Grafik Modları
 Bu oyun için grafik modu yok.
 Dolphin'in kendi modları bazı oyunlar içindir; diğerleri şuraya
+# --- Rewind
+Geri Sar
+Son kontrol noktasına döner; daha geriye gitmek için birkaç saniye içinde tekrar basın (3 dakikaya kadar). Atanmışken oyunun her dakikasında bir kontrol noktası alınır (kısa bir duraklama). Çarpı: kendi tuşlarınıza basın. Kare: Kapalı.
+Geri sarılıyor...
+Son kontrol noktasına dönüldü
+Son kontrol noktasına dönüldü ({} daha eski: tekrar basın)
+Henüz kontrol noktası yok: ilki bir dakikalık oyundan sonra alınır
+Daha eski kontrol noktası yok
+Geri sarma başarısız
+Hardcore Modu açık: geri sarma yok.
+{}: Kapalı

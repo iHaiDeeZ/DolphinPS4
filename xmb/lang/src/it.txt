@@ -482,3 +482,14 @@ Veloce salta l'arrotondamento dei calcoli in virgola mobile alla precisione sing
 Mod grafiche
 Nessuna mod grafica per questo gioco.
 Le mod di Dolphin coprono alcuni giochi; le altre vanno in
+# --- Rewind
+Riavvolgi
+Torna all'ultimo checkpoint; premi di nuovo entro pochi secondi per andare più indietro (fino a 3 minuti). Finché è assegnato, viene creato un checkpoint ogni minuto di gioco (una breve pausa). Croce: premi i tuoi tasti. Quadrato: Disattivato.
+Riavvolgimento...
+Riavvolto all'ultimo checkpoint
+Riavvolto all'ultimo checkpoint ({} più vecchi: premi di nuovo)
+Nessun checkpoint ancora: il primo viene creato dopo un minuto di gioco
+Nessun checkpoint più vecchio
+Riavvolgimento non riuscito
+La modalità Hardcore è attiva: niente riavvolgimento.
+{}: Disattivato

@@ -482,3 +482,14 @@ Rapide n'arrondit plus les calculs flottants en simple précision : jusqu'à ~20
 Mods graphiques
 Aucun mod graphique pour ce jeu.
 Les mods de Dolphin couvrent certains jeux ; les autres vont dans
+# --- Rewind
+Retour arrière
+Revient au dernier point de contrôle ; appuyez à nouveau dans les secondes qui suivent pour remonter plus loin (jusqu'à 3 minutes). Tant qu'il est attribué, un point de contrôle est pris à chaque minute de jeu (une courte pause). Croix : vos propres touches. Carré : Désactivé.
+Retour en arrière...
+Revenu au dernier point de contrôle
+Revenu au dernier point de contrôle ({} plus anciens : appuyez à nouveau)
+Pas encore de point de contrôle : le premier est pris après une minute de jeu
+Pas de point de contrôle plus ancien
+Échec du retour arrière
+Le mode Hardcore est activé : pas de retour arrière.
+{} : Désactivé
