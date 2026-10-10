@@ -1727,6 +1727,41 @@ index 74f26b9..9c4f05b 100644
    const LeaderboardStatus* GetLeaderboardInfo(AchievementId leaderboard_id);
    RichPresence GetRichPresence() const;
    bool AreChallengesUpdated() const;
+diff --git a/Source/Core/Core/BootManager.cpp b/Source/Core/Core/BootManager.cpp
+index 85444ef..6ccc1d3 100644
+--- a/Source/Core/Core/BootManager.cpp
++++ b/Source/Core/Core/BootManager.cpp
+@@ -22,6 +22,7 @@
+ #include "Common/CommonTypes.h"
+ #include "Common/Config/Config.h"
+ #include "Common/FileUtil.h"
++#include "Common/Logging/Log.h"
+ 
+ #include "Core/AchievementManager.h"
+ #include "Core/Boot/Boot.h"
+@@ -185,8 +186,20 @@ bool BootCore(Core::System& system, std::unique_ptr<BootParameters> boot,
+ 
+   AchievementManager::GetInstance().CloseGame();
+ 
+-  const bool load_ipl = !system.IsWii() && !Config::Get(Config::MAIN_SKIP_IPL) &&
+-                        std::holds_alternative<BootParameters::Disc>(boot->parameters);
++  bool load_ipl = !system.IsWii() && !Config::Get(Config::MAIN_SKIP_IPL) &&
++                  std::holds_alternative<BootParameters::Disc>(boot->parameters);
++#ifdef __ORBIS__
++  // PS4: the BIOS runs only when the user put one for this game's region on the console (the
++  // app doesn't ship one); otherwise the game starts straight away as before.
++  if (load_ipl)
++  {
++    const std::string ipl =
++        Config::GetBootROMPath(Config::GetDirectoryForRegion(StartUp.m_region));
++    load_ipl = File::Exists(ipl);
++    NOTICE_LOG_FMT(BOOT, "GameCube BIOS {}: {}", ipl, load_ipl ? "found, booting through it" :
++                                                                 "not found, skipped");
++  }
++#endif
+   if (load_ipl)
+   {
+     return Core::Init(
 diff --git a/Source/Core/Core/CMakeLists.txt b/Source/Core/Core/CMakeLists.txt
 index 56c8dba..e4ff037 100644
 --- a/Source/Core/Core/CMakeLists.txt
@@ -7831,7 +7866,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..6b912db 100644
+index 3bf40ea..085ec74 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -7989,7 +8024,7 @@ index 3bf40ea..6b912db 100644
  #endif
        });
  
-@@ -270,7 +368,410 @@ int main(const int argc, char* argv[])
+@@ -270,7 +368,413 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -8016,7 +8051,10 @@ index 3bf40ea..6b912db 100644
 +  // Straight into the game: no IPL, no overlays, no background shader compiler threads (they
 +  // need shared GL contexts, which Piglet can't create). Dolphin's on-screen messages ("Saved
 +  // State to ...") are shown: the Vulkan backend has its on-screen layer (the in-game menu).
-+  Config::SetBase(Config::MAIN_SKIP_IPL, true);
++  // gc_bios=on (default): GameCube games start through the console's own BIOS (its boot
++  // animation) when the user put a dump at User/GC/<region>/IPL.bin; without one, straight in
++  // (BootManager checks the file for the game's region).
++  Config::SetBase(Config::MAIN_SKIP_IPL, Platform::GetPS4Option("gc_bios", "on") != "on");
 +  Config::SetBase(Config::MAIN_OSD_MESSAGES, true);
 +  // Cheats chosen in the XMB / in-game menu (only enabled codes run; PS4Cheats.cpp).
 +  Config::SetBase(Config::MAIN_ENABLE_CHEATS, true);
@@ -8400,7 +8438,7 @@ index 3bf40ea..6b912db 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +785,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +788,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -8416,7 +8454,7 @@ index 3bf40ea..6b912db 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +813,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +816,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -10204,10 +10242,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..280fa0f
+index 0000000..9297db8
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,2614 @@
+@@ -0,0 +1,2668 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11030,7 +11068,7 @@ index 0000000..280fa0f
 +        rows.push_back({"Save State", slot});
 +        break;
 +      case MAIN_CONTROLS:
-+        rows.push_back({"Controls"});
++        rows.push_back({"Controller"});
 +        break;
 +      case MAIN_LOAD:
 +        rows.push_back({"Load State", slot});
@@ -11100,9 +11138,35 @@ index 0000000..280fa0f
 +    const bool own = PS4Controls::HasGameProfile(s_game_id);
 +    PS4Controls::EditGame(own ? s_game_id : std::string());
 +    const auto device = s_wii ? PS4Controls::Device::Wii : PS4Controls::Device::GameCube;
++    if (s_wii)
++    {
++      // How the Wii Remote is used in this game (kept for this game).
++      rows.push_back({"Wii Remote", "", true});
++      keys.push_back("");
++      rows.push_back({"Extension",
++                      PS4Settings::Get("wii_extension", s_game_id) == "none" ? "None" : "Nunchuk"});
++      keys.push_back("wii:extension");
++      rows.push_back({"Hold Wii Remote",
++                      PS4Settings::Get("wii_sideways", s_game_id) != "on" ? "Pointed at TV" :
++                      PS4Settings::Get("wii_upright", s_game_id) == "on"  ? "Like a Wheel" :
++                                                                            "Sideways"});
++      keys.push_back("wii:hold");
++      const std::string tilt = PS4Settings::Get("wii_tilt", s_game_id);
++      rows.push_back({"Tilt With", tilt == "stick"  ? "Left Stick" :
++                                   tilt == "motion" ? "Motion" :
++                                                      "Motion + Stick"});
++      keys.push_back("wii:tilt");
++      const std::string touch = PS4Settings::Get("wii_touchpad", s_game_id);
++      rows.push_back({"Touchpad", touch == "pointer" ? "Pointer" :
++                                  touch == "swing"   ? "Swing" :
++                                                       "Off"});
++      keys.push_back("wii:touch");
++      rows.push_back({"Button Mapping", "", true});
++      keys.push_back("");
++    }
 +    rows.push_back({"Apply To", own ? "This Game" : "All Games"});
 +    keys.push_back("__ctlscope__");
-+    rows.push_back({s_wii ? "Wii Remote" : "GameCube Controller", "", true});
++    rows.push_back({s_wii ? "Wii Remote Buttons" : "GameCube Controller", "", true});
 +    keys.push_back("");
 +    const auto& bindings = PS4Controls::Bindings(device);
 +    for (size_t i = 0; i < bindings.size(); i++)
@@ -11119,9 +11183,14 @@ index 0000000..280fa0f
 +    rows.push_back({"Reset to Default", ""});
 +    keys.push_back("__ctlreset__");
 +    selected = s_settings_selected;
-+    subtitle = own ? "CONTROLS - THIS GAME" : "CONTROLS - ALL GAMES";
-+    hints = {{Glyph::Cross, "Change"}, {Glyph::Square, "Clear"}, {Glyph::UpDown, "Move"},
-+             {Glyph::Circle, "Back"}};
++    subtitle = own ? "CONTROLLER - THIS GAME" : "CONTROLLER - ALL GAMES";
++    const bool wii_row = selected >= 0 && selected < static_cast<int>(keys.size()) &&
++                         keys[selected].rfind("wii:", 0) == 0;
++    if (wii_row)
++      hints = {{Glyph::LeftRight, "Change"}, {Glyph::UpDown, "Move"}, {Glyph::Circle, "Back"}};
++    else
++      hints = {{Glyph::Cross, "Change"}, {Glyph::Square, "Clear"}, {Glyph::UpDown, "Move"},
++               {Glyph::Circle, "Back"}};
 +  }
 +  else if (s_page == Page::Achievements)
 +  {
@@ -11306,15 +11375,8 @@ index 0000000..280fa0f
 +  s_page = Page::Main;
 +  s_main_selected = 0;
 +  s_wii = system.IsWii();
-+  s_main_items = {MAIN_RESUME, MAIN_SAVE, MAIN_LOAD};
-+  if (s_wii)
-+  {
-+    s_main_items.push_back(MAIN_WII_EXTENSION);
-+    s_main_items.push_back(MAIN_WII_SIDEWAYS);
-+    s_main_items.push_back(MAIN_WII_TILT);
-+    s_main_items.push_back(MAIN_WII_TOUCH);
-+  }
-+  s_main_items.insert(s_main_items.end(), {MAIN_CONTROLS, MAIN_SETTINGS, MAIN_CHEATS});
++  // Everything about the controller (Wii Remote options, button mapping) is on its own page.
++  s_main_items = {MAIN_RESUME, MAIN_SAVE, MAIN_LOAD, MAIN_CONTROLS, MAIN_SETTINGS, MAIN_CHEATS};
 +  s_ach = {};
 +  s_ach_loaded = CaptureAchievements(&s_ach);
 +  if (s_ach_loaded)
@@ -11326,6 +11388,24 @@ index 0000000..280fa0f
 +    s_main_items.push_back(MAIN_ACHIEVEMENTS);
 +#endif
 +  s_main_items.insert(s_main_items.end(), {MAIN_RESTART, MAIN_QUIT});
++  {
++    // What the slots look like for this game (a report of "empty" slots after an update).
++    static const char* const NAMES[] = {"ready", "empty", "other game", "other version",
++                                        "damaged", "broken"};
++    std::string slots = "save states for " + s_game_id + ":";
++    for (int slot = 1; slot <= 8; slot++)
++    {
++      std::string made_by;
++      const auto status = State::PS4CheckSlot(static_cast<u32>(slot), &made_by);
++      if (status == State::PS4Slot::Empty)
++        continue;
++      const int index = static_cast<int>(status);
++      slots += " " + std::to_string(slot) + "=" +
++               (index >= 0 && index < 6 ? NAMES[index] : "?") +
++               (made_by.empty() ? "" : " (" + made_by + ")");
++    }
++    Log(slots);
++  }
 +  BuildRows();
 +  FlushPlayTime();
 +  const std::string played = PS4PlayTime::Text(PS4PlayTime::Seconds(PlayKey()));
@@ -11355,7 +11435,8 @@ index 0000000..280fa0f
 +// Square on a button: its mapping cleared (the button then does nothing).
 +void ClearControl(int row)
 +{
-+  if (row < 0 || row >= static_cast<int>(s_row_keys.size()) || s_row_keys[row].rfind("ctl:", 0) != 0)
++  if (row < 0 || row >= static_cast<int>(s_row_keys.size()) ||
++      s_row_keys[row].rfind("ctl:", 0) != 0)
 +    return;
 +  const auto device = s_wii ? PS4Controls::Device::Wii : PS4Controls::Device::GameCube;
 +  PS4Controls::EditGame(PS4Controls::HasGameProfile(s_game_id) ? s_game_id : std::string());
@@ -11368,10 +11449,21 @@ index 0000000..280fa0f
 +  Log(std::string("controls: cleared ") + binding.label);
 +}
 +
++void ToggleWiiRemote(int item, int direction);
++
 +void ChangeControl(int row, int direction)
 +{
 +  const std::string& key = s_row_keys[row];
 +  const auto device = s_wii ? PS4Controls::Device::Wii : PS4Controls::Device::GameCube;
++  if (key.rfind("wii:", 0) == 0)
++  {
++    ToggleWiiRemote(key == "wii:extension" ? MAIN_WII_EXTENSION :
++                    key == "wii:hold"      ? MAIN_WII_SIDEWAYS :
++                    key == "wii:touch"     ? MAIN_WII_TOUCH :
++                                             MAIN_WII_TILT,
++                    direction);
++    return;
++  }
 +  if (key == "__ctlscope__")
 +  {
 +    // This Game: its own layout, starting from the current one. All Games: the normal one back.
@@ -11585,7 +11677,7 @@ index 0000000..280fa0f
 +
 +// Wii games: the Wii Remote's Nunchuk, how it is held and what tilts it, changed in the running
 +// game (the game sees the Nunchuk plugged in or out, as on a Wii) and kept for this game.
-+void ToggleWiiRemote(int item, int direction = 1)
++void ToggleWiiRemote(int item, int direction)
 +{
 +  std::string key, value;
 +  if (item == MAIN_WII_EXTENSION)
@@ -11837,7 +11929,7 @@ index 0000000..280fa0f
 +  case MAIN_WII_SIDEWAYS:
 +  case MAIN_WII_TILT:
 +  case MAIN_WII_TOUCH:
-+    ToggleWiiRemote(s_main_items[s_main_selected]);
++    ToggleWiiRemote(s_main_items[s_main_selected], 1);
 +    break;
 +  case MAIN_RESUME:
 +    Close(system);
@@ -11893,7 +11985,7 @@ index 0000000..280fa0f
 +    break;
 +  case MAIN_CONTROLS:
 +    s_page = Page::Controls;
-+    s_settings_selected = 0;
++    s_settings_selected = s_wii ? 1 : 0;  // Wii: Extension (row 0 is the section title)
 +    break;
 +  case MAIN_ACHIEVEMENTS:
 +    s_page = Page::Achievements;
@@ -13774,10 +13866,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..b15e9ef
+index 0000000..f6f4d14
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,974 @@
+@@ -0,0 +1,977 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -13900,6 +13992,9 @@ index 0000000..b15e9ef
 +     "graphics freeze on loading (\"GFX FIFO: Unknown Opcode\", e.g. Call of Duty: MW3)."},
 +    {"vk_thread", "Vulkan Thread", "Performance", {{"on", "On"}, {"off", "Off"}}, "on", false,
 +     "Records graphics commands on a separate core."},
++    {"gc_bios", "GameCube Boot Animation", "System", {{"on", "On"}, {"off", "Off"}}, "on", false,
++     "Plays the GameCube's own start-up animation before a game, when its BIOS is on the PS4: "
++     "/data/DolphinPS4/User/GC/USA/IPL.bin (EUR or JAP for other regions)."},
 +    {"fast_disc", "Fast Disc Speed", "Performance", {{"on", "On"}, {"off", "Off"}}, "on", false,
 +     "Shorter loading pauses (rarely breaks a game)."},
 +    {"perf_overlay", "Performance Graphs", "Performance", {{"off", "Off"}, {"on", "On"}}, "off",
