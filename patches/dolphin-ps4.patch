@@ -10277,10 +10277,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..2df760b
+index 0000000..aa976f6
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,2975 @@
+@@ -0,0 +1,3022 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11008,6 +11008,10 @@ index 0000000..2df760b
 +std::string s_game_id;
 +std::vector<std::string> s_row_keys;  // settings page: setting key per row ("" = header/scope)
 +PS4Cheats::List s_cheats;              // cheats page
++// Cheats page: Download Codes (the codes database online, on a thread of its own).
++std::atomic<bool> s_cheat_dl_busy{false}, s_cheat_dl_done{false};
++PS4Cheats::List::Download s_cheat_dl;  // written by the download thread before s_cheat_dl_done
++std::string s_cheat_dl_status;
 +uint32_t s_held = 0;
 +float s_repeat = 0.0f;
 +bool s_quit = false;
@@ -11327,6 +11331,8 @@ index 0000000..2df760b
 +  else if (s_page == Page::Cheats)
 +  {
 +    const auto entries = s_cheats.Entries();
++    rows.push_back({"Download Codes", s_cheat_dl_busy ? "Downloading..." : s_cheat_dl_status});
++    keys.push_back("cheatdl");
 +    if (!entries.empty())
 +    {
 +      rows.push_back({"Enable All"});
@@ -11355,7 +11361,10 @@ index 0000000..2df760b
 +    }
 +    selected = s_settings_selected;
 +    subtitle = "CHEATS";
-+    hints = {{Glyph::Cross, "On/Off"}, {Glyph::UpDown, "Move"}, {Glyph::Circle, "Back"}};
++    if (selected >= 0 && selected < static_cast<int>(keys.size()) && keys[selected] == "cheatdl")
++      hints = {{Glyph::Cross, "Download"}, {Glyph::UpDown, "Move"}, {Glyph::Circle, "Back"}};
++    else
++      hints = {{Glyph::Cross, "On/Off"}, {Glyph::UpDown, "Move"}, {Glyph::Circle, "Back"}};
 +  }
 +  else
 +  {
@@ -11653,6 +11662,20 @@ index 0000000..2df760b
 +  if (s_page == Page::Cheats)
 +  {
 +    const std::string& key = s_row_keys[row];
++    if (key == "cheatdl")
++    {
++      if (direction <= 0 || s_cheat_dl_busy)
++        return;
++      s_cheat_dl_busy = true;
++      s_cheat_dl_done = false;
++      const std::string game = s_game_id;
++      Log("cheats: downloading codes for " + game);
++      std::thread([game] {
++        s_cheat_dl = PS4Cheats::List::FetchOnline(game);
++        s_cheat_dl_done = true;
++      }).detach();
++      return;
++    }
 +    if (key.rfind("cheatall:", 0) == 0)
 +    {
 +      const bool on = key == "cheatall:on";
@@ -11753,7 +11776,8 @@ index 0000000..2df760b
 +  while (row > 0 && row < count && s_row_keys[row].empty())
 +    row += direction;
 +  if (row >= 0 && row < count &&
-+      (row > 0 || s_page == Page::Settings || s_page == Page::Achievements))
++      (row > 0 || s_page == Page::Settings || s_page == Page::Achievements ||
++       s_page == Page::Cheats))
 +    s_settings_selected = row;
 +}
 +
@@ -12190,10 +12214,9 @@ index 0000000..2df760b
 +    s_cheats.Load(s_game_id, SConfig::GetInstance().GetRevision());
 +    s_settings_selected = 0;
 +    BuildRows();
-+    // First selectable row (row 0 is the first header).
-+    SelectableMove(1);
-+    if (!s_row_keys.empty() && s_row_keys[s_settings_selected].empty())
-+      s_settings_selected = 0;
++    // Row 0 is Download Codes; with codes, start on Enable All.
++    if (s_row_keys.size() > 1 && !s_row_keys[1].empty())
++      s_settings_selected = 1;
 +    break;
 +  case MAIN_RESTART:
 +    // The same clean stop as Quit Game (memory cards and the NAND are written as the game saves);
@@ -12958,6 +12981,30 @@ index 0000000..2df760b
 +  {
 +    s_jit_notice = true;
 +    Toast("This console doesn't allow Dolphin's fast CPU mode (JIT): games run slowly.", 9000);
++  }
++  if (s_cheat_dl_done.exchange(false))
++  {
++    s_cheat_dl_busy = false;
++    if (!s_cheat_dl.ok)
++    {
++      s_cheat_dl_status = s_cheat_dl.http_code > 0 ?
++                              "Failed (HTTP " + std::to_string(s_cheat_dl.http_code) + ")" :
++                              "Failed (no connection)";
++    }
++    else if (s_cheat_dl.names.empty())
++    {
++      s_cheat_dl_status = "None online";
++    }
++    else
++    {
++      const size_t added = s_cheats.AddDownloaded(s_cheat_dl);
++      s_cheat_dl_status = std::to_string(s_cheat_dl.names.size()) + " found, " +
++                          std::to_string(added) + " new";
++    }
++    Toast("Download Codes: " + s_cheat_dl_status, 3500);
++    Log("cheats: download: " + s_cheat_dl_status);
++    if (s_open && s_page == Page::Cheats)
++      BuildRows();
 +  }
 +  if (s_saving_slot != 0 && ps4_state_busy == 0)
 +  {
