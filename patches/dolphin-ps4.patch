@@ -5774,6 +5774,43 @@ index 2e1b05c..e70f45b 100644
  
    FinalizeSingleResult(Rd, Rd);
  }
+diff --git a/Source/Core/Core/PowerPC/Jit64/Jit_SystemRegisters.cpp b/Source/Core/Core/PowerPC/Jit64/Jit_SystemRegisters.cpp
+index 70eb2e4..df4e2dc 100644
+--- a/Source/Core/Core/PowerPC/Jit64/Jit_SystemRegisters.cpp
++++ b/Source/Core/Core/PowerPC/Jit64/Jit_SystemRegisters.cpp
+@@ -429,6 +429,15 @@ void Jit64::mfspr(UGeckoInstruction inst)
+   }
+ }
+ 
++#ifdef __ORBIS__
++// ps4.ini jit_msr_link (default on): after mtmsr, a linked exit to the next block when the CPU
++// mode flags (address translation) are those the block was compiled for - the SDK's
++// OSDisableInterrupts / OSRestoreInterrupts only flip MSR.EE, yet every call left through the
++// dispatcher (Resident Evil Zero: ~6% of its CPU thread in those two). DolphinNoGUI sets it.
++extern "C" int ps4_jit_msr_link;
++int ps4_jit_msr_link = 1;
++#endif
++
+ void Jit64::mtmsr(UGeckoInstruction inst)
+ {
+   INSTRUCTION_START
+@@ -471,6 +480,16 @@ void Jit64::mtmsr(UGeckoInstruction inst)
+   SetJumpTarget(noExceptionsPending);
+   SetJumpTarget(eeDisabled);
+ 
++#ifdef __ORBIS__
++  if (ps4_jit_msr_link)
++  {
++    // Same mode as this block was compiled for: straight to the next block (linked).
++    CMP(32, PPCSTATE(feature_flags), Imm32(static_cast<u32>(m_ppc_state.feature_flags)));
++    FixupBranch mode_changed = J_CC(CC_NE, Jump::Near);
++    WriteExit(js.compilerPC + 4);
++    SetJumpTarget(mode_changed);
++  }
++#endif
+   MOV(32, R(RSCRATCH), Imm32(js.compilerPC + 4));
+   WriteExitDestInRSCRATCH();
+ }
 diff --git a/Source/Core/Core/PowerPC/Jit64/RegCache/CachedReg.h b/Source/Core/Core/PowerPC/Jit64/RegCache/CachedReg.h
 index 99a6e47..63411a4 100644
 --- a/Source/Core/Core/PowerPC/Jit64/RegCache/CachedReg.h
@@ -7900,7 +7937,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..d348509 100644
+index 3bf40ea..71c6df1 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -7951,7 +7988,7 @@ index 3bf40ea..d348509 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,65 @@
+@@ -31,6 +53,66 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -7979,6 +8016,7 @@ index 3bf40ea..d348509 100644
 +extern "C" int ps4_jit_accurate_singles;  // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_round_results, ps4_jit_round_operands;  // Jit64/Jit_FloatingPoint.cpp
 +extern "C" int ps4_jit_follow;            // Core/PowerPC/PPCAnalyst.cpp
++extern "C" int ps4_jit_msr_link;          // Core/PowerPC/Jit64/Jit_SystemRegisters.cpp
 +extern "C" int ps4_jit_fcmp_merge;        // Core/PowerPC/Jit64/Jit_FloatingPoint.cpp
 +extern "C" int ps4_disc_cache;            // DiscIO/FileBlob.cpp
 +extern "C" int ps4_dvd_async;             // Core/HW/DVD/DVDThread.cpp
@@ -8017,7 +8055,7 @@ index 3bf40ea..d348509 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +254,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +255,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -8028,7 +8066,7 @@ index 3bf40ea..d348509 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +269,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +270,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -8047,7 +8085,7 @@ index 3bf40ea..d348509 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +301,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +302,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -8058,7 +8096,7 @@ index 3bf40ea..d348509 100644
  #endif
        });
  
-@@ -270,7 +368,416 @@ int main(const int argc, char* argv[])
+@@ -270,7 +369,418 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -8265,6 +8303,8 @@ index 3bf40ea..d348509 100644
 +    }
 +    // jit_follow=N (1..16, default 2): branches/calls/returns a JIT block may follow.
 +    ps4_jit_follow = std::clamp(std::atoi(Platform::GetPS4Option("jit_follow", "2").c_str()), 1, 16);
++    // jit_msr_link=off: every mtmsr leaves its block through the dispatcher again (Dolphin's way).
++    ps4_jit_msr_link = Platform::GetPS4Option("jit_msr_link", "on") != "off";
 +    // jit_fcmp_merge=off: fcmp and the bc after it compiled separately (the bc reloads the CR).
 +    ps4_jit_fcmp_merge = Platform::GetPS4Option("jit_fcmp_merge", "on") != "off";
 +    // disc_cache=on: .iso reads through a 16 MiB cache of 256 KiB pieces. Off by default: Bully's
@@ -8475,7 +8515,7 @@ index 3bf40ea..d348509 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +791,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +794,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -8491,7 +8531,7 @@ index 3bf40ea..d348509 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +819,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +822,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
