@@ -42,8 +42,10 @@ in float-heavy games.
 | `results` | **Lab.** Only the results are rounded; the multiply inputs are not. Menus keep working, but it measured no faster than `on`. |
 | `operands` | **Lab.** Only the multiply inputs are rounded; results are not. Breaks menus like `off`. |
 
-**How to use it:** only per game, under the game's `[ID]` in `ps4.ini`. Try `off`; if a menu,
-HUD or text goes missing, go back to `on`. It has no menu entry on purpose: it can break games.
+**How to use it:** one game at a time. In Dolphin Lab it is in the menu: Triangle on the game →
+*Game Settings → Performance → Float Rounding* (*Accurate* = `on`, *Fast* = `off`). In the normal
+app, put it under the game's `[ID]` in `ps4.ini`. Try *Fast*; if a menu, HUD or text goes missing,
+go back to *Accurate*.
 
 `accurate_fmadds` is a related, smaller rounding setting: `on` rounds multiply-add instructions
 exactly as the console does. The app's default is `off` (cheaper; no game has needed it so far).
