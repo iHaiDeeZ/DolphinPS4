@@ -38,7 +38,7 @@ in float-heavy games.
 | Value | What it does |
 |---|---|
 | `on` (default) | Rounds like the real console. Always correct. |
-| `off` | No rounding at all. Fastest: Need for Speed: Most Wanted gained about 21% FPS in races. **Can break menus**: Mario Kart Wii's and NFS's menus went black. |
+| `off` | No rounding at all. Fastest: Need for Speed: Most Wanted gained about 21% FPS in races. **Can break graphics**: Mario Kart Wii's and NFS's menus went black, Donald Duck: Goin' Quackers lost Donald's body. |
 | `results` | **Lab.** Only the results are rounded; the multiply inputs are not. Menus keep working, but it measured no faster than `on`. |
 | `operands` | **Lab.** Only the multiply inputs are rounded; results are not. Breaks menus like `off`. |
 
