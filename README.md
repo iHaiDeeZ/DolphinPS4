@@ -253,7 +253,7 @@ Everything the app creates sits in **`/data/DolphinPS4/`**:
 | ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | Call of Duty: Modern Warfare 3 | Wii | 12–25 with its recommended settings (its normal rate is 30); freezes ~45 s into the first level without them |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Crash of the Titans | Wii | 25–30 with its recommended settings (its normal rate is 30) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Mario Kart Wii | Wii | 45–50 in races with its recommended settings (its normal rate is 60) |
-| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Super Mario Galaxy | Wii | 40–57 |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Super Mario Galaxy | Wii | 40–60 (average ~56); don't turn on graphics mods: Bloom Removal halved its speed |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Wii Sports | Wii | ~40 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Wii Sports Resort | Wii | ~37 |
 
