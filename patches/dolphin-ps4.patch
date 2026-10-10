@@ -10311,10 +10311,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..5c0c1ec
+index 0000000..a7cd7b1
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,3124 @@
+@@ -0,0 +1,3179 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10340,6 +10340,11 @@ index 0000000..5c0c1ec
 +#include "Core/Core.h"
 +#include "Core/State.h"
 +#include "Common/FileUtil.h"
++#include "Common/CommonPaths.h"
++#include "Core/HW/Memmap.h"
++#include "Core/PowerPC/PPCAnalyst.h"
++#include "Core/PowerPC/PPCSymbolDB.h"
++#include "Core/PowerPC/SignatureDB/SignatureDB.h"
 +#include "VideoCommon/Present.h"
 +#include "Core/HW/Wiimote.h"
 +#include "Core/HW/WiimoteEmu/ExtensionPort.h"
@@ -12210,6 +12215,53 @@ index 0000000..5c0c1ec
 +  State::SaveAs(system, file);
 +}
 +
++// Profiler on: once per session, 20 s into the game, its functions found and the Nintendo SDK
++// ones named from Dolphin's signature database (Sys/totaldb.dsy), written to
++// /data/DolphinPS4/symbols-<ID>.txt ("address size name"): the profiles' hot code by name.
++void SymbolsTick(Core::System& system)
++{
++  static bool s_done = false;
++  static Clock::time_point s_first;
++  if (s_done)
++    return;
++  if (PS4Settings::Get("profile", s_game_id) != "on")
++    return;
++  const auto now = Clock::now();
++  if (s_first == Clock::time_point{})
++    s_first = now;
++  if (now - s_first < std::chrono::seconds(20))
++    return;
++  s_done = true;
++  const std::string game = SConfig::GetInstance().GetGameID();
++  const auto start = Clock::now();
++  size_t count = 0, named = 0;
++  {
++    const Core::CPUThreadGuard guard(system);
++    auto& db = system.GetPPCSymbolDB();
++    auto& memory = system.GetMemory();
++    PPCAnalyst::FindFunctions(guard, Memory::MEM1_BASE_ADDR,
++                              Memory::MEM1_BASE_ADDR + memory.GetRamSizeReal(), &db);
++    SignatureDB signatures(SignatureDB::HandlerType::DSY);
++    if (signatures.Load(File::GetSysDirectory() + TOTALDB))
++      signatures.Apply(guard, &db);
++    std::string text;
++    db.ForEachSymbol([&](const Common::Symbol& symbol) {
++      char line[64];
++      snprintf(line, sizeof(line), "%08x %u ", symbol.address, symbol.size);
++      text += line + symbol.name + "
++";
++      count++;
++      if (symbol.name.rfind("zz_", 0) != 0)
++        named++;
++    });
++    File::WriteStringToFile("/data/DolphinPS4/symbols-" + game + ".txt", text);
++  }
++  const int ms = static_cast<int>(
++      std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count());
++  Log("symbols: " + std::to_string(count) + " functions, " + std::to_string(named) +
++      " named from the SDK database (" + std::to_string(ms) + " ms)");
++}
++
 +void Activate(Core::System& system)
 +{
 +  if (s_page != Page::Main)
@@ -13314,7 +13366,10 @@ index 0000000..5c0c1ec
 +      CheckHotkeys(system, held, pressed);
 +    }
 +    if (Core::GetState(system) == Core::State::Running)
++    {
 +      RewindTick(system);
++      SymbolsTick(system);
++    }
 +    else
 +      s_rewind_tick = Clock::now();
 +  }
