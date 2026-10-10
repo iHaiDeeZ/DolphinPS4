@@ -230,6 +230,7 @@ Everything the app creates sits in **`/data/DolphinPS4/`**:
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Crash Tag Team Racing | GameCube | 60 |
 | ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | Disney's Donald Duck: Goin' Quackers | GameCube | 60 in light areas; heavy areas 30–55 (60–95% speed) with its recommended settings |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | FIFA Street 2 | GameCube | ~34 |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | The Hulk | GameCube | 20–30 at full speed (Dolphin's own patch caps the frame rate: the game has audio and gameplay bugs when it runs uncapped) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Killer7 | GameCube | 30 (its normal rate), full speed; froze on older versions without its recommended settings |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | The Legend of Zelda: Twilight Princess | GameCube | 30 (its normal rate) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Metroid Prime | GameCube | ~48 with its recommended settings (its normal rate is 60) |
