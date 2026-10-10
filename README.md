@@ -228,6 +228,7 @@ Everything the app creates sits in **`/data/DolphinPS4/`**:
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Crash Bandicoot: The Wrath of Cortex | GameCube | 20–60 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Crash Nitro Kart | GameCube | 60 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Crash Tag Team Racing | GameCube | 60 |
+| ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | Disney's Donald Duck: Goin' Quackers | GameCube | 60 in light areas; heavy areas 30–55 (60–95% speed) with its recommended settings |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | FIFA Street 2 | GameCube | ~34 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Killer7 | GameCube | 30 (its normal rate), full speed; froze on older versions without its recommended settings |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | The Legend of Zelda: Twilight Princess | GameCube | 30 (its normal rate) |
