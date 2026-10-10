@@ -106,6 +106,10 @@ The DualShock 4 then acts as the Nunchuk.
 The PS4's CPU is usually the limit, not its GPU. Leave *Emulated CPU Clock* on *Auto*, and keep
 *Game Settings Center* on: it applies tested settings for many games automatically.
 
+**What does each CPU option do? Which one is the rounding option?**
+See **[docs/CPU-OPTIONS.md](docs/CPU-OPTIONS.md)**: every CPU setting, its default and when to
+change it. Rounding is `jit_accurate_singles` (per game, in `ps4.ini`).
+
 **I have a PS4 Pro. Can it go faster?**
 Yes: turn on *PS4 Settings → System → Boost Mode*, then close and restart Dolphin. Its CPU then
 runs about 30% faster. Don't edit `param.sfo` to force "Neo mode"; it isn't faster and made Mario
