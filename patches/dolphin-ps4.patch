@@ -14169,10 +14169,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..cdfd4ec
+index 0000000..9d462e6
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,997 @@
+@@ -0,0 +1,998 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -14432,6 +14432,7 @@ index 0000000..cdfd4ec
 +     "Goes back to the last checkpoint; press again within a few seconds to go further back (up to "
 +     "3 minutes). While it is set, a checkpoint is taken every minute of play (a short pause). "
 +     "Cross: press your own. Square: Off."},
++};
 +
 +const std::vector<const char*> CATEGORIES = {"Video", "Graphics", "Performance", "System",
 +                                             "Diagnostics", "Hotkeys"};
