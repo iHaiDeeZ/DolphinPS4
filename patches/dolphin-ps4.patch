@@ -3839,6 +3839,40 @@ index a7919fb..8de7f4d 100644
    sigaction(SIGBUS, &old_sa_bus, nullptr);
  #endif
  }
+diff --git a/Source/Core/Core/PatchEngine.cpp b/Source/Core/Core/PatchEngine.cpp
+index e162b6e..5cd2082 100644
+--- a/Source/Core/Core/PatchEngine.cpp
++++ b/Source/Core/Core/PatchEngine.cpp
+@@ -7,6 +7,10 @@
+ 
+ #include "Core/PatchEngine.h"
+ 
++#ifdef __ORBIS__
++extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
++#endif
++
+ #include <algorithm>
+ #include <array>
+ #include <iterator>
+@@ -182,6 +186,18 @@ void LoadPatches()
+   Common::IniFile localIni = sconfig.LoadLocalGameIni();
+ 
+   LoadPatchSection("OnFrame", &s_on_frame, globalIni, localIni);
++#ifdef __ORBIS__
++  {
++    // Which patches run (Triangle > Patches can turn them on and off).
++    std::string names;
++    for (const Patch& patch : s_on_frame)
++    {
++      if (patch.enabled)
++        names += (names.empty() ? "" : ", ") + patch.name;
++    }
++    ps4_boot_trace(("patches: " + (names.empty() ? std::string("none") : names)).c_str());
++  }
++#endif
+ 
+ #ifdef USE_RETRO_ACHIEVEMENTS
+   AchievementManager::GetInstance().FilterApprovedPatches(s_on_frame, sconfig.GetGameID(),
 diff --git a/Source/Core/Core/PowerPC/Interpreter/Interpreter.cpp b/Source/Core/Core/PowerPC/Interpreter/Interpreter.cpp
 index 5ff6fa0..0d977f8 100644
 --- a/Source/Core/Core/PowerPC/Interpreter/Interpreter.cpp
@@ -15961,10 +15995,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..73b48b7
+index 0000000..685cd6d
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,6811 @@
+@@ -0,0 +1,6815 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -20121,7 +20155,11 @@ index 0000000..73b48b7
 +        const size_t index = std::strtoul(row.key.c_str() + 5, nullptr, 10);
 +        const auto& mods = m_graphics_mods->GetMods();
 +        if (index < mods.size())
-+          help = mods[index].m_description + " (Applies the next time the game starts.)";
++        {
++          help = mods[index].m_description +
++                 " Costs speed: with any mod on, every draw is checked (Super Mario Galaxy ran at "
++                 "half speed with Bloom Removal). Applies the next time the game starts.";
++        }
 +      }
 +      else if (row.key.rfind("ach:", 0) == 0)
 +      {
@@ -32968,10 +33006,21 @@ index ac09506..f8838d6 100644
        out.Write("ATTRIBUTE_LOCATION({:s}) in float3 rawnormal;\n", ShaderAttrib::Normal);
      if ((uid_data->components & VB_HAS_TANGENT) != 0)
 diff --git a/Source/Core/VideoCommon/VideoConfig.cpp b/Source/Core/VideoCommon/VideoConfig.cpp
-index c56f32c..501c0db 100644
+index c56f32c..64e5240 100644
 --- a/Source/Core/VideoCommon/VideoConfig.cpp
 +++ b/Source/Core/VideoCommon/VideoConfig.cpp
-@@ -25,6 +25,8 @@
+@@ -3,6 +3,10 @@
+ 
+ #include "VideoCommon/VideoConfig.h"
+ 
++#ifdef __ORBIS__
++extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
++#endif
++
+ #include <algorithm>
+ #include <optional>
+ 
+@@ -25,6 +29,8 @@
  #include "VideoCommon/Fifo.h"
  #include "VideoCommon/FramebufferManager.h"
  #include "VideoCommon/FreeLookCamera.h"
@@ -32980,7 +33029,7 @@ index c56f32c..501c0db 100644
  #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModManager.h"
  #include "VideoCommon/OnScreenDisplay.h"
  #include "VideoCommon/PixelShaderManager.h"
-@@ -198,6 +200,29 @@ void VideoConfig::Refresh()
+@@ -198,6 +204,36 @@ void VideoConfig::Refresh()
    bPerfQueriesEnable = Config::Get(Config::GFX_PERF_QUERIES_ENABLE);
  
    bGraphicMods = Config::Get(Config::GFX_MODS_ENABLE);
@@ -33000,8 +33049,15 @@ index c56f32c..501c0db 100644
 +      {
 +        GraphicsModGroupConfig mods(game_id);
 +        mods.Load();
++        std::string names;
 +        for (const auto& mod : mods.GetMods())
++        {
 +          s_any_enabled |= mod.m_enabled;
++          if (mod.m_enabled)
++            names += (names.empty() ? "" : ", ") + mod.m_title;
++        }
++        // Mods cost speed: say which ones run (Super Mario Galaxy: half speed with Bloom Removal).
++        ps4_boot_trace(("graphics mods: " + (names.empty() ? std::string("none") : names)).c_str());
 +      }
 +    }
 +    bGraphicMods = s_any_enabled;
