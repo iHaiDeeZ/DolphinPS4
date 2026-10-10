@@ -276,6 +276,7 @@ A range means the frame rate depends on what's on screen. *Recommended settings*
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Pokémon Colosseum | GameCube | PS4, 13.52 | – | 30 FPS in gameplay and cutscenes (60 in menus), 100% speed |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Pokémon XD: Gale of Darkness | GameCube | PS4, 13.52 | – | 25–30 FPS, heavier scenes ~20, playable |
 | ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | Prince of Persia: Warrior Within | GameCube | PS4, 13.02 | 480p (native) | 15–24 FPS |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Resident Evil 2 | GameCube | – | – | 30 FPS (reported by a player) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Shrek 2 | GameCube | PS4 (original), 9.00 | 720p (2x) | 30 FPS, playable; some drops in cutscenes |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Shrek: Extra Large | GameCube | – | 480p | 30–60 FPS, some stuttering |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Sonic Adventure 2: Battle | GameCube | PS4, 13.52 | – | 30–60 FPS (mostly in the 30s), works normally, playable |
