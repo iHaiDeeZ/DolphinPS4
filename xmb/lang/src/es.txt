@@ -475,3 +475,10 @@ Carrusel: tus portadas en fila.
 GameCube: una lista y un cubo que gira.
 Wii: una cuadrícula de canales, por páginas.
 Las pestañas cambian con L1 / R1 (no en XMB).
+# --- Float rounding, graphics mods
+Redondeo de coma flotante
+Preciso
+Rápido omite redondear los cálculos de coma flotante a precisión simple: hasta un ~20 % más rápido en juegos con muchos cálculos (Need for Speed: Most Wanted), pero pueden faltar menús o textos (Mario Kart Wii, NFS). Úsalo juego por juego; Preciso lo deshace.
+Mods gráficos
+No hay mods gráficos para este juego.
+Los mods de Dolphin cubren algunos juegos; los demás van en

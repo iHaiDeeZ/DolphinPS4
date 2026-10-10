@@ -475,3 +475,10 @@ GameCube 开机动画
 GameCube：列表和旋转的立方体。
 Wii：按页排列的频道网格。
 用 L1 / R1 切换标签（XMB 除外）。
+# --- Float rounding, graphics mods
+浮点舍入
+精确
+快速会跳过将浮点运算舍入为单精度：在运算密集的游戏中最多快约 20%（Need for Speed: Most Wanted），但菜单或文字可能消失（马力欧卡丁车 Wii、NFS）。请按游戏单独设置；精确可恢复。
+图形模组
+此游戏没有图形模组。
+Dolphin 自带模组只支持部分游戏；其他模组请放在

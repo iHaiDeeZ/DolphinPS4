@@ -477,3 +477,10 @@ Carousel: your covers in a row.
 GameCube: a list and a turning cube.
 Wii: a grid of channels, by page.
 Tabs switch with L1 / R1 (not in XMB).
+# --- Float rounding, graphics mods
+Float Rounding
+Accurate
+Fast skips rounding float math to single precision: up to ~20% faster in float-heavy games (Need for Speed: Most Wanted), but menus or text can go missing (Mario Kart Wii, NFS). Set it for one game at a time; Accurate undoes it.
+Graphics Mods
+No graphics mods for this game.
+Dolphin's own mods cover some games; others go in

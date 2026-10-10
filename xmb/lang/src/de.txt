@@ -475,3 +475,10 @@ Karussell: deine Cover in einer Reihe.
 GameCube: eine Liste und ein drehender Würfel.
 Wii: ein Raster aus Kanälen, seitenweise.
 Reiter wechseln mit L1 / R1 (nicht im XMB).
+# --- Float rounding, graphics mods
+Gleitkomma-Rundung
+Genau
+Schnell lässt das Runden von Gleitkommazahlen auf einfache Genauigkeit weg: bis zu ~20 % schneller in rechenintensiven Spielen (Need for Speed: Most Wanted), aber Menüs oder Text können fehlen (Mario Kart Wii, NFS). Nur für einzelne Spiele einstellen; Genau macht es rückgängig.
+Grafik-Mods
+Keine Grafik-Mods für dieses Spiel.
+Dolphins eigene Mods decken einige Spiele ab; andere kommen nach

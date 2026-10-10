@@ -476,3 +476,10 @@ Carrossel: suas capas em fila.
 GameCube: uma lista e um cubo girando.
 Wii: uma grade de canais, por página.
 As abas mudam com L1 / R1 (exceto no XMB).
+# --- Float rounding, graphics mods
+Arredondamento de ponto flutuante
+Preciso
+Rápido pula o arredondamento dos cálculos de ponto flutuante para precisão simples: até ~20% mais rápido em jogos pesados (Need for Speed: Most Wanted), mas menus ou textos podem sumir (Mario Kart Wii, NFS). Ajuste jogo a jogo; Preciso desfaz.
+Mods gráficos
+Nenhum mod gráfico para este jogo.
+Os mods do Dolphin cobrem alguns jogos; outros vão em

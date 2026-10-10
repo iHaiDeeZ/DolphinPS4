@@ -475,3 +475,10 @@ Carosello: le tue copertine in fila.
 GameCube: un elenco e un cubo che ruota.
 Wii: una griglia di canali, a pagine.
 Le schede cambiano con L1 / R1 (non nell'XMB).
+# --- Float rounding, graphics mods
+Arrotondamento in virgola mobile
+Preciso
+Veloce salta l'arrotondamento dei calcoli in virgola mobile alla precisione singola: fino al ~20% più veloce nei giochi pesanti (Need for Speed: Most Wanted), ma menu o testi possono sparire (Mario Kart Wii, NFS). Impostalo gioco per gioco; Preciso lo annulla.
+Mod grafiche
+Nessuna mod grafica per questo gioco.
+Le mod di Dolphin coprono alcuni giochi; le altre vanno in

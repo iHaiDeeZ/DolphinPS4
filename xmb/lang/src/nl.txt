@@ -475,3 +475,10 @@ Carrousel: je hoesjes op een rij.
 GameCube: een lijst en een draaiende kubus.
 Wii: een raster van kanalen, per pagina.
 Tabbladen wisselen met L1 / R1 (niet in XMB).
+# --- Float rounding, graphics mods
+Afronding van drijvende komma
+Nauwkeurig
+Snel slaat het afronden van drijvendekommaberekeningen naar enkele precisie over: tot ~20% sneller in rekenzware spellen (Need for Speed: Most Wanted), maar menu's of tekst kunnen verdwijnen (Mario Kart Wii, NFS). Stel het per spel in; Nauwkeurig maakt het ongedaan.
+Grafische mods
+Geen grafische mods voor dit spel.
+Dolphins eigen mods dekken enkele spellen; andere horen in

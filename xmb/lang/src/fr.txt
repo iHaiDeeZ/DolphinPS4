@@ -475,3 +475,10 @@ Carrousel : vos jaquettes en rangée.
 GameCube : une liste et un cube qui tourne.
 Wii : une grille de chaînes, par page.
 Les onglets changent avec L1 / R1 (pas en XMB).
+# --- Float rounding, graphics mods
+Arrondi des flottants
+Précis
+Rapide n'arrondit plus les calculs flottants en simple précision : jusqu'à ~20 % plus rapide dans les jeux gourmands (Need for Speed: Most Wanted), mais des menus ou textes peuvent disparaître (Mario Kart Wii, NFS). À régler jeu par jeu ; Précis l'annule.
+Mods graphiques
+Aucun mod graphique pour ce jeu.
+Les mods de Dolphin couvrent certains jeux ; les autres vont dans

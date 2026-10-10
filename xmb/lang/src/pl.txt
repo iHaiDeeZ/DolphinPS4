@@ -475,3 +475,10 @@ Karuzela: okładki w rzędzie.
 GameCube: lista i obracający się sześcian.
 Wii: siatka kanałów, stronami.
 Karty zmienia L1 / R1 (nie w XMB).
+# --- Float rounding, graphics mods
+Zaokrąglanie zmiennoprzecinkowe
+Dokładne
+Szybkie pomija zaokrąglanie obliczeń zmiennoprzecinkowych do pojedynczej precyzji: do ~20% szybciej w wymagających grach (Need for Speed: Most Wanted), ale mogą zniknąć menu lub tekst (Mario Kart Wii, NFS). Ustawiaj dla pojedynczych gier; Dokładne to cofa.
+Mody graficzne
+Brak modów graficznych dla tej gry.
+Mody Dolphina obejmują niektóre gry; inne umieść w

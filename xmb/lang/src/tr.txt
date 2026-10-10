@@ -475,3 +475,10 @@ Atlıkarınca: kapakların bir sırada.
 GameCube: bir liste ve dönen bir küp.
 Wii: sayfa sayfa kanal ızgarası.
 Sekmeler L1 / R1 ile değişir (XMB'de değil).
+# --- Float rounding, graphics mods
+Kayan Nokta Yuvarlama
+Hassas
+Hızlı, kayan nokta hesaplarının tek duyarlılığa yuvarlanmasını atlar: yoğun oyunlarda ~%20'ye kadar daha hızlı (Need for Speed: Most Wanted), ama menüler veya yazılar kaybolabilir (Mario Kart Wii, NFS). Oyun oyun ayarlayın; Hassas geri alır.
+Grafik Modları
+Bu oyun için grafik modu yok.
+Dolphin'in kendi modları bazı oyunlar içindir; diğerleri şuraya

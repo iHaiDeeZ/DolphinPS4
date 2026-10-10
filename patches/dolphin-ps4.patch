@@ -10277,10 +10277,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..bb8d51c
+index 0000000..acc8378
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,2720 @@
+@@ -0,0 +1,2789 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10985,6 +10985,9 @@ index 0000000..bb8d51c
 +// new page slides in from the right (0 -> 1) instead of replacing the old one at once.
 +float s_highlight = -1.0f;
 +float s_page_in = 1.0f;
++float s_value_in = 1.0f;     // the selected row's value, sliding in after a change
++std::string s_value_seen;    // ... and which value / row that was
++int s_value_row = -1;
 +std::string s_drawn_subtitle;
 +Clock::time_point s_last_draw;
 +Clock::time_point s_toast_start;
@@ -11082,6 +11085,25 @@ index 0000000..bb8d51c
 +    break;
 +  }
 +  return label;
++}
++
++// A raised box: a shadow, a two-tone body, a light top edge, a dark bottom edge and a border.
++void BevelBox(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 top, ImU32 bottom, ImU32 edge, float rounding,
++              float alpha, float s, bool raised)
++{
++  const float lift = (raised ? 7.0f : 3.0f) * s;
++  dl->AddRectFilled(ImVec2(a.x + 3 * s, a.y + lift), ImVec2(b.x + 3 * s, b.y + lift),
++                    IM_COL32(0, 0, 0, static_cast<int>(alpha * (raised ? 110 : 50))), rounding);
++  const float h = b.y - a.y;
++  dl->AddRectFilled(a, b, bottom, rounding);
++  dl->AddRectFilled(a, ImVec2(b.x, a.y + h * 0.4f), top, rounding, ImDrawFlags_RoundCornersTop);
++  dl->AddRectFilledMultiColor(ImVec2(a.x, a.y + h * 0.4f), ImVec2(b.x, a.y + h * 0.65f), top, top,
++                              IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0));
++  dl->AddLine(ImVec2(a.x + rounding, a.y + 1.5f * s), ImVec2(b.x - rounding, a.y + 1.5f * s),
++              IM_COL32(255, 255, 255, static_cast<int>(alpha * (raised ? 170 : 45))), 2.0f * s);
++  dl->AddLine(ImVec2(a.x + rounding, b.y - 1.5f * s), ImVec2(b.x - rounding, b.y - 1.5f * s),
++              IM_COL32(0, 0, 0, static_cast<int>(alpha * (raised ? 130 : 60))), 2.0f * s);
++  dl->AddRect(a, b, edge, rounding, 0, (raised ? 2.5f : 1.2f) * s);
 +}
 +
 +// Rebuilds the rows for the current page (host thread, s_mutex not held while computing).
@@ -12465,8 +12487,19 @@ index 0000000..bb8d51c
 +                                IM_COL32(8, 20, 46, static_cast<int>(150 * a)),
 +                                IM_COL32(2, 6, 16, static_cast<int>(150 * a)),
 +                                IM_COL32(2, 6, 16, static_cast<int>(240 * a)));
++    // The slab's thickness to the right of its lit edge, and a soft shadow beyond it.
++    dl->AddRectFilledMultiColor(ImVec2(x0 + panel_w, 0), ImVec2(x0 + panel_w + 16 * s, size.y),
++                                IM_COL32(30, 70, 130, static_cast<int>(230 * a)),
++                                IM_COL32(4, 12, 30, static_cast<int>(230 * a)),
++                                IM_COL32(4, 12, 30, static_cast<int>(230 * a)),
++                                IM_COL32(30, 70, 130, static_cast<int>(230 * a)));
++    dl->AddRectFilledMultiColor(ImVec2(x0 + panel_w + 16 * s, 0), ImVec2(x0 + panel_w + 60 * s, size.y),
++                                IM_COL32(0, 0, 0, static_cast<int>(110 * a)), IM_COL32(0, 0, 0, 0),
++                                IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, static_cast<int>(110 * a)));
 +    dl->AddLine(ImVec2(x0 + panel_w, 0), ImVec2(x0 + panel_w, size.y),
-+                IM_COL32(91, 184, 255, static_cast<int>(200 * a)), 2.0f * s);
++                IM_COL32(140, 210, 255, static_cast<int>(230 * a)), 2.5f * s);
++    dl->AddLine(ImVec2(x0 + panel_w - 4 * s, 0), ImVec2(x0 + panel_w - 4 * s, size.y),
++                IM_COL32(255, 255, 255, static_cast<int>(40 * a)), 1.0f * s);
 +    const ImU32 white = IM_COL32(255, 255, 255, static_cast<int>(255 * a));
 +    const ImU32 dim = IM_COL32(255, 255, 255, static_cast<int>(165 * a));
 +    const ImU32 accent = IM_COL32(120, 196, 255, static_cast<int>(255 * a));
@@ -12504,22 +12537,26 @@ index 0000000..bb8d51c
 +    if (s_highlight < 0.0f)
 +      s_highlight = static_cast<float>(s_selected);
 +    s_highlight += (static_cast<float>(s_selected) - s_highlight) * (1.0f - std::exp(-20.0f * dt));
-+    dl->PushClipRect(ImVec2(x0, top - 10 * s), ImVec2(x0 + panel_w, bottom + 10 * s), true);
++    dl->PushClipRect(ImVec2(x0, top - 10 * s), ImVec2(x0 + panel_w, bottom + 30 * s), true);
++    dl->ChannelsSplit(3);
 +    if (!s_tall && s_selected >= 0 && s_selected < static_cast<int>(s_rows.size()) &&
 +        !s_rows[s_selected].header)
 +    {
-+      // The highlight, drawn once at its animated place (a soft glow and an accent edge).
++      // The highlight: a raised, lit box gliding to the selected row, with an accent edge.
++      dl->ChannelsSetCurrent(1);
 +      const float hy = top + (s_highlight - s_scroll) * row_h;
 +      const float hx0 = x0 + 40 * s + page_dx, hx1 = x0 + panel_w - 40 * s + page_dx;
-+      const int ha = static_cast<int>(70 * a * page_a);
-+      dl->AddRectFilled(ImVec2(hx0 - 6 * s, hy - 10 * s), ImVec2(hx1 + 6 * s, hy + 60 * s),
-+                        IM_COL32(91, 184, 255, ha / 4), 16 * s);
-+      dl->AddRectFilledMultiColor(ImVec2(hx0, hy - 4 * s), ImVec2(hx1, hy + 54 * s),
-+                                  IM_COL32(91, 184, 255, ha + 20), IM_COL32(91, 184, 255, ha / 2),
-+                                  IM_COL32(91, 184, 255, ha / 2), IM_COL32(91, 184, 255, ha + 20));
-+      dl->AddRectFilled(ImVec2(hx0, hy - 4 * s), ImVec2(hx0 + 6 * s, hy + 54 * s),
-+                        IM_COL32(150, 215, 255, static_cast<int>(255 * a * page_a)), 3 * s);
++      const float ha = a * page_a;
++      dl->AddRectFilled(ImVec2(hx0 - 8 * s, hy - 12 * s), ImVec2(hx1 + 8 * s, hy + 62 * s),
++                        IM_COL32(91, 184, 255, static_cast<int>(28 * ha)), 18 * s);
++      BevelBox(dl, ImVec2(hx0, hy - 4 * s), ImVec2(hx1, hy + 54 * s),
++               IM_COL32(110, 190, 255, static_cast<int>(150 * ha)),
++               IM_COL32(30, 90, 170, static_cast<int>(150 * ha)),
++               IM_COL32(170, 225, 255, static_cast<int>(240 * ha)), 12 * s, ha, s, true);
++      dl->AddRectFilled(ImVec2(hx0 + 4 * s, hy + 4 * s), ImVec2(hx0 + 10 * s, hy + 46 * s),
++                        IM_COL32(210, 240, 255, static_cast<int>(255 * ha)), 3 * s);
 +    }
++    s_value_in += (1.0f - s_value_in) * (1.0f - std::exp(-14.0f * dt));
 +    const float panel_x0 = x0;
 +    const ImU32 panel_white = white, panel_dim = dim, panel_accent = accent;
 +    for (size_t i = 0; i < s_rows.size(); i++)
@@ -12536,6 +12573,17 @@ index 0000000..bb8d51c
 +        return (c & 0x00FFFFFFu) | (static_cast<ImU32>(((c >> 24) & 0xFF) * row_a) << 24);
 +      };
 +      const ImU32 white = fade(panel_white), dim = fade(panel_dim), accent = fade(panel_accent);
++      if (!row.header && !s_tall)
++      {
++        // Each row on a faint raised plate.
++        dl->ChannelsSetCurrent(0);
++        BevelBox(dl, ImVec2(x0 + 44 * s, y - 2 * s), ImVec2(x0 + panel_w - 44 * s, y + 52 * s),
++                 IM_COL32(255, 255, 255, static_cast<int>(14 * a * row_a)),
++                 IM_COL32(0, 0, 0, static_cast<int>(60 * a * row_a)),
++                 IM_COL32(120, 196, 255, static_cast<int>(26 * a * row_a)), 10 * s, a * row_a * 0.6f,
++                 s, false);
++      }
++      dl->ChannelsSetCurrent(2);
 +      if (row.header && s_tall)
 +      {
 +        // The Achievements page's message (not logged in, not supported, ...).
@@ -12590,14 +12638,35 @@ index 0000000..bb8d51c
 +      {
 +        const float vs = 30 * s;
 +        const float tw = regular->CalcTextSizeA(vs, FLT_MAX, 0, PS4Lang::T(row.value).c_str()).x;
++        float slide = 0.0f, value_a = 1.0f;
++        if (sel)
++        {
++          if (s_value_row == static_cast<int>(i) && s_value_seen != row.value)
++            s_value_in = 0.0f;
++          s_value_row = static_cast<int>(i);
++          s_value_seen = row.value;
++          slide = (1.0f - s_value_in) * 36 * s;
++          value_a = 0.25f + 0.75f * s_value_in;
++        }
 +        const ImU32 colour =
-+            row.note ? IM_COL32(255, 210, 120, static_cast<int>((sel ? 255 : 170) * a)) :
-+            sel      ? white :
++            row.note ? IM_COL32(255, 210, 120, static_cast<int>((sel ? 255 : 170) * a * value_a)) :
++            sel      ? ((white & 0x00FFFFFFu) | (static_cast<ImU32>(((white >> 24) & 0xFF) * value_a) << 24)) :
 +                       dim;
-+        dl->AddText(regular, vs, ImVec2(x0 + panel_w - 80 * s - tw, y + 7 * s), colour,
++        dl->AddText(regular, vs, ImVec2(x0 + panel_w - 80 * s - tw + slide, y + 7 * s), colour,
 +                    PS4Lang::T(row.value).c_str());
++        if (sel)
++        {
++          // Small arrows either side of a value that Left / Right change.
++          const float ay = y + 26 * s, ax1 = x0 + panel_w - 62 * s, ax0 = x0 + panel_w - 98 * s - tw;
++          const ImU32 arrow = IM_COL32(170, 225, 255, static_cast<int>(200 * a));
++          dl->AddTriangleFilled(ImVec2(ax0, ay), ImVec2(ax0 + 9 * s, ay - 8 * s),
++                                ImVec2(ax0 + 9 * s, ay + 8 * s), arrow);
++          dl->AddTriangleFilled(ImVec2(ax1, ay), ImVec2(ax1 - 9 * s, ay - 8 * s),
++                                ImVec2(ax1 - 9 * s, ay + 8 * s), arrow);
++        }
 +      }
 +    }
++    dl->ChannelsMerge();
 +    dl->PopClipRect();
 +    if (!s_detail.empty())
 +    {
@@ -13953,10 +14022,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..f6f4d14
+index 0000000..84a8228
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,977 @@
+@@ -0,0 +1,982 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -14067,6 +14136,11 @@ index 0000000..f6f4d14
 +     {{"auto", "Auto"}, {"50", "50%"}, {"60", "60%"}, {"75", "75%"}, {"90", "90%"},
 +      {"100", "100%"}, {"120", "120%"}, {"150", "150%"}},
 +     "auto", true, "Auto lowers the clock only when the CPU is the limit."},
++    {"jit_accurate_singles", "Float Rounding", "Performance",
++     {{"on", "Accurate"}, {"off", "Fast"}}, "on", false,
++     "Fast skips rounding float math to single precision: up to ~20% faster in float-heavy games "
++     "(Need for Speed: Most Wanted), but menus or text can go missing (Mario Kart Wii, NFS). Set it "
++     "for one game at a time; Accurate undoes it."},
 +    {"speed_mode", "Speed Features", "Performance",
 +     {{"fast", "Fast"}, {"compatible", "Compatible"}}, "fast", false,
 +     "Compatible turns off the port's command-stream shortcuts if a game glitches or freezes."},
@@ -15536,10 +15610,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..a313b9e
+index 0000000..65cf06f
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,6526 @@
+@@ -0,0 +1,6630 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -15689,6 +15763,27 @@ index 0000000..a313b9e
 +  dl->PrimWriteVtx(c, uv_c, cc);
 +  dl->PrimWriteVtx(d, uv_d, cd);
 +  dl->PopTexture();
++}
++
++// A raised box: a soft shadow, a two-tone body blended in the middle, a light top edge and a dark
++// bottom edge, and a border. `raised` (the selection) lifts it higher.
++void DrawBevelBox(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 top, ImU32 bottom, ImU32 edge,
++                  float rounding, float alpha, bool raised)
++{
++  const float lift = raised ? 7.0f : 3.0f;
++  dl->AddRectFilled(ImVec2(a.x + 3, a.y + lift), ImVec2(b.x + 3, b.y + lift),
++                    IM_COL32(0, 0, 0, static_cast<int>(alpha * (raised ? 95 : 45))), rounding);
++  const float h = b.y - a.y;
++  dl->AddRectFilled(a, b, bottom, rounding);
++  dl->AddRectFilled(a, ImVec2(b.x, a.y + h * 0.38f), top, rounding, ImDrawFlags_RoundCornersTop);
++  dl->AddRectFilledMultiColor(ImVec2(a.x, a.y + h * 0.38f), ImVec2(b.x, a.y + h * 0.62f), top, top,
++                              IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0));
++  const float inset = std::min(rounding * 0.75f, (b.x - a.x) * 0.25f);
++  dl->AddLine(ImVec2(a.x + inset, a.y + 1.5f), ImVec2(b.x - inset, a.y + 1.5f),
++              IM_COL32(255, 255, 255, static_cast<int>(alpha * (raised ? 160 : 55))), 2.0f);
++  dl->AddLine(ImVec2(a.x + inset, b.y - 1.5f), ImVec2(b.x - inset, b.y - 1.5f),
++              IM_COL32(0, 0, 0, static_cast<int>(alpha * (raised ? 120 : 60))), 2.0f);
++  dl->AddRect(a, b, edge, rounding, 0, raised ? 2.5f : 1.5f);
 +}
 +
 +// One face of a box: a texture (a game's cover) or a vertical gradient.
@@ -16255,6 +16350,7 @@ index 0000000..a313b9e
 +  int setting = -1;
 +  float slide = 0.0f;  // 0 closed .. 1 open
 +  float scroll = 0.0f;
++  float highlight = -1.0f;  // the selection box, gliding to `selected` (row index)
 +};
 +
 +class Menu
@@ -16468,6 +16564,9 @@ index 0000000..a313b9e
 +  void DrawGameCubeBackground();
 +  void DrawGameInfo(ImDrawList* dl, const Game& game, float cx, float y, float alpha);
 +  std::string StyleName() const;
++  // A row, tab or panel entry in the menu style's look (selected: raised and lit).
++  void RowBox(ImDrawList* dl, ImVec2 a, ImVec2 b, bool selected, float alpha) const;
++  void DrawWiiBackground();
 +  void DrawLibraryCards(ImDrawList* dl, float alpha);
 +  void DrawLibraryList(ImDrawList* dl, float alpha);
 +  void DrawLibraryHints(ImDrawList* dl);
@@ -16950,6 +17049,11 @@ index 0000000..a313b9e
 +
 +const Theme& Menu::CurrentTheme() const
 +{
++  // The GameCube and Wii menu styles have their own colours on every tab.
++  if (m_prefs.style == "gamecube")
++    return THEMES[1];  // GameCube Indigo
++  if (m_prefs.style == "wii")
++    return THEMES[2];  // Wii White
 +  for (const Theme& theme : THEMES)
 +  {
 +    if (m_prefs.theme == theme.name)
@@ -19302,6 +19406,9 @@ index 0000000..a313b9e
 +  Approach(m_panel.slide, m_panel.open ? 1.0f : 0.0f, 16.0f, dt);
 +  if (m_panel.slide < 0.01f)
 +    return;
++  if (m_panel.highlight < 0.0f)
++    m_panel.highlight = static_cast<float>(m_panel.selected);
++  Approach(m_panel.highlight, static_cast<float>(m_panel.selected), 18.0f, dt);
 +  const Theme& theme = CurrentTheme();
 +  const float width = m_panel.rows.empty() ? 620.0f : 860.0f;
 +  const float x0 = W - width * m_panel.slide;
@@ -19328,14 +19435,13 @@ index 0000000..a313b9e
 +  }
 +  if (!m_panel.options.empty())
 +  {
++    {
++      const float hy = y + m_panel.highlight * 62.0f;
++      RowBox(dl, ImVec2(x0 + 30, hy - 6), ImVec2(W - 30, hy + 52), true, m_panel.slide);
++    }
 +    for (size_t i = 0; i < m_panel.options.size(); i++, y += 62)
 +    {
 +      const bool sel = static_cast<int>(i) == m_panel.selected;
-+      if (sel)
-+      {
-+        dl->AddRectFilled(ImVec2(x0 + 30, y - 6), ImVec2(W - 30, y + 52),
-+                          Rgba(theme.wave, 0.30f * m_panel.slide), 10.0f);
-+      }
 +      Text(dl, sel ? m_bold : m_font, 34, ImVec2(x0 + 60, y), text, m_panel.options[i]);
 +    }
 +  }
@@ -19362,6 +19468,12 @@ index 0000000..a313b9e
 +                   std::max(0.0f, static_cast<float>(m_panel.rows.size()) - visible));
 +    Approach(m_panel.scroll, target, 16.0f, dt);
 +    dl->PushClipRect(ImVec2(x0, top - 8), ImVec2(W, bottom + 8), true);
++    if (m_panel.selected >= 0 && m_panel.selected < static_cast<int>(m_panel.rows.size()) &&
++        !m_panel.rows[m_panel.selected].header)
++    {
++      const float hy = top + (m_panel.highlight - m_panel.scroll) * row_h;
++      RowBox(dl, ImVec2(x0 + 30, hy - 4), ImVec2(W - 30, hy + 50), true, m_panel.slide);
++    }
 +    for (size_t i = 0; i < m_panel.rows.size(); i++)
 +    {
 +      const SettingRow& row = m_panel.rows[i];
@@ -19377,12 +19489,9 @@ index 0000000..a313b9e
 +        continue;
 +      }
 +      const bool sel = static_cast<int>(i) == m_panel.selected;
-+      if (sel)
-+      {
-+        dl->AddRectFilled(ImVec2(x0 + 30, ry - 4), ImVec2(W - 30, ry + 50),
-+                          Rgba(theme.wave, 0.30f * m_panel.slide), 10.0f);
-+      }
-+      float label_x = x0 + 60;
++      // The label leans in as the selection reaches it.
++      const float focus = std::max(0.0f, 1.0f - std::abs(static_cast<float>(i) - m_panel.highlight));
++      float label_x = x0 + 60 + 8.0f * focus;
 +      if (row.icon != ImTextureID{})
 +      {
 +        dl->AddImage(ImTextureRef(row.icon), ImVec2(label_x, ry + 3), ImVec2(label_x + 40, ry + 43),
@@ -19599,6 +19708,8 @@ index 0000000..a313b9e
 +{
 +  if (Library() && m_prefs.style == "gamecube" && m_wallpaper == ImTextureID{})
 +    DrawGameCubeBackground();
++  else if (Library() && m_prefs.style == "wii" && m_wallpaper == ImTextureID{})
++    DrawWiiBackground();
 +  else if (Library())
 +    DrawLibraryBackground();
 +  else
@@ -20046,10 +20157,8 @@ index 0000000..a313b9e
 +      x += tab_w[i];
 +    }
 +  }
-+  dl->AddRectFilled(ImVec2(bar_x - 8, BAR_Y - 6), ImVec2(bar_x + total + 8, BAR_Y + BAR_H + 6),
-+                    Rgba(0x000000, 0.28f), 16.0f);
-+  dl->AddRect(ImVec2(bar_x - 8, BAR_Y - 6), ImVec2(bar_x + total + 8, BAR_Y + BAR_H + 6),
-+              Rgba(theme.text, 0.14f), 16.0f, 0, 1.5f);
++  RowBox(dl, ImVec2(bar_x - 8, BAR_Y - 6), ImVec2(bar_x + total + 8, BAR_Y + BAR_H + 6), false,
++         1.0f);
 +  {
 +    // The highlight slides between the tabs.
 +    const int i0 = std::clamp(static_cast<int>(std::floor(m_tab_pos)), 0, TAB_COUNT - 1);
@@ -20058,9 +20167,7 @@ index 0000000..a313b9e
 +    const float hx = tab_x[i0] + (tab_x[i1] - tab_x[i0]) * f;
 +    const float hw = tab_w[i0] + (tab_w[i1] - tab_w[i0]) * f;
 +    const ImVec2 h0(hx + 2, BAR_Y), h1(hx + hw - 2, BAR_Y + BAR_H);
-+    dl->AddRectFilledMultiColor(h0, h1, Rgba(theme.wave, 0.55f), Rgba(theme.wave, 0.55f),
-+                                Rgba(theme.wave, 0.30f), Rgba(theme.wave, 0.30f));
-+    dl->AddRect(h0, h1, Rgba(theme.wave, 0.95f), 12.0f, 0, 2.0f);
++    RowBox(dl, h0, h1, true, 1.0f);
 +  }
 +  for (int i = 0; i < TAB_COUNT; i++)
 +  {
@@ -20210,6 +20317,63 @@ index 0000000..a313b9e
 +  Text(dl, m_bold, 32, ImVec2(px + cw + 14, by + 12), Rgba(theme.text, alpha), "Play");
 +}
 +
++
++void Menu::RowBox(ImDrawList* dl, ImVec2 a, ImVec2 b, bool selected, float alpha) const
++{
++  const Theme& theme = CurrentTheme();
++  float rounding = 14.0f;
++  uint32_t top, bottom, edge;
++  float ta, ba, ea;
++  if (m_prefs.style == "gamecube")
++  {
++    // Chunky purple slabs, nearly square corners.
++    rounding = 7.0f;
++    if (selected)
++      top = 0xA48CFF, bottom = 0x4A2FB0, edge = 0xE0D6FF, ta = 0.9f, ba = 0.9f, ea = 0.95f;
++    else
++      top = 0x3E2C96, bottom = 0x1C1248, edge = 0x7A5CF0, ta = 0.6f, ba = 0.65f, ea = 0.45f;
++  }
++  else if (m_prefs.style == "wii")
++  {
++    // White glass, round ends, the Wii's light blue for the selection.
++    rounding = std::min(26.0f, (b.y - a.y) * 0.5f);
++    if (selected)
++      top = 0xFFFFFF, bottom = 0xCDEBFF, edge = 0x34BEED, ta = 0.98f, ba = 0.98f, ea = 1.0f;
++    else
++      top = 0xFFFFFF, bottom = 0xE2E8EE, edge = 0xB4BFCA, ta = 0.85f, ba = 0.85f, ea = 0.8f;
++  }
++  else if (selected)
++  {
++    top = theme.wave, bottom = theme.wave, edge = theme.wave, ta = 0.45f, ba = 0.16f, ea = 0.95f;
++  }
++  else
++  {
++    top = 0xFFFFFF, bottom = 0x000000, edge = theme.text, ta = 0.07f, ba = 0.28f, ea = 0.10f;
++  }
++  DrawBevelBox(dl, a, b, Rgba(top, ta * alpha), Rgba(bottom, ba * alpha), Rgba(edge, ea * alpha),
++               rounding, alpha, selected);
++}
++
++// Wii style background: the Wii Menu's white with fine lines, and its grey bar at the bottom.
++void Menu::DrawWiiBackground()
++{
++  ImDrawList* dl = ImGui::GetBackgroundDrawList();
++  dl->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(W, H), Rgba(0xFFFFFF), Rgba(0xFFFFFF),
++                              Rgba(0xDDE3EA), Rgba(0xDDE3EA));
++  for (float y = 0.0f; y < H - 120.0f; y += 6.0f)
++    dl->AddLine(ImVec2(0, y), ImVec2(W, y), Rgba(0x9AA6B4, 0.05f), 1.0f);
++  // A slow light sweep across the screen.
++  const float sweep = std::fmod(m_time * 60.0f, W + 800.0f) - 400.0f;
++  dl->AddRectFilledMultiColor(ImVec2(sweep - 300, 0), ImVec2(sweep, H - 120), Rgba(0xFFFFFF, 0.0f),
++                              Rgba(0xFFFFFF, 0.35f), Rgba(0xFFFFFF, 0.35f), Rgba(0xFFFFFF, 0.0f));
++  dl->AddRectFilledMultiColor(ImVec2(sweep, 0), ImVec2(sweep + 300, H - 120), Rgba(0xFFFFFF, 0.35f),
++                              Rgba(0xFFFFFF, 0.0f), Rgba(0xFFFFFF, 0.0f), Rgba(0xFFFFFF, 0.35f));
++  const float bar = H - 120.0f;
++  dl->AddRectFilledMultiColor(ImVec2(0, bar), ImVec2(W, H), Rgba(0xEEF1F4), Rgba(0xEEF1F4),
++                              Rgba(0xC6CED7), Rgba(0xC6CED7));
++  dl->AddLine(ImVec2(0, bar), ImVec2(W, bar), Rgba(0x34BEED, 0.7f), 3.0f);
++  dl->AddLine(ImVec2(0, bar + 3), ImVec2(W, bar + 3), Rgba(0xFFFFFF, 0.9f), 2.0f);
++}
 +
 +std::string Menu::StyleName() const
 +{
@@ -20506,6 +20670,7 @@ index 0000000..a313b9e
 +  const float scroll = std::clamp(m_item_pos[c] - visible * 0.5f + 0.5f, 0.0f,
 +                                  std::max(0.0f, static_cast<float>(items.size()) - visible));
 +  dl->PushClipRect(ImVec2(0, TOP - 20), ImVec2(W, BOTTOM + 10), true);
++  dl->ChannelsSplit(3);
 +  for (int i = 0; i < static_cast<int>(items.size()); i++)
 +  {
 +    const Item& item = items[i];
@@ -20514,9 +20679,10 @@ index 0000000..a313b9e
 +      continue;
 +    const bool sel = i == selected;
 +    const ImVec2 r0(LIST_X, y), r1(LIST_X + LIST_W, y + ROW_H - 18);
-+    dl->AddRectFilled(r0, r1, sel ? Rgba(theme.wave, alpha * 0.20f) : Rgba(0x000000, alpha * 0.25f), 14.0f);
-+    dl->AddRect(r0, r1, sel ? Rgba(theme.wave, alpha) : Rgba(theme.text, alpha * 0.12f), 14.0f, 0,
-+                sel ? 2.5f : 1.5f);
++    dl->ChannelsSetCurrent(0);
++    RowBox(dl, r0, r1, false, alpha);
++    dl->ChannelsSetCurrent(2);
++    (void)sel;
 +    const ImVec2 icon(LIST_X + 58, y + (ROW_H - 18) * 0.5f);
 +    if (item.card == CARD_NEW)
 +    {
@@ -20549,6 +20715,13 @@ index 0000000..a313b9e
 +    }
 +    Text(dl, m_font, 25, ImVec2(LIST_X + 110, y + 58), Rgba(theme.text, alpha * 0.72f), detail);
 +  }
++  if (!items.empty())
++  {
++    dl->ChannelsSetCurrent(1);
++    const float hy = TOP + (m_item_pos[c] - scroll) * ROW_H;
++    RowBox(dl, ImVec2(LIST_X - 6, hy - 5), ImVec2(LIST_X + LIST_W + 6, hy + ROW_H - 13), true, alpha);
++  }
++  dl->ChannelsMerge();
 +  dl->PopClipRect();
 +
 +  // The selected card's saves on the right.
@@ -20647,6 +20820,8 @@ index 0000000..a313b9e
 +  const float scroll = std::clamp(m_item_pos[c] - visible * 0.5f + 0.5f, 0.0f,
 +                                  std::max(0.0f, static_cast<float>(items.size()) - visible));
 +  dl->PushClipRect(ImVec2(0, TOP - 20), ImVec2(W, BOTTOM + 10), true);
++  // Channels: 0 the rows, 1 the gliding selection, 2 the rows' contents.
++  dl->ChannelsSplit(3);
 +  for (int i = 0; i < static_cast<int>(items.size()); i++)
 +  {
 +    const Item& item = items[i];
@@ -20655,15 +20830,9 @@ index 0000000..a313b9e
 +      continue;
 +    const bool sel = i == m_selected[c];
 +    const ImVec2 r0(X, y), r1(right, y + ROW_H - 12);
-+    if (sel)
-+    {
-+      dl->AddRectFilled(r0, r1, Rgba(theme.wave, alpha * 0.20f), 14.0f);
-+      dl->AddRect(r0, r1, Rgba(theme.wave, alpha), 14.0f, 0, 2.5f);
-+    }
-+    else
-+    {
-+      dl->AddRectFilled(r0, r1, Rgba(0x000000, alpha * 0.22f), 14.0f);
-+    }
++    dl->ChannelsSetCurrent(0);
++    RowBox(dl, r0, r1, false, alpha);
++    dl->ChannelsSetCurrent(2);
 +    float tx = X + 34;
 +    if (item.theme != -1)
 +    {
@@ -20704,6 +20873,13 @@ index 0000000..a313b9e
 +    const float dw = TextWidth(m_font, 26, item.detail);
 +    Text(dl, m_font, 26, ImVec2(right - 34 - dw, y + 22), Rgba(theme.text, alpha * 0.7f), item.detail);
 +  }
++  if (!items.empty())
++  {
++    dl->ChannelsSetCurrent(1);
++    const float hy = TOP + (m_item_pos[c] - scroll) * ROW_H;
++    RowBox(dl, ImVec2(X - 6, hy - 5), ImVec2(right + 6, hy + ROW_H - 7), true, alpha);
++  }
++  dl->ChannelsMerge();
 +  dl->PopClipRect();
 +}
 +
@@ -20908,6 +21084,8 @@ index 0000000..a313b9e
 +      parts.push_back("CPU clock " + value + "%");
 +    else if (key == "dual_core")
 +      parts.push_back("dual core");
++    else if (key == "jit_accurate_singles")
++      parts.push_back(value == "off" ? "fast float rounding" : "accurate float rounding");
 +    else if (key == "vertex_rounding")
 +      parts.push_back(value == "on" ? "vertex rounding" : "no vertex rounding");
 +    else if (key == "sync_gpu")
