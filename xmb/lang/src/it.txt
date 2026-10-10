@@ -493,3 +493,12 @@ Nessun checkpoint più vecchio
 Riavvolgimento non riuscito
 La modalità Hardcore è attiva: niente riavvolgimento.
 {}: Disattivato
+# --- Patches
+Patch
+Ultime da Dolphin
+Verifica...
+Offline
+{} nuove da Dolphin
+Nessuna patch per questo gioco
+Le patch più recenti di Dolphin per questo gioco, controllate su GitHub all'apertura di questa pagina; le nuove vengono aggiunte come Dolphin le fornisce.
+Una correzione o un trucco di velocità di Dolphin per questo gioco. Si applica al prossimo avvio del gioco.

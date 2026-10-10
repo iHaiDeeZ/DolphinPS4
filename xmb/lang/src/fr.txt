@@ -493,3 +493,12 @@ Pas de point de contrôle plus ancien
 Échec du retour arrière
 Le mode Hardcore est activé : pas de retour arrière.
 {} : Désactivé
+# --- Patches
+Patchs
+Derniers de Dolphin
+Vérification...
+Hors ligne
+{} nouveaux de Dolphin
+Aucun patch pour ce jeu
+Les patchs les plus récents de Dolphin pour ce jeu, vérifiés sur GitHub à l'ouverture de cette page ; les nouveaux sont ajoutés tels que Dolphin les fournit.
+Un correctif ou une astuce de vitesse de Dolphin pour ce jeu. S'applique au prochain lancement du jeu.

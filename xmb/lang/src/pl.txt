@@ -493,3 +493,12 @@ Brak starszego punktu kontrolnego
 Przewijanie nie powiodło się
 Tryb Hardcore jest włączony: bez przewijania.
 {}: Wył.
+# --- Patches
+Łatki
+Najnowsze od Dolphina
+Sprawdzanie...
+Offline
+{} nowych od Dolphina
+Brak łatek dla tej gry
+Najnowsze łatki Dolphina dla tej gry, sprawdzane na GitHubie po otwarciu tej strony; nowe są dodawane tak, jak dostarcza je Dolphin.
+Poprawka lub przyspieszenie od Dolphina dla tej gry. Działa od następnego uruchomienia gry.

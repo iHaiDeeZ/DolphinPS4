@@ -493,3 +493,12 @@ Kein älterer Kontrollpunkt
 Zurückspulen fehlgeschlagen
 Hardcore-Modus ist an: kein Zurückspulen.
 {}: Aus
+# --- Patches
+Patches
+Neueste von Dolphin
+Wird geprüft...
+Offline
+{} neu von Dolphin
+Keine Patches für dieses Spiel
+Dolphins neueste Patches für dieses Spiel, beim Öffnen dieser Seite auf GitHub geprüft; neue werden so hinzugefügt, wie Dolphin sie ausliefert.
+Ein Fix oder Speed-Hack von Dolphin für dieses Spiel. Gilt ab dem nächsten Spielstart.

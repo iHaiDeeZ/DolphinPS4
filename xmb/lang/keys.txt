@@ -495,3 +495,12 @@ No older checkpoint
 Rewind failed
 Hardcore Mode is on: no rewinding.
 {}: Off
+# --- Patches
+Patches
+Latest from Dolphin
+Checking...
+Offline
+{} new from Dolphin
+No patches for this game
+Dolphin's newest patches for this game, checked on GitHub when this page opens; new ones are added as Dolphin ships them.
+A fix or speed hack from Dolphin for this game. Applies the next time the game starts.

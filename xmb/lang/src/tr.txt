@@ -493,3 +493,12 @@ Daha eski kontrol noktası yok
 Geri sarma başarısız
 Hardcore Modu açık: geri sarma yok.
 {}: Kapalı
+# --- Patches
+Yamalar
+Dolphin'den en yeniler
+Denetleniyor...
+Çevrimdışı
+Dolphin'den {} yeni
+Bu oyun için yama yok
+Bu oyun için Dolphin'in en yeni yamaları; bu sayfa açılınca GitHub'da denetlenir, yeniler Dolphin'in sunduğu gibi eklenir.
+Bu oyun için Dolphin'den bir düzeltme veya hız hilesi. Oyun bir sonraki açılışta geçerli olur.

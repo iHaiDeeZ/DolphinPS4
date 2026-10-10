@@ -494,3 +494,12 @@ Não há checkpoint mais antigo
 Falha ao retroceder
 O modo Hardcore está ativo: sem retroceder.
 {}: Desligado
+# --- Patches
+Patches
+Mais recentes do Dolphin
+Verificando...
+Offline
+{} novos do Dolphin
+Nenhum patch para este jogo
+Os patches mais recentes do Dolphin para este jogo, verificados no GitHub ao abrir esta página; os novos são adicionados como o Dolphin os fornece.
+Uma correção ou truque de velocidade do Dolphin para este jogo. Vale a partir do próximo início do jogo.

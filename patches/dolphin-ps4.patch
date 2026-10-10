@@ -15863,10 +15863,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..5a1ebfc
+index 0000000..73b48b7
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,6641 @@
+@@ -0,0 +1,6811 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -15911,6 +15911,8 @@ index 0000000..5a1ebfc
 +#include "DiscIO/VolumeDisc.h"
 +#include "DiscIO/RiivolutionParser.h"
 +#include "DiscIO/NANDImporter.h"
++#include "Core/ConfigManager.h"
++#include "Core/PatchEngine.h"
 +#include "VideoCommon/GraphicsModSystem/Config/GraphicsMod.h"
 +#include "VideoCommon/GraphicsModSystem/Config/GraphicsModGroup.h"
 +#include "Common/FileSearch.h"
@@ -16640,6 +16642,19 @@ index 0000000..5a1ebfc
 +  void OpenRiivolutionList(const Game& game);
 +  // Triangle > Graphics Mods: Dolphin's graphics mods for the game (bloom, blur, depth of field...).
 +  void OpenGraphicsModsList(const Game& game);
++  // Triangle > Patches: Dolphin's patches for the game (fixes and speed hacks), on or off; the
++  // newest list for the game is fetched from Dolphin's GitHub while the page is open.
++  void OpenPatchesList(const Game& game);
++  void BuildPatchRows();
++  void SavePatches();
++  void UpdatePatchDownload();
++  std::vector<PatchEngine::Patch> m_patches;
++  std::string m_patches_game, m_patch_status;
++  std::optional<u16> m_patches_revision;
++  std::thread m_patch_dl_thread;
++  std::atomic<bool> m_patch_dl_busy{false}, m_patch_dl_done{false};
++  std::vector<std::pair<std::string, std::string>> m_patch_dl_files;  // file name, contents
++  bool m_patch_dl_ok = false;
 +  void BuildGraphicsModRows();
 +  std::unique_ptr<GraphicsModGroupConfig> m_graphics_mods;
 +  void OpenAchievementList(const Game& game);
@@ -18014,6 +18029,21 @@ index 0000000..5a1ebfc
 +    BuildCheatRows();
 +    return;
 +  }
++  if (row.key.rfind("patch:", 0) == 0)
++  {
++    const size_t index = std::strtoul(row.key.c_str() + 6, nullptr, 10);
++    if (index < m_patches.size())
++    {
++      m_patches[index].enabled = !m_patches[index].enabled;
++      SavePatches();
++      Log("patch " + m_patches[index].name + (m_patches[index].enabled ? " on" : " off") + " (" +
++          m_patches_game + ")");
++      BuildPatchRows();
++    }
++    return;
++  }
++  if (row.key == "patchdl")
++    return;
 +  if (row.key.rfind("gmod:", 0) == 0 && m_graphics_mods)
 +  {
 +    auto& mods = m_graphics_mods->GetMods();
@@ -18199,6 +18229,129 @@ index 0000000..5a1ebfc
 +  m_panel.rows = std::move(rows);
 +  m_panel.selected = 0;
 +  MoveSettingRow(0);
++}
++
++// Triangle > Patches.
++void Menu::OpenPatchesList(const Game& game)
++{
++  m_panel = {};
++  m_panel.open = true;
++  m_panel.title = "Patches";
++  m_patches.clear();
++  m_patches_game = game.id;
++  m_patches_revision = game.revision;
++  const Common::IniFile global = SConfig::LoadDefaultGameIni(game.id, game.revision);
++  const Common::IniFile local = SConfig::LoadLocalGameIni(game.id, game.revision);
++  PatchEngine::LoadPatchSection("OnFrame", &m_patches, global, local);
++  m_patch_status = "Checking...";
++  // Dolphin's newest patch list for this game (its GameSettings files on GitHub).
++  if (!m_patch_dl_busy && game.id.size() >= 3)
++  {
++    if (m_patch_dl_thread.joinable())
++      m_patch_dl_thread.join();
++    m_patch_dl_busy = true;
++    m_patch_dl_done = false;
++    const std::string id = game.id;
++    m_patch_dl_thread = std::thread([this, id] {
++      std::vector<std::pair<std::string, std::string>> files;
++      bool ok = false;
++      Common::HttpRequest http{std::chrono::seconds{10}};
++      for (const std::string& name : {id.substr(0, 3), id})
++      {
++        const std::string url =
++            "https://raw.githubusercontent.com/dolphin-emu/dolphin/master/Data/Sys/GameSettings/" +
++            name + ".ini";
++        const auto response = http.Get(url, {}, Common::HttpRequest::AllowedReturnCodes::All);
++        const int code = http.GetLastResponseCode();
++        if (response && (code == 200 || code == 404))
++          ok = true;
++        if (response && code == 200)
++          files.emplace_back(name, std::string(response->begin(), response->end()));
++      }
++      m_patch_dl_files = std::move(files);
++      m_patch_dl_ok = ok;
++      m_patch_dl_done = true;
++    });
++  }
++  BuildPatchRows();
++  m_panel.selected = 0;
++  MoveSettingRow(0);
++}
++
++// The fetched list arrived: patches this version doesn't have join the list, as Dolphin ships
++// them (on or off), kept with the user's own patches so the game uses them.
++void Menu::UpdatePatchDownload()
++{
++  if (!m_patch_dl_done.exchange(false))
++    return;
++  if (m_patch_dl_thread.joinable())
++    m_patch_dl_thread.join();
++  m_patch_dl_busy = false;
++  if (!m_patch_dl_ok)
++  {
++    m_patch_status = "Offline";
++  }
++  else
++  {
++    const std::string dir = m_data_dir + "/patches-cache/";
++    File::CreateFullPath(dir);
++    Common::IniFile online;
++    for (const auto& [name, text] : m_patch_dl_files)
++    {
++      const std::string path = dir + name + ".ini";
++      File::WriteStringToFile(path, text);
++      online.Load(path, true);
++    }
++    std::vector<PatchEngine::Patch> fetched;
++    PatchEngine::LoadPatchSection("OnFrame", &fetched, online, Common::IniFile());
++    size_t added = 0;
++    for (PatchEngine::Patch patch : fetched)
++    {
++      const bool known = std::any_of(m_patches.begin(), m_patches.end(),
++                                     [&](const PatchEngine::Patch& p) { return p.name == patch.name; });
++      if (known)
++        continue;
++      patch.user_defined = true;
++      patch.default_enabled = false;
++      // patch.enabled stays Dolphin's own choice for it (on for its fixes).
++      m_patches.push_back(std::move(patch));
++      added++;
++    }
++    if (added > 0)
++      SavePatches();
++    m_patch_status = added > 0 ? std::to_string(added) + " new from Dolphin" : "Up to date";
++    Log("patches: " + m_patches_game + ": " + m_patch_status);
++  }
++  if (m_panel.open && m_panel.title == "Patches")
++    BuildPatchRows();
++}
++
++void Menu::BuildPatchRows()
++{
++  std::vector<SettingRow> rows;
++  rows.push_back({"Latest from Dolphin", m_patch_dl_busy ? "Checking..." : m_patch_status,
++                  "patchdl"});
++  if (!m_patches.empty())
++    rows.push_back({"Patches", "", "", true});
++  for (size_t i = 0; i < m_patches.size(); i++)
++  {
++    SettingRow row{m_patches[i].name, m_patches[i].enabled ? "On" : "Off",
++                   "patch:" + std::to_string(i)};
++    row.tag = m_patches[i].enabled ? 1 : -1;
++    rows.push_back(std::move(row));
++  }
++  if (m_patches.empty())
++    rows.push_back({"No patches for this game", "", "", true});
++  m_panel.rows = std::move(rows);
++}
++
++void Menu::SavePatches()
++{
++  const std::string path = File::GetUserPath(D_GAMESETTINGS_IDX) + m_patches_game + ".ini";
++  Common::IniFile local;
++  local.Load(path);
++  PatchEngine::SavePatchSection(&local, m_patches);
++  local.Save(path);
 +}
 +
 +void Menu::OpenGraphicsModsList(const Game& game)
@@ -18883,6 +19036,13 @@ index 0000000..5a1ebfc
 +        Play("confirm");
 +        return;
 +      }
++      else if (m_panel.title == "Game" && m_panel.options[m_panel.selected] == "Patches")
++      {
++        const Item& item = m_items[m_category][m_selected[m_category]];
++        OpenPatchesList(m_games[item.game]);
++        Play("confirm");
++        return;
++      }
 +      else if (m_panel.title == "Game" && m_panel.options[m_panel.selected] == "Graphics Mods")
 +      {
 +        const Item& item = m_items[m_category][m_selected[m_category]];
@@ -19071,6 +19231,7 @@ index 0000000..5a1ebfc
 +      }
 +      m_panel.options.push_back("Controls");
 +      m_panel.options.push_back("Graphics Mods");
++      m_panel.options.push_back("Patches");
 +      {
 +        const Game& game = m_games[items[selected].game];
 +        if (PS4Achievements::Load(m_data_dir, game.id.empty() ? game.title : game.id, nullptr))
@@ -19851,6 +20012,12 @@ index 0000000..5a1ebfc
 +        help = "Applies the next time the game starts, or now from the in-game menu (L3+R3).";
 +      else if (row.key.rfind("riiv:", 0) == 0)
 +        help = "Applies the next time the game starts.";
++      else if (row.key == "patchdl")
++        help = "Dolphin's newest patches for this game, checked on GitHub when this page opens; "
++               "new ones are added as Dolphin ships them.";
++      else if (row.key.rfind("patch:", 0) == 0)
++        help = "A fix or speed hack from Dolphin for this game. Applies the next time the game "
++               "starts.";
 +      else if (row.key.rfind("gmod:", 0) == 0 && m_graphics_mods)
 +      {
 +        const size_t index = std::strtoul(row.key.c_str() + 5, nullptr, 10);
@@ -22436,6 +22603,7 @@ index 0000000..5a1ebfc
 +      m_covers_pending = LoadCovers(2);
 +    UpdateUpdater(dt);
 +    UpdateCheatDownload();
++    UpdatePatchDownload();
 +    UpdateCenterFetch();
 +
 +    m_display.BeginFrame();
@@ -22467,6 +22635,8 @@ index 0000000..5a1ebfc
 +  // A code download still going (a game was started): its few seconds, not a crash on exit.
 +  if (m_cheat_dl_thread.joinable())
 +    m_cheat_dl_thread.join();
++  if (m_patch_dl_thread.joinable())
++    m_patch_dl_thread.join();
 +  if (m_settings_thread.joinable())
 +    m_settings_thread.join();
 +  if (m_ra_thread.joinable())

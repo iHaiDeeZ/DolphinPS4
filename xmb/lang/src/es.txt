@@ -493,3 +493,12 @@ No hay un punto de control más antiguo
 Error al rebobinar
 El modo Hardcore está activado: no se puede rebobinar.
 {}: Desactivado
+# --- Patches
+Parches
+Lo último de Dolphin
+Comprobando...
+Sin conexión
+{} nuevos de Dolphin
+No hay parches para este juego
+Los parches más recientes de Dolphin para este juego, comprobados en GitHub al abrir esta página; los nuevos se añaden tal como Dolphin los incluye.
+Una corrección o mejora de velocidad de Dolphin para este juego. Se aplica la próxima vez que inicies el juego.

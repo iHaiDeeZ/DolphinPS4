@@ -493,3 +493,12 @@ Geen ouder controlepunt
 Terugspoelen mislukt
 Hardcore-modus staat aan: niet terugspoelen.
 {}: Uit
+# --- Patches
+Patches
+Nieuwste van Dolphin
+Controleren...
+Offline
+{} nieuw van Dolphin
+Geen patches voor dit spel
+Dolphins nieuwste patches voor dit spel, op GitHub gecontroleerd als deze pagina opent; nieuwe worden toegevoegd zoals Dolphin ze levert.
+Een fix of snelheidshack van Dolphin voor dit spel. Geldt vanaf de volgende keer dat het spel start.
