@@ -46568,7 +46568,7 @@ index 4a58c6f..1493495 100644
    clear_scissors = true;
    if (scissors.size() > 1)
 diff --git a/Source/Core/VideoCommon/TextureCacheBase.cpp b/Source/Core/VideoCommon/TextureCacheBase.cpp
-index 4e4567d..f5f4223 100644
+index 4e4567d..9a3c585 100644
 --- a/Source/Core/VideoCommon/TextureCacheBase.cpp
 +++ b/Source/Core/VideoCommon/TextureCacheBase.cpp
 @@ -2,6 +2,7 @@
@@ -46587,7 +46587,7 @@ index 4e4567d..f5f4223 100644
    if (auto entry = LoadImpl(stage, false))
    {
      if (!DidLinkedAssetsChange(*entry))
-@@ -1311,6 +1313,82 @@ TCacheEntry* TextureCacheBase::LoadImpl(u32 stage, bool force_reload)
+@@ -1311,6 +1313,102 @@ TCacheEntry* TextureCacheBase::LoadImpl(u32 stage, bool force_reload)
    return entry.get();
  }
  
@@ -46633,7 +46633,12 @@ index 4e4567d..f5f4223 100644
 +  }
 +  return folded;
 +}
-+TextureHashMemo s_texture_hash_memo[1024];
++// 1024 sets of 4: a busy scene binds a few hundred textures a frame, and a single slot per
++// address made textures evict each other and be hashed again (texture hashing was still ~3.7% of
++// the video thread in Donald Duck's busy areas).
++constexpr u32 MEMO_SETS = 1024, MEMO_WAYS = 4;
++TextureHashMemo s_texture_hash_memo[MEMO_SETS * MEMO_WAYS];
++u8 s_texture_hash_memo_next[MEMO_SETS];
 +}  // namespace
 +
 +// An EFB copy may write into texture memory: the memoized hashes of what it overlaps are dropped
@@ -46654,15 +46659,30 @@ index 4e4567d..f5f4223 100644
 +{
 +  if (!ps4_tex_hash_once)
 +    return Common::GetHash64(data, size, samples);
-+  TextureHashMemo& memo = s_texture_hash_memo[((address >> 5) ^ (size << 3)) & 1023];
++  const u32 set = ((address >> 5) ^ (size << 3)) & (MEMO_SETS - 1);
++  TextureHashMemo* ways = &s_texture_hash_memo[set * MEMO_WAYS];
 +  const u64 content = PS4TextureContentSample(data, size);
-+  if (memo.epoch == ps4_tex_hash_epoch && memo.address == address && memo.size == size &&
-+      memo.samples == samples && memo.content == content)
++  for (u32 i = 0; i < MEMO_WAYS; i++)
 +  {
-+    return memo.hash;
++    const TextureHashMemo& memo = ways[i];
++    if (memo.epoch == ps4_tex_hash_epoch && memo.address == address && memo.size == size &&
++        memo.samples == samples && memo.content == content)
++    {
++      return memo.hash;
++    }
 +  }
 +  const u64 hash = Common::GetHash64(data, size, samples);
-+  memo = {address, size, samples, ps4_tex_hash_epoch, hash, content};
++  // Into a way that is out of date, else the next one in turn.
++  u32 way = MEMO_WAYS;
++  for (u32 i = 0; i < MEMO_WAYS && way == MEMO_WAYS; i++)
++  {
++    if (ways[i].epoch != ps4_tex_hash_epoch ||
++        (ways[i].address == address && ways[i].size == size))
++      way = i;
++  }
++  if (way == MEMO_WAYS)
++    way = s_texture_hash_memo_next[set]++ % MEMO_WAYS;
++  ways[way] = {address, size, samples, ps4_tex_hash_epoch, hash, content};
 +  return hash;
 +}
 +#endif
@@ -46670,7 +46690,7 @@ index 4e4567d..f5f4223 100644
  RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSampleSize,
                                             const TextureInfo& texture_info)
  {
-@@ -1347,8 +1425,16 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
+@@ -1347,8 +1445,16 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
  
    // TODO: This doesn't hash GB tiles for preloaded RGBA8 textures (instead, it's hashing more data
    // from the low tmem bank than it should)
@@ -46689,7 +46709,7 @@ index 4e4567d..f5f4223 100644
    u32 palette_size = 0;
    if (texture_info.GetPaletteSize())
    {
-@@ -2145,12 +2231,23 @@ bool TextureCacheBase::CopyFilterCanOverflow(const std::array<u32, 3>& coefficie
+@@ -2145,12 +2251,23 @@ bool TextureCacheBase::CopyFilterCanOverflow(const std::array<u32, 3>& coefficie
    return coefficients[0] + coefficients[1] + coefficients[2] >= 128;
  }
  
@@ -46713,7 +46733,7 @@ index 4e4567d..f5f4223 100644
    // Emulation methods:
    //
    // - EFB to RAM:
-@@ -3257,7 +3354,11 @@ u64 TCacheEntry::CalculateHash() const
+@@ -3257,7 +3374,11 @@ u64 TCacheEntry::CalculateHash() const
    u8* ptr = memory.GetPointerForRange(addr, size_in_bytes);
    if (memory_stride == bytes_per_row)
    {
