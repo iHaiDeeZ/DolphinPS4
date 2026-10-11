@@ -516,3 +516,7 @@ Preparazione del codice del gioco
 Caricamento del codice salvato
 Compilazione del codice del gioco
 Lento solo la prima volta: in seguito si carica il codice salvato.
+# --- Profiler modes
+Automatico
+Sempre
+Automatico: registra dove va il tempo solo quando il gioco rallenta (30 secondi alla volta, poche volte per sessione), così un punto lento si può controllare senza attivare nulla. Sempre: tutto il tempo (costa prestazioni). Disattivo: mai.

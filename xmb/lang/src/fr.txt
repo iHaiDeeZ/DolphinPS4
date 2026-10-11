@@ -516,3 +516,7 @@ Préparation du code du jeu
 Chargement du code enregistré
 Compilation du code du jeu
 Lent seulement la première fois : ensuite le code enregistré est chargé.
+# --- Profiler modes
+Automatique
+Toujours
+Automatique : enregistre où passe le temps seulement quand le jeu ralentit (30 secondes à chaque fois, quelques fois par session), pour vérifier un passage lent sans rien activer. Toujours : en permanence (coûte des performances). Désactivé : jamais.

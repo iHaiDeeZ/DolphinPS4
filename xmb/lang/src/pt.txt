@@ -517,3 +517,7 @@ Preparando o código do jogo
 Carregando código salvo
 Compilando o código do jogo
 Só demora da primeira vez: depois o código salvo é carregado.
+# --- Profiler modes
+Automático
+Sempre
+Automático: registra para onde vai o tempo só quando o jogo fica lento (30 segundos de cada vez, poucas vezes por sessão), assim um trecho lento pode ser verificado sem ligar nada. Sempre: o tempo todo (custa desempenho). Desligado: nunca.

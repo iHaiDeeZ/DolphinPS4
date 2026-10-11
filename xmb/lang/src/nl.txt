@@ -516,3 +516,7 @@ Spelcode voorbereiden
 Bewaarde code laden
 De code van het spel compileren
 Alleen de eerste keer traag: daarna wordt de bewaarde code geladen.
+# --- Profiler modes
+Automatisch
+Altijd
+Automatisch: legt alleen vast waar de tijd heen gaat als het spel traag loopt (telkens 30 seconden, een paar keer per sessie), zodat een trage plek bekeken kan worden zonder iets aan te zetten. Altijd: de hele tijd (kost snelheid). Uit: nooit.

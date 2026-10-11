@@ -21371,7 +21371,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..1a5a5a4 100644
+index 3bf40ea..f097336 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -21886,7 +21886,7 @@ index 3bf40ea..1a5a5a4 100644
 +    // guest address) for the sampled JIT code.
 +    // (Settings > Diagnostics; the sampler itself is started / paused by PS4Settings::ApplyLive.)
 +    Config::SetBase(Config::MAIN_PERF_MAP_DIR, std::string());
-+    if (PS4Settings::DiagnosticOn("profile"))
++    if (Platform::GetPS4Option("profiler", "auto") != "off")
 +      Config::SetBase(Config::MAIN_PERF_MAP_DIR, "/data/DolphinPS4");
 +    {
 +      const std::string cpu = cpu_info.Summarize();
@@ -23794,7 +23794,7 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..b65e647
+index 0000000..ddf43e8
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 @@ -0,0 +1,3216 @@
@@ -25720,7 +25720,7 @@ index 0000000..b65e647
 +  static bool s_done = false;
 +  if (s_done)
 +    return;
-+  if (PS4Settings::Get("profile", s_game_id) != "on")
++  if (PS4Settings::Get("profiler", s_game_id) == "off")
 +    return;
 +  s_done = true;
 +  const std::string game = SConfig::GetInstance().GetGameID();
@@ -27966,10 +27966,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..51193ab
+index 0000000..56ab4c9
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1007 @@
+@@ -0,0 +1,1022 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -28003,6 +28003,9 @@ index 0000000..51193ab
 +extern "C" int ps4_perf_log;        // VideoCommon/Present.cpp
 +extern "C" int ps4_freeze_reports;  // DolphinNoGUI/PlatformPS4.cpp
 +extern "C" void ps4_sampler_set_enabled(int on);  // DolphinPS4 port/ps4_sampler.cpp
++// Profiler "Automatic" (DolphinNoGUI/PlatformPS4.cpp's monitor starts it on slow stretches).
++extern "C" int ps4_profile_auto;
++int ps4_profile_auto = 1;
 +
 +namespace PS4Settings
 +{
@@ -28191,8 +28194,11 @@ index 0000000..51193ab
 +     true, "Where the emulator was stuck when a game freezes, stalls or starts slowly."},
 +    {"emu_log", "Emulator Log", "Diagnostics", {{"on", "On"}, {"off", "Off"}}, "on", true,
 +     "Dolphin's own messages (dolphin.log)."},
-+    {"profile", "Profiler", "Diagnostics", {{"off", "Off"}, {"on", "On"}}, "off", true,
-+     "Records where the time goes (samples.log). Costs speed - only for diagnosing slow games."},
++    {"profiler", "Profiler", "Diagnostics", {{"auto", "Automatic"}, {"on", "Always"}, {"off", "Off"}},
++     "auto", true,
++     "Automatic: records where the time goes only when the game runs slow (30 seconds at a time, a "
++     "few times per session), so a slow spot can be checked without turning anything on. Always: "
++     "the whole time (costs speed). Off: never."},
 +    // Hotkeys (the same for every game)
 +    {"hotkey_save", "Save State", "Hotkeys",
 +     {{"off", "Off"},
@@ -28587,6 +28593,7 @@ index 0000000..51193ab
 +
 +// Diagnostics: each switch's own value; what applies also needs All Diagnostics on.
 +std::map<std::string, bool> s_diagnostics;
++std::string s_profiler_mode = "auto";
 +
 +bool DiagnosticRaw(const std::string& key)
 +{
@@ -28601,7 +28608,9 @@ index 0000000..51193ab
 +{
 +  ps4_perf_log = DiagnosticOn("perf_log") ? 1 : 0;
 +  ps4_freeze_reports = DiagnosticOn("freeze_reports") ? 1 : 0;
-+  ps4_sampler_set_enabled(DiagnosticOn("profile") ? 1 : 0);
++  // Profiler: Always needs All Diagnostics; Automatic doesn't (it only runs on slow stretches).
++  ps4_sampler_set_enabled(DiagnosticOn("profiler") ? 1 : 0);
++  ps4_profile_auto = s_profiler_mode == "auto" ? 1 : 0;
 +  // Dolphin's own log (dolphin.log): the listeners stay registered, only their output stops.
 +  const bool emu_log = DiagnosticOn("emu_log");
 +  auto* log_manager = Common::Log::LogManager::GetInstance();
@@ -28614,6 +28623,10 @@ index 0000000..51193ab
 +
 +bool DiagnosticOn(const std::string& key)
 +{
++  // The performance log (a line every 2 s) and freeze reports cost nothing worth saving: always
++  // on unless switched off themselves, so a slow or stuck game has a log without asking.
++  if (key == "perf_log" || key == "freeze_reports")
++    return DiagnosticRaw(key);
 +  return DiagnosticRaw("diagnostics_all") && DiagnosticRaw(key);
 +}
 +
@@ -28621,9 +28634,11 @@ index 0000000..51193ab
 +{
 +  const bool on = value == "on";
 +  if (key == "diagnostics_all" || key == "perf_log" || key == "freeze_reports" ||
-+      key == "emu_log" || key == "profile")
++      key == "emu_log" || key == "profiler")
 +  {
 +    s_diagnostics[key] = on;
++    if (key == "profiler")
++      s_profiler_mode = value;
 +    ApplyDiagnostics();
 +  }
 +  else if (key == "aspect")
@@ -37180,10 +37195,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..a6c5f8b
+index 0000000..0e69df2
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,2001 @@
+@@ -0,0 +1,2044 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -37274,6 +37289,8 @@ index 0000000..a6c5f8b
 +// Settings > Diagnostics (PS4Settings.cpp): Performance Log (VideoCommon/Present.cpp) and Freeze
 +// Reports (stall, slow start and hang stack dumps, below).
 +extern "C" int ps4_perf_log;
++extern "C" int ps4_profile_auto;               // DolphinNoGUI/PS4Settings.cpp
++extern "C" void ps4_sampler_set_enabled(int on);  // DolphinPS4 port/ps4_sampler.cpp
 +extern "C" {
 +int ps4_freeze_reports = 1;
 +}
@@ -38042,6 +38059,47 @@ index 0000000..a6c5f8b
 +      {
 +        BootTrace(line);
 +        LogProfile();
++      }
++      // Profiler "Automatic": a slow stretch profiles itself - 4 s below full speed, or the frame
++      // rate 20% under the best the game showed at full speed, starts the sampler for 30 s (at most
++      // 5 times a session, 2 minutes apart), so "it's slow here" comes with samples-<ID>.log.
++      if (ps4_profile_auto)
++      {
++        static int s_slow = 0, s_bursts = 0;
++        static long long s_burst_end = -1, s_next_allowed = 30;
++        static double s_best_fps = 0;
++        auto& emu = Core::System::GetInstance();
++        const bool running = Core::GetState(emu) == Core::State::Running;
++        const double speed = perf.GetSpeed(), fps = perf.GetFPS();
++        if (running && speed >= 0.97)
++          s_best_fps = std::max(s_best_fps, fps);
++        if (s_burst_end >= 0)
++        {
++          if (seconds >= s_burst_end)
++          {
++            ps4_sampler_set_enabled(0);
++            s_burst_end = -1;
++            s_next_allowed = seconds + 120;
++            BootTrace("auto profile: done");
++          }
++        }
++        else if (running && seconds >= s_next_allowed && s_bursts < 5)
++        {
++          const bool slow = speed < 0.95 || (s_best_fps >= 25.0 && fps < s_best_fps * 0.8);
++          s_slow = slow ? s_slow + 1 : 0;
++          if (s_slow >= 2)
++          {
++            s_slow = 0;
++            s_bursts++;
++            s_burst_end = seconds + 30;
++            char reason[160];
++            snprintf(reason, sizeof(reason),
++                     "auto profile %d/5: slow (speed %.0f%%, %.1f FPS, best %.0f) - profiling 30 s",
++                     s_bursts, speed * 100.0, fps, s_best_fps);
++            BootTrace(reason);
++            ps4_sampler_set_enabled(1);
++          }
++        }
 +      }
 +
 +      auto& system = Core::System::GetInstance();
@@ -39051,7 +39109,7 @@ index 0000000..a6c5f8b
 +  // the game settings center or the game's own settings say about diagnostics.
 +  if (GetPS4Option("lab_profile", "off") == "on")
 +  {
-+    s_options["profile"] = "on";
++    s_options["profiler"] = "on";
 +    s_options["diagnostics_all"] = "on";
 +    BootTrace("lab_profile: profiling this game");
 +  }

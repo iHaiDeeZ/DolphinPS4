@@ -516,3 +516,7 @@ Spielcode wird vorbereitet
 Gespeicherter Code wird geladen
 Code des Spiels wird übersetzt
 Nur beim ersten Mal langsam: Später wird der gespeicherte Code geladen.
+# --- Profiler modes
+Automatisch
+Immer
+Automatisch: zeichnet nur auf, wohin die Zeit geht, wenn das Spiel langsam läuft (je 30 Sekunden, ein paar Mal pro Sitzung), damit eine langsame Stelle ohne Einschalten geprüft werden kann. Immer: die ganze Zeit (kostet Leistung). Aus: nie.

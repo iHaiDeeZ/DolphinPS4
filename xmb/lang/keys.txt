@@ -518,3 +518,7 @@ Preparing game code
 Loading saved code
 Compiling the game's code
 Only slow the first time: later starts load the saved code.
+# --- Profiler modes
+Automatic
+Always
+Automatic: records where the time goes only when the game runs slow (30 seconds at a time, a few times per session), so a slow spot can be checked without turning anything on. Always: the whole time (costs speed). Off: never.
