@@ -511,3 +511,8 @@ PS4 JIT: un ricompilatore fatto solo per il processore della PS4, ottimizzato gi
 Cache del codice
 Verifica
 Solo PS4 JIT. Attivo: il codice compilato del gioco viene salvato sul disco rigido e ricaricato la volta successiva invece di essere ricompilato (meno scatti nei luoghi già visitati). Disattivo: compilato da capo ogni volta. Verifica: compila da capo e confronta con il codice salvato (un test).
+# --- Preparing game code
+Preparazione del codice del gioco
+Caricamento del codice salvato
+Compilazione del codice del gioco
+Lento solo la prima volta: in seguito si carica il codice salvato.

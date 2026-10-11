@@ -511,3 +511,8 @@ PS4 JIT: ein Recompiler nur für den Prozessor der PS4, wird Spiel für Spiel op
 Code-Cache
 Prüfen
 Nur PS4 JIT. An: Der übersetzte Code des Spiels wird auf der Festplatte gespeichert und beim nächsten Mal geladen statt neu übersetzt (weniger Ruckler an bekannten Orten). Aus: jedes Mal neu übersetzt. Prüfen: übersetzt neu und vergleicht mit dem gespeicherten Code (ein Test).
+# --- Preparing game code
+Spielcode wird vorbereitet
+Gespeicherter Code wird geladen
+Code des Spiels wird übersetzt
+Nur beim ersten Mal langsam: Später wird der gespeicherte Code geladen.

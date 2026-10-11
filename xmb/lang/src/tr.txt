@@ -511,3 +511,8 @@ PS4 JIT: yalnızca PS4 işlemcisi için yapılmış, oyun oyun iyileştirilen bi
 Kod Önbelleği
 Denetle
 Yalnızca PS4 JIT. Açık: oyunun derlenmiş kodu sabit diske kaydedilir ve bir dahaki sefere yeniden derlenmek yerine yüklenir (gidilen yerlerde daha az takılma). Kapalı: her seferinde yeniden derlenir. Denetle: yeniden derler ve kayıtlı kodla karşılaştırır (bir test).
+# --- Preparing game code
+Oyun kodu hazırlanıyor
+Kayıtlı kod yükleniyor
+Oyunun kodu derleniyor
+Yalnızca ilk seferde yavaştır: sonraki açılışlarda kayıtlı kod yüklenir.

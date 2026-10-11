@@ -513,3 +513,8 @@ PS4 JIT: a recompiler made only for the PS4's processor, being optimized game by
 Code Cache
 Check
 PS4 JIT only. On: the game's compiled code is saved to the hard drive and loaded back next time instead of compiled again (fewer stutters in places you've been). Off: compiled fresh every time. Check: compiles fresh and compares with the saved code (a test).
+# --- Preparing game code
+Preparing game code
+Loading saved code
+Compiling the game's code
+Only slow the first time: later starts load the saved code.

@@ -1566,14 +1566,14 @@ index 9d15477..ac60cc5 100644
  
  struct WindowSystemInfo
 diff --git a/Source/Core/Common/x64Emitter.cpp b/Source/Core/Common/x64Emitter.cpp
-index f9a8a01..12aa324 100644
+index f9a8a01..3c64887 100644
 --- a/Source/Core/Common/x64Emitter.cpp
 +++ b/Source/Core/Common/x64Emitter.cpp
 @@ -291,6 +291,9 @@ void OpArg::WriteRest(XEmitter* emit, int extraBytes, X64Reg _operandReg,
                 (distance < 0x80000000LL && distance >= -0x80000000LL) || !warn_64bit_offset,
                 "WriteRest: op out of range ({:#x} uses {:#x})", ripAddr, offset);
      s32 offs = (s32)distance;
-+    if (XEmitter::s_reloc_sink) [[unlikely]]
++    if (emit->Recording()) [[unlikely]]
 +      XEmitter::s_reloc_sink->Rel32(emit->GetWritableCodePtr(), extraBytes,
 +                                    reinterpret_cast<const void*>(offset));
      emit->Write32((u32)offs);
@@ -1583,7 +1583,7 @@ index f9a8a01..12aa324 100644
      ASSERT_MSG(DYNA_REC, distance >= -0x80000000LL && distance < 0x80000000LL,
                 "Jump target too far away ({}), needs indirect register", distance);
      Write8(0xE9);
-+    if (s_reloc_sink) [[unlikely]]
++    if (Recording()) [[unlikely]]
 +      s_reloc_sink->Rel32(code, 0, addr);
      Write32((u32)(s32)distance);
    }
@@ -1592,7 +1592,7 @@ index f9a8a01..12aa324 100644
    ASSERT_MSG(DYNA_REC, distance < 0x0000000080000000ULL || distance >= 0xFFFFFFFF80000000ULL,
               "CALL out of range ({} calls {})", fmt::ptr(code), fmt::ptr(fnptr));
    Write8(0xE8);
-+  if (s_reloc_sink) [[unlikely]]
++  if (Recording()) [[unlikely]]
 +    s_reloc_sink->Rel32(code, 0, fnptr);
    Write32(u32(distance));
  }
@@ -1601,7 +1601,7 @@ index f9a8a01..12aa324 100644
                 "Jump target too far away ({}), needs indirect register", distance);
      Write8(0x0F);
      Write8(0x80 + conditionCode);
-+    if (s_reloc_sink) [[unlikely]]
++    if (Recording()) [[unlikely]]
 +      s_reloc_sink->Rel32(code, 0, addr);
      Write32((u32)(s32)distance);
    }
@@ -1610,7 +1610,7 @@ index f9a8a01..12aa324 100644
  
      s32 valid_distance = static_cast<s32>(distance);
      std::memcpy(&branch.ptr[-4], &valid_distance, sizeof(s32));
-+    if (s_reloc_sink) [[unlikely]]
++    if (Recording()) [[unlikely]]
 +      s_reloc_sink->Rel32(branch.ptr - 4, 0, code);
    }
  }
@@ -1619,16 +1619,16 @@ index f9a8a01..12aa324 100644
          if (static_cast<s64>(operand.offset) != static_cast<s32>(operand.offset))
          {
            emit->Write8(0xB8 + (offsetOrBaseReg & 7));
-+          if (XEmitter::s_reloc_sink) [[unlikely]]
++          if (emit->Recording()) [[unlikely]]
 +            XEmitter::s_reloc_sink->Imm64(emit->GetWritableCodePtr(), operand.offset);
            emit->Write64(operand.offset);
            return;
          }
 diff --git a/Source/Core/Common/x64Emitter.h b/Source/Core/Common/x64Emitter.h
-index 35d88a4..5fc4eef 100644
+index 35d88a4..c555286 100644
 --- a/Source/Core/Common/x64Emitter.h
 +++ b/Source/Core/Common/x64Emitter.h
-@@ -326,6 +326,19 @@ struct FixupBranch
+@@ -326,6 +326,23 @@ struct FixupBranch
  class XEmitter
  {
    friend struct OpArg;  // for Write8 etc
@@ -1643,7 +1643,11 @@ index 35d88a4..5fc4eef 100644
 +    virtual void Rel32(u8* disp, int extra, const void* target) = 0;
 +    virtual void Imm64(u8* at, u64 value) = 0;
 +  };
-+  static inline thread_local RelocSink* s_reloc_sink = nullptr;
++  // Only the emitter being recorded reports (plain globals: other threads' emitters - vertex
++  // loaders, the DSP JIT - just see a different emitter).
++  static inline RelocSink* s_reloc_sink = nullptr;
++  static inline const XEmitter* s_reloc_emitter = nullptr;
++  bool Recording() const { return s_reloc_emitter == this && s_reloc_sink; }
 +
  private:
    // Pointer to memory where code will be emitted to.
@@ -9531,10 +9535,10 @@ index 0000000..482d3bc
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
 new file mode 100644
-index 0000000..0b56bf1
+index 0000000..c936aa2
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
-@@ -0,0 +1,1601 @@
+@@ -0,0 +1,1654 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10627,6 +10631,15 @@ index 0000000..0b56bf1
 +  }
 +  FreeRanges();
 +
++  // The first time the game's own code runs: the game's code loaded from the cache and the rest
++  // compiled, before it goes on (CodeCache::Prepare). The block may be among them.
++  if (m_code_cache.Prepare(em_address) &&
++      blocks.GetBlockFromStartAddress(em_address, m_ppc_state.feature_flags))
++  {
++    return;
++  }
++  FreeRanges();
++
 +  // Compiled in an earlier run and saved (CodeCache): copied in, nothing to analyse or compile.
 +  if (SetEmitterStateToFreeCodeRegion() && m_code_cache.Restore(em_address))
 +    return;
@@ -10697,6 +10710,49 @@ index 0000000..0b56bf1
 +  PanicAlertFmtT("JIT failed to find code space after a cache clear. This should never happen. "
 +                 "Please report this incident on the bug tracker. Dolphin will now exit.");
 +  std::exit(-1);
++}
++
++bool JitPS4::PS4PrecompileBlock(u32 em_address)
++{
++  const auto translated = m_mmu.JitCache_TranslateAddress(em_address);
++  if (!translated.valid || blocks.GetBlockFromStartAddress(em_address, m_ppc_state.feature_flags))
++    return true;
++  std::size_t block_size = m_code_buffer.size();
++  const u32 nextPC = analyzer.Analyze(em_address, &code_block, &m_code_buffer, block_size);
++  if (code_block.m_memory_exception || code_block.m_num_instructions == 0 ||
++      ComputeStaticGQRs(code_block))
++  {
++    return true;
++  }
++  if (!SetEmitterStateToFreeCodeRegion())
++    return false;
++  u8* near_start = GetWritableCodePtr();
++  u8* far_start = m_far_code.GetWritableCodePtr();
++  JitBlock* b = blocks.AllocateBlock(em_address);
++  m_ps4_precompiling = true;
++  m_code_cache.BeginBlock();
++  const bool compiled = DoJit(em_address, b, nextPC);
++  m_code_cache.EndBlock();
++  m_ps4_precompiling = false;
++  if (!compiled)
++  {
++    // Out of code space: start clean, the game compiles what it needs.
++    ClearCache();
++    return false;
++  }
++  u8* near_end = GetWritableCodePtr();
++  if (near_start != near_end)
++    m_free_ranges_near.erase(near_start, near_end);
++  u8* far_end = m_far_code.GetWritableCodePtr();
++  if (far_start != far_end)
++    m_free_ranges_far.erase(far_start, far_end);
++  b->near_begin = near_start;
++  b->near_end = near_end;
++  b->far_begin = far_start;
++  b->far_end = far_end;
++  m_code_cache.Add(*b, code_block);
++  blocks.FinalizeBlock(*b, jo.enableBlocklink, code_block, m_code_buffer);
++  return true;
 +}
 +
 +bool JitPS4::SetEmitterStateToFreeCodeRegion()
@@ -10780,7 +10836,8 @@ index 0000000..0b56bf1
 +    }
 +  }
 +
-+  if (!js.noSpeculativeConstantsAddresses.contains(js.blockStart))
++  // (Not ahead of time: the registers then say nothing about the block.)
++  if (!js.noSpeculativeConstantsAddresses.contains(js.blockStart) && !m_ps4_precompiling)
 +  {
 +    IntializeSpeculativeConstants();
 +  }
@@ -11138,10 +11195,10 @@ index 0000000..0b56bf1
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.h b/Source/Core/Core/PowerPC/JitPS4/Jit.h
 new file mode 100644
-index 0000000..91b1ec2
+index 0000000..dad23e5
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.h
-@@ -0,0 +1,323 @@
+@@ -0,0 +1,327 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11447,6 +11504,10 @@ index 0000000..91b1ec2
 +
 +  static inline JitPS4* s_ps4_active = nullptr;
 +  CodeCache m_code_cache{*this};
++  // CodeCache::Prepare: compiles the block at em_address before the game gets there (false: no
++  // code space left). Blocks that would rely on the moment's GQRs are left for the game.
++  bool PS4PrecompileBlock(u32 em_address);
++  bool m_ps4_precompiling = false;
 +
 +
 +
@@ -23733,10 +23794,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..a4ae28a
+index 0000000..b65e647
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,3183 @@
+@@ -0,0 +1,3216 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -23815,6 +23876,8 @@ index 0000000..a4ae28a
 +using VideoCommon::ps4_overlay_font;
 +using VideoCommon::ps4_overlay_font_regular;
 +extern std::atomic<int> ps4_state_busy;  // Core/State.cpp
++// The PS4 JIT preparing the game's code (Core/PowerPC/JitPS4/CodeCache.cpp).
++extern "C" std::atomic<int> ps4_prepare_phase, ps4_prepare_done, ps4_prepare_total;
 +extern "C" int ps4_film_record;               // VideoCommon/Present.cpp: the rewind film
 +extern "C" long long ps4_film_drop_after_ms;
 +extern "C" int ps4_film_frames(long long newer_than_ms, long long up_to_ms, void** textures,
@@ -26164,8 +26227,9 @@ index 0000000..a4ae28a
 +          std::min({1.0f, (hint_time - 3.0f) / 0.4f, (10.0f - hint_time) / 0.6f});
 +  if (s_rewind_fx && now > s_rewind_fx_end)
 +    s_rewind_fx = false;
++  const int prepare = ps4_prepare_phase.load(std::memory_order_relaxed);
 +  if (s_appear < 0.01f && !toast && hint_alpha <= 0.0f && s_popups.empty() &&
-+      s_banners.empty() && !s_rewind_fx)
++      s_banners.empty() && !s_rewind_fx && !prepare)
 +    return;
 +
 +  ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -26173,6 +26237,35 @@ index 0000000..a4ae28a
 +  ImFont* bold = ps4_overlay_font ? ps4_overlay_font : ImGui::GetFont();
 +  ImFont* regular = ps4_overlay_font_regular ? ps4_overlay_font_regular : bold;
 +  const float s = size.y / 1080.0f;  // layout in 1080p units
++  if (prepare)
++  {
++    // The PS4 JIT preparing the game's code before it starts (Core/PowerPC/JitPS4/CodeCache.cpp),
++    // like RPCS3's "Compiling PPU modules": a card in the middle with a progress bar.
++    ps4_overlay_repaint = 1;
++    const int done = ps4_prepare_done.load(std::memory_order_relaxed);
++    const int total = std::max(1, ps4_prepare_total.load(std::memory_order_relaxed));
++    const float frac = std::clamp(static_cast<float>(done) / total, 0.0f, 1.0f);
++    const float w = 860 * s, h = 230 * s;
++    const ImVec2 a((size.x - w) / 2, (size.y - h) / 2), b(a.x + w, a.y + h);
++    dl->AddRectFilled(ImVec2(0, 0), size, IM_COL32(0, 0, 0, 150));
++    BevelBox(dl, a, b, IM_COL32(26, 44, 86, 240), IM_COL32(8, 18, 42, 240),
++             IM_COL32(120, 196, 255, 130), 18 * s, 1.0f, s, true);
++    const std::string title = PS4Lang::T("Preparing game code");
++    const std::string step = std::string(PS4Lang::T(prepare == 1 ? "Loading saved code" :
++                                                                   "Compiling the game's code")) +
++                             "  " + std::to_string(done) + " / " + std::to_string(total);
++    dl->AddText(bold, 40 * s, ImVec2(a.x + 44 * s, a.y + 30 * s), IM_COL32(255, 255, 255, 255),
++                title.c_str());
++    dl->AddText(regular, 28 * s, ImVec2(a.x + 44 * s, a.y + 88 * s),
++                IM_COL32(200, 220, 255, 230), step.c_str());
++    const ImVec2 bar_a(a.x + 44 * s, a.y + 140 * s), bar_b(b.x - 44 * s, a.y + 158 * s);
++    dl->AddRectFilled(bar_a, bar_b, IM_COL32(255, 255, 255, 40), 9 * s);
++    dl->AddRectFilled(bar_a, ImVec2(bar_a.x + (bar_b.x - bar_a.x) * frac, bar_b.y),
++                      IM_COL32(120, 196, 255, 255), 9 * s);
++    dl->AddText(regular, 24 * s, ImVec2(a.x + 44 * s, a.y + 176 * s),
++                IM_COL32(200, 220, 255, 170),
++                PS4Lang::T("Only slow the first time: later starts load the saved code."));
++  }
 +  if (DrawPopup(dl, bold, regular, s, now))
 +    ps4_overlay_repaint = 1;  // keep animating while paused
 +  if (s_rewind_fx)
@@ -26911,7 +27004,8 @@ index 0000000..a4ae28a
 +  bool redraw;
 +  {
 +    std::lock_guard lock(s_mutex);
-+    redraw = s_open || s_appear > 0.01f || Clock::now() < s_toast_until;
++    redraw = s_open || s_appear > 0.01f || Clock::now() < s_toast_until ||
++             ps4_prepare_phase.load(std::memory_order_relaxed) != 0;
 +  }
 +  if (redraw)
 +  {
@@ -46634,16 +46728,18 @@ index c56f32c..64e5240 100644
  
 diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 new file mode 100755
-index 0000000..f062744
+index 0000000..6486a88
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
-@@ -0,0 +1,863 @@
+@@ -0,0 +1,948 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
 +#include "Core/PowerPC/JitPS4/CodeCache.h"
 +
 +#include <algorithm>
++#include <atomic>
++#include <chrono>
 +#include <cstdio>
 +#include <cstring>
 +#include <type_traits>
@@ -46654,7 +46750,9 @@ index 0000000..f062744
 +#include "Core/HW/Memmap.h"
 +#include "Core/PowerPC/JitCommon/JitCache.h"
 +#include "Core/PowerPC/JitPS4/Jit.h"
++#include "Core/Core.h"
 +#include "Core/PowerPC/PPCAnalyst.h"
++#include "Core/PowerPC/PPCSymbolDB.h"
 +#include "Core/PowerPC/PowerPC.h"
 +#include "Core/System.h"
 +
@@ -46663,6 +46761,10 @@ index 0000000..f062744
 +// ps4.ini / menu jit_cache (DolphinNoGUI/MainNoGUI.cpp): 0 off, 1 on, 2 check.
 +extern "C" int ps4_jit_cache;
 +int ps4_jit_cache = 1;
++// The "Preparing game code" card (DolphinNoGUI/PS4IngameMenu.cpp): 0 hidden, 1 loading saved
++// code, 2 compiling; done of total.
++extern "C" std::atomic<int> ps4_prepare_phase, ps4_prepare_done, ps4_prepare_total;
++std::atomic<int> ps4_prepare_phase{0}, ps4_prepare_done{0}, ps4_prepare_total{0};
 +
 +// The JIT switches that change the code it writes (defined in Core/PowerPC/Jit64).
 +extern "C" int ps4_gp_fuse, ps4_lazy_lfs, ps4_jit_inline_dispatch, ps4_jit_lazy_pc,
@@ -46879,6 +46981,7 @@ index 0000000..f062744
 +  m_mode = ps4_jit_cache == 0 ? Mode::Off : ps4_jit_cache == 2 ? Mode::Check : Mode::On;
 +  m_opened = false;
 +  m_ready = false;
++  m_prepared = false;
 +  m_dirty = false;
 +  m_blobs.clear();
 +  m_index.clear();
@@ -47093,6 +47196,7 @@ index 0000000..f062744
 +  m_backpatches.clear();
 +  m_recording = true;
 +  Gen::XEmitter::s_reloc_sink = this;
++  Gen::XEmitter::s_reloc_emitter = static_cast<const Gen::XEmitter*>(&m_jit);
 +  m_jit.m_ps4_backpatch_log = &m_backpatches;
 +}
 +
@@ -47101,8 +47205,83 @@ index 0000000..f062744
 +  if (!m_recording)
 +    return;
 +  m_recording = false;
++  Gen::XEmitter::s_reloc_emitter = nullptr;
 +  Gen::XEmitter::s_reloc_sink = nullptr;
 +  m_jit.m_ps4_backpatch_log = nullptr;
++}
++
++bool CodeCache::Prepare(u32 em_address)
++{
++  // The game's own code (its main program), not the BIOS (0x81300000+), the apploader
++  // (0x81200000+) or the exception vectors below 0x80003100.
++  if (m_prepared || m_mode != Mode::On || em_address < 0x80003100 || em_address >= 0x81200000)
++    return false;
++  if (!Ready())
++    return false;
++  m_prepared = true;
++  const auto start = std::chrono::steady_clock::now();
++  const CPUEmuFeatureFlags flags = m_jit.m_ppc_state.feature_flags;
++
++  // Everything saved for this CPU mode whose code is in memory now (code the game loads later is
++  // put in place when it gets there).
++  std::vector<u32> saved;
++  for (const auto& [key, index] : m_index)
++  {
++    if (u32(key >> 32) == flags)
++      saved.push_back(u32(key));
++  }
++  std::sort(saved.begin(), saved.end());
++  ps4_prepare_total = static_cast<int>(saved.size());
++  ps4_prepare_done = 0;
++  ps4_prepare_phase = 1;
++  const u64 restored_before = m_stats.restored;
++  for (size_t i = 0; i < saved.size(); i++)
++  {
++    if (!m_jit.blocks.GetBlockFromStartAddress(saved[i], flags))
++    {
++      m_jit.FreeRanges();
++      if (m_jit.SetEmitterStateToFreeCodeRegion())
++        Restore(saved[i]);
++    }
++    ps4_prepare_done = static_cast<int>(i + 1);
++  }
++  const u64 loaded = m_stats.restored - restored_before;
++
++  // Then every function of the game not compiled yet (found the way Dolphin's debugger finds
++  // them: from its prologues and calls).
++  PPCSymbolDB db;
++  {
++    const Core::CPUThreadGuard guard(m_jit.m_system);
++    auto& memory = m_jit.m_system.GetMemory();
++    PPCAnalyst::FindFunctions(guard, Memory::MEM1_BASE_ADDR,
++                              Memory::MEM1_BASE_ADDR + memory.GetRamSizeReal(), &db);
++  }
++  std::vector<u32> functions;
++  db.ForEachSymbol([&](const Common::Symbol& symbol) {
++    if (symbol.address >= 0x80003100 && symbol.address < 0x81200000)
++      functions.push_back(symbol.address);
++  });
++  ps4_prepare_total = static_cast<int>(functions.size());
++  ps4_prepare_done = 0;
++  ps4_prepare_phase = 2;
++  const u64 compiled_before = m_stats.compiled;
++  for (size_t i = 0; i < functions.size(); i++)
++  {
++    m_jit.FreeRanges();
++    if (!m_jit.PS4PrecompileBlock(functions[i]))
++      break;
++    ps4_prepare_done = static_cast<int>(i + 1);
++  }
++  const u64 compiled = m_stats.compiled - compiled_before;
++  Save();
++  ps4_prepare_phase = 0;
++  const auto ms =
++      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)
++          .count();
++  Trace("prepared the game's code before it started: " + std::to_string(loaded) +
++        " blocks loaded, " + std::to_string(compiled) + " compiled (" +
++        std::to_string(functions.size()) + " functions found) in " + std::to_string(ms) + " ms");
++  return true;
 +}
 +
 +void CodeCache::Rel32(u8* disp, int extra, const void* target)
@@ -47503,10 +47682,10 @@ index 0000000..f062744
 +}
 diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.h b/Source/Core/Core/PowerPC/JitPS4/CodeCache.h
 new file mode 100755
-index 0000000..0d138a3
+index 0000000..5cc0b5a
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.h
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,115 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -47547,6 +47726,11 @@ index 0000000..0d138a3
 +  void Stop();
 +  void Save();
 +
++  // JitPS4::Jit: the first time the game's own code runs (not the BIOS or apploader), before it
++  // goes on - like RPCS3 preparing PPU modules: every saved block of the game put in place, then
++  // the game's other functions compiled and saved, with a progress card on screen. True if this
++  // call did it.
++  bool Prepare(u32 em_address);
 +  // JitPS4::Jit, before analysing: the saved copy of the block at em_address put in place.
 +  bool Restore(u32 em_address);
 +  // Around DoJit: records every address the new block's code refers to.
@@ -47596,6 +47780,7 @@ index 0000000..0d138a3
 +  Mode m_mode = Mode::Off;
 +  bool m_opened = false;
 +  bool m_ready = false;
++  bool m_prepared = false;
 +  bool m_dirty = false;
 +  bool m_recording = false;
 +  std::string m_path;
