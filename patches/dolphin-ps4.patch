@@ -37180,10 +37180,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..faeac76
+index 0000000..a6c5f8b
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,1990 @@
+@@ -0,0 +1,2001 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -38580,6 +38580,8 @@ index 0000000..faeac76
 +// The game this process booted (its first disc). The in-game menu's Restart Game: launch.txt
 +// names it again, so the restarted app boots it the way the menu starts games.
 +std::string s_booted_game;
++// The first disc of the game being booted (ps4_boot_disc_path).
++std::string s_boot_disc;
 +// launch.txt's "disc=" line: the disc in the drive while a homebrew program runs (Play Online
 +// with Wiimmfi: the Wiimmfi Patcher patches that game and starts it).
 +std::string s_launch_disc;
@@ -38611,6 +38613,13 @@ index 0000000..faeac76
 +extern "C" void ps4_update_started_ok()
 +{
 +  std::remove(UPDATE_PENDING.c_str());
++}
++
++// The PS4 JIT's code cache (Core/PowerPC/JitPS4/CodeCache.cpp) reads the game's main program
++// from the disc before the BIOS runs.
++extern "C" const char* ps4_boot_disc_path()
++{
++  return s_boot_disc.c_str();
 +}
 +
 +// Core/State.cpp: save states name the app version that made them.
@@ -38983,6 +38992,8 @@ index 0000000..faeac76
 +    else
 +    for (const std::string& disc : FindAllDiscs(game))
 +    {
++      if (s_boot_disc.empty())
++        s_boot_disc = disc;
 +      fprintf(stderr, "[dolphin] booting %s\n", disc.c_str());
 +      BootTrace(("boot: " + disc).c_str());
 +      args.push_back("--exec=" + disc);
@@ -44605,7 +44616,7 @@ index 976592c..a20137f 100644
    void UpdateInterruptsFromVideoBackend(u64 userdata);
  
 diff --git a/Source/Core/VideoCommon/Fifo.cpp b/Source/Core/VideoCommon/Fifo.cpp
-index f183c93..f127344 100644
+index f183c93..48b336d 100644
 --- a/Source/Core/VideoCommon/Fifo.cpp
 +++ b/Source/Core/VideoCommon/Fifo.cpp
 @@ -3,6 +3,10 @@
@@ -44672,7 +44683,7 @@ index f183c93..f127344 100644
  }
  
  // The deterministic_gpu_thread version.
-@@ -283,16 +311,70 @@ void FifoManager::ResetVideoBuffer()
+@@ -283,16 +311,83 @@ void FifoManager::ResetVideoBuffer()
  
  // Description: Main FIFO update loop
  // Purpose: Keep the Core HW updated about the CPU-GPU distance
@@ -44707,6 +44718,11 @@ index f183c93..f127344 100644
 +// video thread presents the last frame again, with the menu drawn over it.
 +std::atomic<int> ps4_overlay_repaint{0};
 +#endif
++#ifdef __ORBIS__
++// The PS4 JIT preparing the game's code (Core/PowerPC/JitPS4/CodeCache.cpp): emulation counts
++// as running but the CPU thread is busy compiling, so the video thread shows the progress card.
++extern "C" std::atomic<int> ps4_prepare_phase;
++#endif
 +
  void FifoManager::RunGpuLoop()
  {
@@ -44730,6 +44746,14 @@ index f183c93..f127344 100644
 +#endif
          // Run events from the CPU thread.
          AsyncRequests::GetInstance()->PullEvents();
++#ifdef __ORBIS__
++        if (ps4_prepare_phase.load(std::memory_order_relaxed) &&
++            ps4_overlay_repaint.exchange(0) && g_presenter)
++        {
++          g_presenter->Present(nullptr);
++          return;
++        }
++#endif
  
          // Do nothing while paused
          if (!m_emu_running_state.IsSet())
@@ -44743,7 +44767,7 @@ index f183c93..f127344 100644
  
          if (m_use_deterministic_gpu_thread)
          {
-@@ -302,6 +384,7 @@ void FifoManager::RunGpuLoop()
+@@ -302,6 +397,7 @@ void FifoManager::RunGpuLoop()
            // See comment in SyncGPU
            if (write_ptr > seen_ptr)
            {
@@ -44751,7 +44775,7 @@ index f183c93..f127344 100644
              m_video_buffer_read_ptr =
                  OpcodeDecoder::RunFifo(DataReader(m_video_buffer_read_ptr, write_ptr), nullptr);
              m_video_buffer_seen_ptr = write_ptr;
-@@ -312,6 +395,9 @@ void FifoManager::RunGpuLoop()
+@@ -312,6 +408,9 @@ void FifoManager::RunGpuLoop()
            auto& command_processor = m_system.GetCommandProcessor();
            auto& fifo = command_processor.GetFifo();
            command_processor.SetCPStatusFromGPU();
@@ -44761,7 +44785,7 @@ index f183c93..f127344 100644
  
            // check if we are able to run this buffer
            while (!command_processor.IsInterruptWaiting() &&
-@@ -323,28 +409,60 @@ void FifoManager::RunGpuLoop()
+@@ -323,28 +422,60 @@ void FifoManager::RunGpuLoop()
                break;
  
              u32 cyclesExecuted = 0;
@@ -44831,7 +44855,7 @@ index f183c93..f127344 100644
              if ((write_ptr - m_video_buffer_read_ptr) == 0)
              {
                fifo.SafeCPReadPointer.store(fifo.CPReadPointer.load(std::memory_order_relaxed),
-@@ -381,8 +499,34 @@ void FifoManager::RunGpuLoop()
+@@ -381,8 +512,34 @@ void FifoManager::RunGpuLoop()
  
            // The fifo is empty and it's unlikely we will get any more work in the near future.
            // Make sure VertexManager finishes drawing any primitives it has stored in it's buffer.
@@ -44866,7 +44890,7 @@ index f183c93..f127344 100644
          }
        },
        100);
-@@ -393,9 +537,58 @@ void FifoManager::FlushGpu()
+@@ -393,9 +550,58 @@ void FifoManager::FlushGpu()
    if (!m_system.IsDualCoreMode() || m_use_deterministic_gpu_thread)
      return;
  
@@ -44925,7 +44949,7 @@ index f183c93..f127344 100644
  void FifoManager::GpuMaySleep()
  {
    m_gpu_mainloop.AllowSleep();
-@@ -551,7 +744,10 @@ int FifoManager::WaitForGpuThread(int ticks)
+@@ -551,7 +757,10 @@ int FifoManager::WaitForGpuThread(int ticks)
  
    // Wait for GPU
    if (now >= m_config_sync_gpu_max_distance)
@@ -46728,10 +46752,10 @@ index c56f32c..64e5240 100644
  
 diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 new file mode 100755
-index 0000000..6486a88
+index 0000000..8e522df
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
-@@ -0,0 +1,948 @@
+@@ -0,0 +1,1196 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -46746,6 +46770,8 @@ index 0000000..6486a88
 +
 +#include "Common/FileUtil.h"
 +#include "Common/IOFile.h"
++#include "DiscIO/DiscUtils.h"
++#include "DiscIO/Volume.h"
 +#include "Core/ConfigManager.h"
 +#include "Core/HW/Memmap.h"
 +#include "Core/PowerPC/JitCommon/JitCache.h"
@@ -46757,6 +46783,7 @@ index 0000000..6486a88
 +#include "Core/System.h"
 +
 +extern "C" void ps4_boot_trace(const char* line);  // DolphinPS4 port/ps4_crashlog.cpp
++extern "C" const char* ps4_boot_disc_path();  // DolphinNoGUI/PlatformPS4.cpp
 +extern "C" char __text_start[], __eh_frame_start[];  // OpenOrbis link.x: .text and .rodata
 +// ps4.ini / menu jit_cache (DolphinNoGUI/MainNoGUI.cpp): 0 off, 1 on, 2 check.
 +extern "C" int ps4_jit_cache;
@@ -46778,7 +46805,7 @@ index 0000000..6486a88
 +namespace
 +{
 +// Bumped whenever the file layout or what a block's code may refer to changes.
-+constexpr u32 FORMAT_VERSION = 1;
++constexpr u32 FORMAT_VERSION = 2;
 +constexpr u32 FILE_MAGIC = 0x434A5044;  // "DPJC"
 +// Kept in memory and on disk at most (the file is read whole at the start).
 +constexpr size_t MAX_BYTES = 64 * 1024 * 1024;
@@ -46794,8 +46821,9 @@ index 0000000..6486a88
 +};
 +
 +// A saved block: BlobHeader, then num_ranges pairs of u32 (the guest code's physical address
-+// ranges), BlobConst, BlobReloc, BlobLink and BlobBackPatch arrays, then the near and the far
-+// code bytes as compiled (before linking or backpatching).
++// ranges), BlobConst, BlobReloc, BlobLink and BlobBackPatch arrays, num_ops u32 (the block's
++// instruction addresses; bit 0: the JIT knew it writes to the GPU FIFO), then the near and the
++// far code bytes as compiled (before linking or backpatching).
 +struct BlobHeader
 +{
 +  u32 em_address;
@@ -46811,8 +46839,16 @@ index 0000000..6486a88
 +  u16 num_relocs;
 +  u16 num_links;
 +  u16 num_backpatches;
-+  u16 reserved;
++  u16 num_ops;
++  // What the JIT had learned about the block's start when it compiled it (KNOW_*).
++  u32 knowledge;
++  u32 reserved;
 +};
++// The JIT learns these while a game runs (JitInterface::CompileExceptionCheck) and then compiles
++// the block again; a saved copy made before it knew must not come back.
++constexpr u32 KNOW_PAIRED_QUANTIZE = 1;  // its GQRs aren't constant
++constexpr u32 KNOW_NO_SPECULATION = 2;   // no speculative constants
++constexpr u32 OP_FIFO_WRITE = 1;
 +struct BlobConst
 +{
 +  u64 source;  // the constant's address in the emulator (.rodata/.data: the same every run)
@@ -46930,6 +46966,7 @@ index 0000000..6486a88
 +  const BlobReloc* relocs;
 +  const BlobLink* links;
 +  const BlobBackPatch* backpatches;
++  const u32* ops;
 +  const u8* near_code;
 +  const u8* far_code;
 +};
@@ -46948,11 +46985,13 @@ index 0000000..6486a88
 +  out->links = reinterpret_cast<const BlobLink*>(r.Skip(h.num_links * sizeof(BlobLink)));
 +  out->backpatches =
 +      reinterpret_cast<const BlobBackPatch*>(r.Skip(h.num_backpatches * sizeof(BlobBackPatch)));
++  out->ops = reinterpret_cast<const u32*>(r.Skip(h.num_ops * 4));
 +  out->near_code = r.Skip(h.near_size);
 +  out->far_code = r.Skip(h.far_size);
 +  return (h.num_ranges == 0 || out->ranges) && (h.num_consts == 0 || out->consts) &&
 +         (h.num_relocs == 0 || out->relocs) && (h.num_links == 0 || out->links) &&
-+         (h.num_backpatches == 0 || out->backpatches) && out->near_code &&
++         (h.num_backpatches == 0 || out->backpatches) && (h.num_ops == 0 || out->ops) &&
++         out->near_code &&
 +         (h.far_size == 0 || out->far_code);
 +}
 +
@@ -46962,6 +47001,55 @@ index 0000000..6486a88
 +  T value;
 +  std::memcpy(&value, reinterpret_cast<const u8*>(array) + i * sizeof(T), sizeof(T));
 +  return value;
++}
++
++template <typename JitState>
++u32 BlockKnowledge(const JitState& js, u32 em_address)
++{
++  return (js.pairedQuantizeAddresses.contains(em_address) ? KNOW_PAIRED_QUANTIZE : 0) |
++         (js.noSpeculativeConstantsAddresses.contains(em_address) ? KNOW_NO_SPECULATION : 0);
++}
++
++// The saved copy was compiled knowing what the JIT knows now about its instructions.
++template <typename JitState>
++bool SameKnowledge(const Parsed& p, const JitState& js)
++{
++  if (BlockKnowledge(js, p.header.em_address) != p.header.knowledge)
++    return false;
++  for (u16 i = 0; i < p.header.num_ops; i++)
++  {
++    const u32 op = Item(p.ops, i);
++    if (js.fifoWriteAddresses.contains(op & ~3u) != ((op & OP_FIFO_WRITE) != 0))
++      return false;
++  }
++  return true;
++}
++
++void PutSet(std::vector<u8>* out, const std::unordered_set<u32>& set)
++{
++  Writer w(out);
++  w.Put(static_cast<u32>(set.size()));
++  for (u32 address : set)
++    w.Put(address);
++}
++
++void GetSet(Reader* r, std::unordered_set<u32>* set)
++{
++  u32 count;
++  if (!r->Get(&count))
++    return;
++  for (u32 i = 0; i < count; i++)
++  {
++    u32 address;
++    if (!r->Get(&address))
++      return;
++    set->insert(address);
++  }
++}
++
++u32 BE32(const u8* p)
++{
++  return (u32(p[0]) << 24) | (u32(p[1]) << 16) | (u32(p[2]) << 8) | p[3];
 +}
 +
 +std::vector<std::pair<u32, u32>> Ranges(const Parsed& p)
@@ -46982,6 +47070,8 @@ index 0000000..6486a88
 +  m_opened = false;
 +  m_ready = false;
 +  m_prepared = false;
++  m_disc_prepared = false;
++  m_disc_compiled = false;
 +  m_dirty = false;
 +  m_blobs.clear();
 +  m_index.clear();
@@ -47139,6 +47229,11 @@ index 0000000..6486a88
 +    m_blobs.emplace_back(blob, blob + blob_size);
 +    m_bytes += blob_size;
 +  }
++  // What the JIT learned in earlier runs: known from the start, so blocks compile the way they
++  // were saved.
++  GetSet(&r, &m_jit.js.fifoWriteAddresses);
++  GetSet(&r, &m_jit.js.pairedQuantizeAddresses);
++  GetSet(&r, &m_jit.js.noSpeculativeConstantsAddresses);
 +  m_stats.loaded = m_blobs.size();
 +  Trace("loaded " + std::to_string(m_blobs.size()) + " blocks (" +
 +        std::to_string(m_bytes / 1024) + " KiB) from " + m_path);
@@ -47157,6 +47252,9 @@ index 0000000..6486a88
 +    w.Put(static_cast<u32>(blob.size()));
 +    w.Bytes(blob.data(), blob.size());
 +  }
++  PutSet(&data, m_jit.js.fifoWriteAddresses);
++  PutSet(&data, m_jit.js.pairedQuantizeAddresses);
++  PutSet(&data, m_jit.js.noSpeculativeConstantsAddresses);
 +  // Written beside, then renamed: a power cut mid-write leaves the old file.
 +  const std::string temp = m_path + ".new";
 +  {
@@ -47176,11 +47274,12 @@ index 0000000..6486a88
 +  char line[256];
 +  snprintf(line, sizeof(line),
 +           "saved %zu blocks (%zu KiB); this run: %llu loaded from the cache, %llu compiled (%llu "
-+           "changed since saved), %llu not saveable (last: %s), %llu no code space; check: %llu "
-+           "compared, %llu differed",
++           "changed since saved, %llu recompiled with new knowledge), %llu not saveable (last: "
++           "%s), %llu no code space; check: %llu compared, %llu differed",
 +           m_blobs.size(), m_bytes / 1024, static_cast<unsigned long long>(m_stats.restored),
 +           static_cast<unsigned long long>(m_stats.compiled),
 +           static_cast<unsigned long long>(m_stats.stale),
++           static_cast<unsigned long long>(m_stats.relearned),
 +           static_cast<unsigned long long>(m_stats.unsaved), m_stats.last_unsaved,
 +           static_cast<unsigned long long>(m_stats.no_space),
 +           static_cast<unsigned long long>(m_stats.checked),
@@ -47210,12 +47309,160 @@ index 0000000..6486a88
 +  m_jit.m_ps4_backpatch_log = nullptr;
 +}
 +
++void CodeCache::PrepareFromDisc()
++{
++  const auto start = std::chrono::steady_clock::now();
++  const char* path = ps4_boot_disc_path();
++  std::unique_ptr<DiscIO::Volume> volume = path && *path ? DiscIO::CreateVolume(path) : nullptr;
++  if (!volume)
++  {
++    Trace("no disc to read the game's code from");
++    return;
++  }
++  const DiscIO::Partition partition = volume->GetGamePartition();
++  const auto dol_offset = DiscIO::GetBootDOLOffset(*volume, partition);
++  const auto dol_size = dol_offset ? DiscIO::GetBootDOLSize(*volume, partition, *dol_offset) :
++                                     std::nullopt;
++  std::vector<u8> dol(dol_size.value_or(0));
++  if (dol.size() < 0x100 || !volume->Read(*dol_offset, dol.size(), dol.data(), partition))
++  {
++    Trace("couldn't read the game's main program from the disc");
++    return;
++  }
++
++  // Its code sections, put where the game will have them (what is there now is put back after).
++  auto& system = m_jit.m_system;
++  auto& memory = system.GetMemory();
++  struct Section
++  {
++    u32 address;
++    std::vector<u8> code;
++    std::vector<u8> before;
++  };
++  std::vector<Section> sections;
++  for (int i = 0; i < 7; i++)
++  {
++    const u32 offset = BE32(&dol[i * 4]);
++    const u32 address = BE32(&dol[0x48 + i * 4]);
++    const u32 size = BE32(&dol[0x90 + i * 4]);
++    const u32 ram = address & 0x3FFFFFFF;
++    if (size == 0 || u64(offset) + size > dol.size() || (address >> 28) != 0x8 ||
++        u64(ram) + size > memory.GetRamSizeReal() || !memory.GetRAM())
++    {
++      continue;
++    }
++    Section section{address, std::vector<u8>(dol.begin() + offset, dol.begin() + offset + size),
++                    std::vector<u8>(memory.GetRAM() + ram, memory.GetRAM() + ram + size)};
++    std::memcpy(memory.GetRAM() + ram, section.code.data(), size);
++    sections.push_back(std::move(section));
++  }
++  if (sections.empty())
++  {
++    Trace("the game's main program has no code sections in RAM");
++    return;
++  }
++
++  // The CPU as the game will run: translation on, the standard GameCube BATs (the BIOS hasn't set
++  // anything up yet).
++  auto& ppc = m_jit.m_ppc_state;
++  auto& mmu = m_jit.m_mmu;
++  const u32 saved_msr = ppc.msr.Hex;
++  u32 saved_bats[16];
++  for (int i = 0; i < 16; i++)
++    saved_bats[i] = ppc.spr[SPR_IBAT0U + i];
++  ppc.spr[SPR_IBAT0U] = 0x80001FFF;
++  ppc.spr[SPR_IBAT0L] = 0x00000002;
++  ppc.spr[SPR_DBAT0U] = 0x80001FFF;
++  ppc.spr[SPR_DBAT0L] = 0x00000002;
++  ppc.spr[SPR_DBAT1U] = 0xC0001FFF;
++  ppc.spr[SPR_DBAT1L] = 0x0000002A;
++  mmu.IBATUpdated();
++  mmu.DBATUpdated();
++  ppc.msr.IR = 1;
++  ppc.msr.DR = 1;
++  system.GetPowerPC().MSRUpdated();
++
++  // Every function in those sections: from the cache if saved before (unchanged), else compiled.
++  PPCSymbolDB db;
++  {
++    const Core::CPUThreadGuard guard(system);
++    for (const Section& section : sections)
++      PPCAnalyst::FindFunctions(guard, section.address, section.address + section.code.size(), &db);
++  }
++  std::vector<u32> functions;
++  db.ForEachSymbol([&](const Common::Symbol& symbol) {
++    if (symbol.address >= 0x80003100 && symbol.address < 0x81200000)
++      functions.push_back(symbol.address);
++  });
++  ps4_prepare_total = static_cast<int>(functions.size());
++  ps4_prepare_done = 0;
++  ps4_prepare_phase = 2;
++  const CPUEmuFeatureFlags flags = ppc.feature_flags;
++  u64 saved_already = 0, compiled = 0;
++  for (size_t i = 0; i < functions.size(); i++)
++  {
++    const auto it = m_index.find(Key(functions[i], flags));
++    Parsed p;
++    u64 hash;
++    if (it != m_index.end() && Parse(m_blobs[it->second], &p) &&
++        GuestHash(Ranges(p), &hash) && hash == p.header.guest_hash && SameKnowledge(p, m_jit.js))
++    {
++      saved_already++;
++    }
++    else
++    {
++      m_jit.FreeRanges();
++      const u64 before = m_stats.compiled;
++      if (!m_jit.PS4PrecompileBlock(functions[i]))
++        break;
++      compiled += m_stats.compiled - before;
++    }
++    ps4_prepare_done = static_cast<int>(i + 1);
++  }
++  Save();
++
++  // Everything back as the BIOS expects it; the compiled blocks leave the JIT (their code isn't
++  // in memory until the game loads it - then they come back from the cache).
++  m_jit.ClearCache();
++  for (const Section& section : sections)
++    std::memcpy(memory.GetRAM() + (section.address & 0x3FFFFFFF), section.before.data(),
++                section.before.size());
++  for (int i = 0; i < 16; i++)
++    ppc.spr[SPR_IBAT0U + i] = saved_bats[i];
++  mmu.IBATUpdated();
++  mmu.DBATUpdated();
++  ppc.msr.Hex = saved_msr;
++  system.GetPowerPC().MSRUpdated();
++  ps4_prepare_phase = 0;
++  m_disc_compiled = true;
++  const auto ms =
++      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)
++          .count();
++  Trace("compiled the game's main program from the disc before the BIOS: " +
++        std::to_string(functions.size()) + " functions, " + std::to_string(saved_already) +
++        " already saved, " + std::to_string(compiled) + " compiled, in " + std::to_string(ms) +
++        " ms");
++}
++
 +bool CodeCache::Prepare(u32 em_address)
 +{
++  if (m_prepared || m_mode != Mode::On)
++    return false;
 +  // The game's own code (its main program), not the BIOS (0x81300000+), the apploader
 +  // (0x81200000+) or the exception vectors below 0x80003100.
-+  if (m_prepared || m_mode != Mode::On || em_address < 0x80003100 || em_address >= 0x81200000)
++  const bool game_code = em_address >= 0x80003100 && em_address < 0x81200000;
++  if (!game_code)
++  {
++    // A GameCube BIOS is starting (the boot animation): first the game's main program, read
++    // from the disc, is compiled - before anything shows, like RPCS3.
++    if (!m_disc_prepared && !m_jit.m_system.IsWii() && Ready())
++    {
++      m_disc_prepared = true;
++      PrepareFromDisc();
++      return true;
++    }
 +    return false;
++  }
 +  if (!Ready())
 +    return false;
 +  m_prepared = true;
@@ -47246,6 +47493,13 @@ index 0000000..6486a88
 +    ps4_prepare_done = static_cast<int>(i + 1);
 +  }
 +  const u64 loaded = m_stats.restored - restored_before;
++  if (m_disc_compiled)
++  {
++    // Compiled from the disc before the BIOS ran: everything is in place already.
++    ps4_prepare_phase = 0;
++    Trace("game code in place when it started: " + std::to_string(loaded) + " blocks loaded");
++    return true;
++  }
 +
 +  // Then every function of the game not compiled yet (found the way Dolphin's debugger finds
 +  // them: from its prologues and calls).
@@ -47381,6 +47635,11 @@ index 0000000..6486a88
 +  if (!GuestHash(ranges, &guest_hash) || guest_hash != h.guest_hash)
 +  {
 +    m_stats.stale++;
++    return false;
++  }
++  if (!SameKnowledge(p, m_jit.js))
++  {
++    m_stats.relearned++;
 +    return false;
 +  }
 +
@@ -47597,6 +47856,17 @@ index 0000000..6486a88
 +  h.num_relocs = static_cast<u16>(relocs.size());
 +  h.num_links = static_cast<u16>(links.size());
 +  h.num_backpatches = static_cast<u16>(backpatches.size());
++  std::vector<u32> ops;
++  for (u32 i = 0; i < code_block.m_num_instructions && i < m_jit.m_code_buffer.size(); i++)
++  {
++    const u32 address = m_jit.m_code_buffer[i].address;
++    ops.push_back(address |
++                  (m_jit.js.fifoWriteAddresses.contains(address) ? OP_FIFO_WRITE : 0));
++  }
++  if (ops.size() > 0xFFFF)
++    return unsaveable("block too big");
++  h.num_ops = static_cast<u16>(ops.size());
++  h.knowledge = BlockKnowledge(m_jit.js, h.em_address);
 +
 +  std::vector<u8> blob;
 +  Writer w(&blob);
@@ -47614,6 +47884,8 @@ index 0000000..6486a88
 +    w.Put(l);
 +  for (const auto& bp : backpatches)
 +    w.Put(bp);
++  for (u32 op : ops)
++    w.Put(op);
 +  w.Bytes(ns, h.near_size);
 +  w.Bytes(fs, h.far_size);
 +
@@ -47624,7 +47896,7 @@ index 0000000..6486a88
 +    // What the saved copy would have put here, against what was just compiled.
 +    Parsed saved;
 +    if (Parse(m_blobs[existing->second], &saved) && saved.header.guest_hash == h.guest_hash &&
-+        saved.header.physical_address == h.physical_address)
++        saved.header.physical_address == h.physical_address && SameKnowledge(saved, m_jit.js))
 +    {
 +      m_stats.checked++;
 +      bool same = saved.header.near_size == h.near_size && saved.header.far_size == h.far_size &&
@@ -47682,10 +47954,10 @@ index 0000000..6486a88
 +}
 diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.h b/Source/Core/Core/PowerPC/JitPS4/CodeCache.h
 new file mode 100755
-index 0000000..5cc0b5a
+index 0000000..a7c64a0
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.h
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,120 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -47714,7 +47986,9 @@ index 0000000..5cc0b5a
 +// into place and its addresses fixed (to this run's code space, constants and emulator objects)
 +// instead of analysing and compiling it again - as long as the game's code there is unchanged
 +// (hashed) and the emulator build and JIT options match (otherwise the file starts over).
-+// New blocks are saved when the game stops and when the in-game menu opens.
++// New blocks are saved when the game stops and when the in-game menu opens. What the JIT learns
++// about a block while the game runs (GPU FIFO writes, changing GQRs) is saved with it: a copy
++// compiled before the JIT knew is not used.
 +// Setting jit_cache: on (default), off, check (compiles everything and compares it with the saved
 +// copies: a test that the saved code would have been right, logged to boot-trace.log).
 +class CodeCache final : public Gen::XEmitter::RelocSink
@@ -47765,6 +48039,7 @@ index 0000000..5cc0b5a
 +
 +  bool Ready();
 +  void Load();
++  void PrepareFromDisc();
 +  u64 ConfigHash();
 +  void RefreshRegions();
 +  bool GuestHash(const std::vector<std::pair<u32, u32>>& ranges, u64* hash);
@@ -47781,6 +48056,8 @@ index 0000000..5cc0b5a
 +  bool m_opened = false;
 +  bool m_ready = false;
 +  bool m_prepared = false;
++  bool m_disc_prepared = false;
++  bool m_disc_compiled = false;
 +  bool m_dirty = false;
 +  bool m_recording = false;
 +  std::string m_path;
@@ -47795,7 +48072,7 @@ index 0000000..5cc0b5a
 +
 +  struct Stats
 +  {
-+    u64 loaded = 0, restored = 0, compiled = 0, stale = 0, unsaved = 0, checked = 0,
++    u64 loaded = 0, restored = 0, compiled = 0, stale = 0, relearned = 0, unsaved = 0, checked = 0,
 +        mismatched = 0, no_space = 0;
 +    const char* last_unsaved = "";
 +  } m_stats;
