@@ -412,6 +412,20 @@ index a9737c1..7ae4d7e 100644
    }
  
    void DoMarker(const std::string& prevName, u32 arbitraryNumber = 0x42)
+diff --git a/Source/Core/Common/CodeBlock.h b/Source/Core/Common/CodeBlock.h
+index 8c6291d..741c2b0 100644
+--- a/Source/Core/Common/CodeBlock.h
++++ b/Source/Core/Common/CodeBlock.h
+@@ -85,6 +85,9 @@ public:
+   }
+ 
+   bool IsInSpace(const u8* ptr) const { return ptr >= region && ptr < (region + region_size); }
++  // PS4 JIT code cache: where this code space is.
++  u8* GetRegionStart() const { return region; }
++  size_t GetRegionSize() const { return region_size; }
+   bool IsInSpaceOrChildSpace(const u8* ptr) const
+   {
+     return ptr >= region && ptr < (region + total_region_size);
 diff --git a/Source/Core/Common/Event.h b/Source/Core/Common/Event.h
 index 67dbd1e..3f5baed 100644
 --- a/Source/Core/Common/Event.h
@@ -1551,6 +1565,89 @@ index 9d15477..ac60cc5 100644
  };
  
  struct WindowSystemInfo
+diff --git a/Source/Core/Common/x64Emitter.cpp b/Source/Core/Common/x64Emitter.cpp
+index f9a8a01..12aa324 100644
+--- a/Source/Core/Common/x64Emitter.cpp
++++ b/Source/Core/Common/x64Emitter.cpp
+@@ -291,6 +291,9 @@ void OpArg::WriteRest(XEmitter* emit, int extraBytes, X64Reg _operandReg,
+                (distance < 0x80000000LL && distance >= -0x80000000LL) || !warn_64bit_offset,
+                "WriteRest: op out of range ({:#x} uses {:#x})", ripAddr, offset);
+     s32 offs = (s32)distance;
++    if (XEmitter::s_reloc_sink) [[unlikely]]
++      XEmitter::s_reloc_sink->Rel32(emit->GetWritableCodePtr(), extraBytes,
++                                    reinterpret_cast<const void*>(offset));
+     emit->Write32((u32)offs);
+     return;
+   }
+@@ -422,6 +425,8 @@ void XEmitter::JMP(const u8* addr, bool force_near_padding)
+     ASSERT_MSG(DYNA_REC, distance >= -0x80000000LL && distance < 0x80000000LL,
+                "Jump target too far away ({}), needs indirect register", distance);
+     Write8(0xE9);
++    if (s_reloc_sink) [[unlikely]]
++      s_reloc_sink->Rel32(code, 0, addr);
+     Write32((u32)(s32)distance);
+   }
+   else
+@@ -474,6 +479,8 @@ void XEmitter::CALL(const void* fnptr)
+   ASSERT_MSG(DYNA_REC, distance < 0x0000000080000000ULL || distance >= 0xFFFFFFFF80000000ULL,
+              "CALL out of range ({} calls {})", fmt::ptr(code), fmt::ptr(fnptr));
+   Write8(0xE8);
++  if (s_reloc_sink) [[unlikely]]
++    s_reloc_sink->Rel32(code, 0, fnptr);
+   Write32(u32(distance));
+ }
+ 
+@@ -560,6 +567,8 @@ void XEmitter::J_CC(CCFlags conditionCode, const u8* addr)
+                "Jump target too far away ({}), needs indirect register", distance);
+     Write8(0x0F);
+     Write8(0x80 + conditionCode);
++    if (s_reloc_sink) [[unlikely]]
++      s_reloc_sink->Rel32(code, 0, addr);
+     Write32((u32)(s32)distance);
+   }
+   else
+@@ -589,6 +598,8 @@ void XEmitter::SetJumpTarget(const FixupBranch& branch)
+ 
+     s32 valid_distance = static_cast<s32>(distance);
+     std::memcpy(&branch.ptr[-4], &valid_distance, sizeof(s32));
++    if (s_reloc_sink) [[unlikely]]
++      s_reloc_sink->Rel32(branch.ptr - 4, 0, code);
+   }
+ }
+ 
+@@ -1506,6 +1517,8 @@ void OpArg::WriteNormalOp(XEmitter* emit, bool toRM, NormalOp op, const OpArg& o
+         if (static_cast<s64>(operand.offset) != static_cast<s32>(operand.offset))
+         {
+           emit->Write8(0xB8 + (offsetOrBaseReg & 7));
++          if (XEmitter::s_reloc_sink) [[unlikely]]
++            XEmitter::s_reloc_sink->Imm64(emit->GetWritableCodePtr(), operand.offset);
+           emit->Write64(operand.offset);
+           return;
+         }
+diff --git a/Source/Core/Common/x64Emitter.h b/Source/Core/Common/x64Emitter.h
+index 35d88a4..5fc4eef 100644
+--- a/Source/Core/Common/x64Emitter.h
++++ b/Source/Core/Common/x64Emitter.h
+@@ -326,6 +326,19 @@ struct FixupBranch
+ class XEmitter
+ {
+   friend struct OpArg;  // for Write8 etc
++public:
++  // PS4 JIT code cache (Core/PowerPC/JitPS4/CodeCache.cpp): while set, told about every address
++  // the emitter encodes - 32-bit displacements to a target (jumps, calls, RIP-relative operands;
++  // `extra` = the instruction's bytes after the displacement) and 64-bit immediates - so code saved
++  // to disk can be moved to another address and another run.
++  struct RelocSink
++  {
++    virtual ~RelocSink() = default;
++    virtual void Rel32(u8* disp, int extra, const void* target) = 0;
++    virtual void Imm64(u8* at, u64 value) = 0;
++  };
++  static inline thread_local RelocSink* s_reloc_sink = nullptr;
++
+ private:
+   // Pointer to memory where code will be emitted to.
+   u8* code = nullptr;
 diff --git a/Source/Core/Core/AchievementManager.cpp b/Source/Core/Core/AchievementManager.cpp
 index ec0fee2..abe4a9a 100644
 --- a/Source/Core/Core/AchievementManager.cpp
@@ -1763,7 +1860,7 @@ index 85444ef..6ccc1d3 100644
    {
      return Core::Init(
 diff --git a/Source/Core/Core/CMakeLists.txt b/Source/Core/Core/CMakeLists.txt
-index 56c8dba..f362373 100644
+index 56c8dba..280fb8d 100644
 --- a/Source/Core/Core/CMakeLists.txt
 +++ b/Source/Core/Core/CMakeLists.txt
 @@ -131,6 +131,8 @@ add_library(core
@@ -1784,7 +1881,7 @@ index 56c8dba..f362373 100644
    PowerPC/Interpreter/Interpreter.h
    PowerPC/JitCommon/ConstantPropagation.cpp
    PowerPC/JitCommon/ConstantPropagation.h
-@@ -656,6 +660,42 @@ if(_M_X86_64)
+@@ -656,6 +660,44 @@ if(_M_X86_64)
      PowerPC/Jit64Common/TrampolineCache.cpp
      PowerPC/Jit64Common/TrampolineCache.h
      PowerPC/Jit64Common/TrampolineInfo.h
@@ -1803,6 +1900,8 @@ index 56c8dba..f362373 100644
 +    PowerPC/JitPS4/Common/TrampolineCache.cpp
 +    PowerPC/JitPS4/Common/TrampolineCache.h
 +    PowerPC/JitPS4/Common/TrampolineInfo.h
++    PowerPC/JitPS4/CodeCache.cpp
++    PowerPC/JitPS4/CodeCache.h
 +    PowerPC/JitPS4/Jit.cpp
 +    PowerPC/JitPS4/Jit.h
 +    PowerPC/JitPS4/Jit64_Tables.cpp
@@ -1827,7 +1926,7 @@ index 56c8dba..f362373 100644
    )
  elseif(_M_ARM_64)
    target_sources(core PRIVATE
-@@ -784,7 +824,7 @@ elseif(APPLE)
+@@ -784,7 +826,7 @@ elseif(APPLE)
      HW/EXI/BBA/TAP_Apple.cpp
    )
    target_link_libraries(core PUBLIC ${IOB_LIBRARY})
@@ -6775,10 +6874,10 @@ index 0000000..86441fe
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Common/ConstantPool.cpp b/Source/Core/Core/PowerPC/JitPS4/Common/ConstantPool.cpp
 new file mode 100644
-index 0000000..4e8b3e4
+index 0000000..06327f7
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Common/ConstantPool.cpp
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,108 @@
 +// Copyright 2017 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -6837,20 +6936,62 @@ index 0000000..4e8b3e4
 +    m_remaining_size -= value_size;
 +
 +    std::memcpy(ptr, value, value_size);
-+    info = ConstantInfo{ptr, value_size};
++    info = ConstantInfo{ptr, value_size, element_size, num_elements};
 +  }
 +
 +  ASSERT_MSG(DYNA_REC, info.m_size == value_size, "Constant has incorrect size in constant pool.");
 +  u8* location = static_cast<u8*>(info.m_location);
 +  return location + element_size * index;
 +}
++
++bool ConstantPool::PS4Find(const void* address, const void** value, size_t* element_size,
++                           size_t* num_elements, size_t* offset) const
++{
++  if (!m_region || address < m_region ||
++      address >= static_cast<const u8*>(m_region) + m_region_size)
++  {
++    return false;
++  }
++  for (const auto& [source, info] : m_const_info)
++  {
++    const u8* location = static_cast<const u8*>(info.m_location);
++    const u8* a = static_cast<const u8*>(address);
++    if (a >= location && a < location + info.m_size)
++    {
++      *value = source;
++      *element_size = info.m_element_size;
++      *num_elements = info.m_num_elements;
++      *offset = size_t(a - location);
++      return true;
++    }
++  }
++  return false;
++}
++
++const void* ConstantPool::PS4TryGetConstant(const void* value, size_t element_size,
++                                            size_t num_elements)
++{
++  const auto it = m_const_info.find(value);
++  if (it == m_const_info.end())
++  {
++    void* current = m_current_ptr;
++    size_t remaining = m_remaining_size;
++    if (!std::align(ALIGNMENT, element_size * num_elements, current, remaining))
++      return nullptr;
++  }
++  else if (it->second.m_size != element_size * num_elements)
++  {
++    return nullptr;
++  }
++  return GetConstant(value, element_size, num_elements, 0);
++}
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Common/ConstantPool.h b/Source/Core/Core/PowerPC/JitPS4/Common/ConstantPool.h
 new file mode 100644
-index 0000000..883477f
+index 0000000..334e594
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Common/ConstantPool.h
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,55 @@
 +// Copyright 2017 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -6884,11 +7025,19 @@ index 0000000..883477f
 +  const void* GetConstant(const void* value, size_t element_size, size_t num_elements,
 +                          size_t index);
 +
++  // PS4 JIT code cache: the constant a pool address belongs to, and GetConstant that fails
++  // (nullptr) instead of asserting when the pool is full.
++  bool PS4Find(const void* address, const void** value, size_t* element_size,
++               size_t* num_elements, size_t* offset) const;
++  const void* PS4TryGetConstant(const void* value, size_t element_size, size_t num_elements);
++
 +private:
 +  struct ConstantInfo
 +  {
 +    void* m_location;
 +    size_t m_size;
++    size_t m_element_size = 0;
++    size_t m_num_elements = 0;
 +  };
 +
 +  void* m_region = nullptr;
@@ -6900,10 +7049,10 @@ index 0000000..883477f
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Common/EmuCodeBlock.cpp b/Source/Core/Core/PowerPC/JitPS4/Common/EmuCodeBlock.cpp
 new file mode 100644
-index 0000000..b98a56f
+index 0000000..f830d39
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Common/EmuCodeBlock.cpp
-@@ -0,0 +1,1190 @@
+@@ -0,0 +1,1194 @@
 +// Copyright 2016 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -7327,6 +7476,8 @@ index 0000000..b98a56f
 +    bool offsetAddedToAddress =
 +        UnsafeLoadToReg(reg_value, opAddress, accessSize, offset, signExtend, &mov);
 +    TrampolineInfo& info = m_back_patch_info[mov.address];
++    if (m_ps4_backpatch_log)
++      m_ps4_backpatch_log->push_back(mov.address);
 +    info.pc = js.compilerPC;
 +    info.nonAtomicSwapStoreSrc = mov.nonAtomicSwapStore ? mov.nonAtomicSwapStoreSrc : INVALID_REG;
 +    info.start = backpatchStart;
@@ -7520,6 +7671,8 @@ index 0000000..b98a56f
 +    MovInfo mov;
 +    UnsafeWriteRegToReg(reg_value, reg_addr, accessSize, offset, swap, &mov);
 +    TrampolineInfo& info = m_back_patch_info[mov.address];
++    if (m_ps4_backpatch_log)
++      m_ps4_backpatch_log->push_back(mov.address);
 +    info.pc = js.compilerPC;
 +    info.nonAtomicSwapStoreSrc = mov.nonAtomicSwapStore ? mov.nonAtomicSwapStoreSrc : INVALID_REG;
 +    info.start = backpatchStart;
@@ -8096,16 +8249,17 @@ index 0000000..b98a56f
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Common/EmuCodeBlock.h b/Source/Core/Core/PowerPC/JitPS4/Common/EmuCodeBlock.h
 new file mode 100644
-index 0000000..174425f
+index 0000000..f77b8ea
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Common/EmuCodeBlock.h
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,163 @@
 +// Copyright 2016 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
 +#pragma once
 +
 +#include <unordered_map>
++#include <vector>
 +
 +#include "Common/BitSet.h"
 +#include "Common/CommonTypes.h"
@@ -8257,6 +8411,8 @@ index 0000000..174425f
 +  bool m_near_code_write_failed = false;
 +
 +  std::unordered_map<u8*, TrampolineInfo> m_back_patch_info;
++  // PS4 JIT code cache (CodeCache::BeginBlock): the fastmem accesses of the block being compiled.
++  std::vector<u8*>* m_ps4_backpatch_log = nullptr;
 +  std::unordered_map<u8*, u8*> m_exception_handler_at_loc;
 +};
 +}  // namespace PS4Jit
@@ -9375,10 +9531,10 @@ index 0000000..482d3bc
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
 new file mode 100644
-index 0000000..12397fa
+index 0000000..0b56bf1
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
-@@ -0,0 +1,1588 @@
+@@ -0,0 +1,1601 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -9652,6 +9808,8 @@ index 0000000..12397fa
 +
 +void JitPS4::Init()
 +{
++  s_ps4_active = this;
++  m_code_cache.Start();
 +  InitFastmemArena();
 +
 +  RefreshConfig();
@@ -9773,6 +9931,9 @@ index 0000000..12397fa
 +
 +void JitPS4::Shutdown()
 +{
++  m_code_cache.Stop();
++  if (s_ps4_active == this)
++    s_ps4_active = nullptr;
 +  FreeCodeSpace();
 +
 +  auto& memory = m_system.GetMemory();
@@ -10466,6 +10627,10 @@ index 0000000..12397fa
 +  }
 +  FreeRanges();
 +
++  // Compiled in an earlier run and saved (CodeCache): copied in, nothing to analyse or compile.
++  if (SetEmitterStateToFreeCodeRegion() && m_code_cache.Restore(em_address))
++    return;
++
 +  std::size_t block_size = m_code_buffer.size();
 +
 +  // Analyze the block, collect all instructions it is made of (including inlining,
@@ -10490,7 +10655,10 @@ index 0000000..12397fa
 +    u8* far_start = m_far_code.GetWritableCodePtr();
 +
 +    JitBlock* b = blocks.AllocateBlock(em_address);
-+    if (DoJit(em_address, b, nextPC))
++    m_code_cache.BeginBlock();
++    const bool compiled = DoJit(em_address, b, nextPC);
++    m_code_cache.EndBlock();
++    if (compiled)
 +    {
 +      // Code generation succeeded.
 +
@@ -10509,6 +10677,7 @@ index 0000000..12397fa
 +      b->far_begin = far_start;
 +      b->far_end = far_end;
 +
++      m_code_cache.Add(*b, code_block);
 +      blocks.FinalizeBlock(*b, jo.enableBlocklink, code_block, m_code_buffer);
 +
 +      return;
@@ -10969,10 +11138,10 @@ index 0000000..12397fa
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.h b/Source/Core/Core/PowerPC/JitPS4/Jit.h
 new file mode 100644
-index 0000000..c829079
+index 0000000..91b1ec2
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.h
-@@ -0,0 +1,313 @@
+@@ -0,0 +1,323 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10997,6 +11166,7 @@ index 0000000..c829079
 +#include "Common/CommonTypes.h"
 +#include "Common/RangeSizeSet.h"
 +#include "Common/x64Emitter.h"
++#include "Core/PowerPC/JitPS4/CodeCache.h"
 +#include "Core/PowerPC/JitPS4/JitAsm.h"
 +#include "Core/PowerPC/JitPS4/RegCache/FPURegCache.h"
 +#include "Core/PowerPC/JitPS4/RegCache/GPRRegCache.h"
@@ -11019,8 +11189,14 @@ index 0000000..c829079
 +
 +class JitPS4 : public JitBase, public QuantizedMemoryRoutines
 +{
++  friend class CodeCache;
++
 +public:
 +  explicit JitPS4(Core::System& system);
++
++  // The running PS4 JIT (one at a time), for its code cache.
++  static JitPS4* PS4Active() { return s_ps4_active; }
++  CodeCache& PS4CodeCache() { return m_code_cache; }
 +  JitPS4(const JitPS4&) = delete;
 +  JitPS4(JitPS4&&) = delete;
 +  JitPS4& operator=(const JitPS4&) = delete;
@@ -11268,6 +11444,9 @@ index 0000000..c829079
 +
 +  void FreeRanges();
 +  void ResetFreeMemoryRanges();
++
++  static inline JitPS4* s_ps4_active = nullptr;
++  CodeCache m_code_cache{*this};
 +
 +
 +
@@ -20709,6 +20888,45 @@ index cd35ea1..aecce41 100644
 +void PS4SetLoadResultCallback(PS4LoadResultFunc callback);
 +#endif
  }  // namespace State
+diff --git a/Source/Core/Core/System.cpp b/Source/Core/Core/System.cpp
+index 12da7dc..6339ebc 100644
+--- a/Source/Core/Core/System.cpp
++++ b/Source/Core/Core/System.cpp
+@@ -114,6 +114,11 @@ System::System() : m_impl{std::make_unique<Impl>(*this)}
+ 
+ System::~System() = default;
+ 
++std::pair<const void*, size_t> System::PS4ImplRange() const
++{
++  return {m_impl.get(), sizeof(Impl)};
++}
++
+ void System::Initialize()
+ {
+   m_separate_cpu_and_gpu_threads = Config::Get(Config::MAIN_CPU_THREAD);
+diff --git a/Source/Core/Core/System.h b/Source/Core/Core/System.h
+index 8524003..651403e 100644
+--- a/Source/Core/Core/System.h
++++ b/Source/Core/Core/System.h
+@@ -4,6 +4,7 @@
+ #pragma once
+ 
+ #include <memory>
++#include <utility>
+ 
+ #include "Common/CommonTypes.h"
+ 
+@@ -206,6 +207,10 @@ public:
+   VideoCommon::CustomResourceManager& GetCustomResourceManager() const;
+   VideoEvents& GetVideoEvents() const;
+ 
++  // PS4 JIT code cache: the emulator's state lives in one allocation (Impl); saved code that
++  // refers into it is fixed up by its offset.
++  std::pair<const void*, size_t> PS4ImplRange() const;
++
+ private:
+   System();
+ 
 diff --git a/Source/Core/DiscIO/FileBlob.cpp b/Source/Core/DiscIO/FileBlob.cpp
 index 3a30e2a..2dd7c74 100644
 --- a/Source/Core/DiscIO/FileBlob.cpp
@@ -21092,7 +21310,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..05b5ba5 100644
+index 3bf40ea..1a5a5a4 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -21143,7 +21361,7 @@ index 3bf40ea..05b5ba5 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,66 @@
+@@ -31,6 +53,67 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -21177,6 +21395,7 @@ index 3bf40ea..05b5ba5 100644
 +extern "C" int ps4_dvd_async;             // Core/HW/DVD/DVDThread.cpp
 +extern "C" int ps4_jit_pin[4];            // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_dsp_async;             // Core/HW/DSPHLE/UCodes/AX.cpp
++extern "C" int ps4_jit_cache;             // Core/PowerPC/JitPS4/CodeCache.cpp
 +extern "C" int ps4_sync_idle_frame;      // Core/CoreTiming.cpp
 +extern "C" int ps4_shader_dump;          // VideoCommon/ShaderCache.cpp
 +extern "C" int ps4_tev_ras_float;        // VideoCommon/PixelShaderGen.cpp
@@ -21210,7 +21429,7 @@ index 3bf40ea..05b5ba5 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +255,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +256,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -21221,7 +21440,7 @@ index 3bf40ea..05b5ba5 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +270,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +271,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -21240,7 +21459,7 @@ index 3bf40ea..05b5ba5 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +302,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +303,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -21251,7 +21470,7 @@ index 3bf40ea..05b5ba5 100644
  #endif
        });
  
-@@ -270,7 +369,419 @@ int main(const int argc, char* argv[])
+@@ -270,7 +370,426 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -21471,6 +21690,13 @@ index 3bf40ea..05b5ba5 100644
 +    ps4_dvd_async = Platform::GetPS4Option("dvd_async", "off") == "on";
 +    // dsp_async=on (Dolphin Lab, per game; default off): audio command lists on their own thread.
 +    ps4_dsp_async = Platform::GetPS4Option("dsp_async", "off") == "on";
++    // jit_cache (PS4 JIT only): on = compiled code saved to the hard drive and loaded back in
++    // later runs; off = compiled fresh every run; check = compiled fresh and compared with the
++    // saved copies (a test, logged).
++    {
++      const std::string cache = Platform::GetPS4Option("jit_cache", "on");
++      ps4_jit_cache = cache == "off" ? 0 : cache == "check" ? 2 : 1;
++    }
 +    // jit_pin=1,3,4,31 (Dolphin Lab, per game; default off): up to four guest GPRs kept in host
 +    // registers across JIT blocks (Core/PowerPC/Jit64/RegCache/JitRegCache.h).
 +    {
@@ -21671,7 +21897,7 @@ index 3bf40ea..05b5ba5 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +795,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +803,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -21687,7 +21913,7 @@ index 3bf40ea..05b5ba5 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +823,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +831,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -23507,10 +23733,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..0aaec74
+index 0000000..a4ae28a
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,3177 @@
+@@ -0,0 +1,3183 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -24706,11 +24932,17 @@ index 0000000..0aaec74
 +}
 +
 +void SymbolsDump(Core::System& system);
++extern "C" void ps4_jit_cache_save();  // Core/PowerPC/JitPS4/CodeCache.cpp
 +
 +void Open(Core::System& system)
 +{
 +  s_game_id = SConfig::GetInstance().GetGameID();
 +  SymbolsDump(system);
++  {
++    // New compiled code to the hard drive while the game waits anyway (PS4 JIT code cache).
++    const Core::CPUThreadGuard guard(system);
++    ps4_jit_cache_save();
++  }
 +  std::string title = SConfig::GetInstance().GetTitleName();
 +  if (title.empty())
 +    title = s_game_id;
@@ -27640,10 +27872,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..9723b96
+index 0000000..51193ab
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1002 @@
+@@ -0,0 +1,1007 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -27763,6 +27995,11 @@ index 0000000..9723b96
 +     {{"jit", "Dolphin JIT"}, {"jitps4", "PS4 JIT (Experimental)"}}, "jit", false,
 +     "PS4 JIT: a recompiler made only for the PS4's processor, being optimized game by game. "
 +     "Experimental: if a game misbehaves, set it back to Dolphin JIT."},
++    {"jit_cache", "Code Cache", "Performance",
++     {{"on", "On"}, {"off", "Off"}, {"check", "Check"}}, "on", false,
++     "PS4 JIT only. On: the game's compiled code is saved to the hard drive and loaded back next "
++     "time instead of compiled again (fewer stutters in places you've been). Off: compiled fresh "
++     "every time. Check: compiles fresh and compares with the saved code (a test)."},
 +    {"speed_mode", "Speed Features", "Performance",
 +     {{"fast", "Fast"}, {"compatible", "Compatible"}}, "fast", false,
 +     "Compatible turns off the port's command-stream shortcuts if a game glitches or freezes."},
@@ -29248,10 +29485,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..3b37b03
+index 0000000..a8a0d53
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,6845 @@
+@@ -0,0 +1,6847 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -34936,6 +35173,8 @@ index 0000000..3b37b03
 +      parts.push_back(value == "off" ? "fast float rounding" : "accurate float rounding");
 +    else if (key == "cpu_core")
 +      parts.push_back(value == "jitps4" ? "PS4 JIT" : "Dolphin JIT");
++    else if (key == "jit_cache")
++      parts.push_back("code cache " + value);
 +    else if (key == "vertex_rounding")
 +      parts.push_back(value == "on" ? "vertex rounding" : "no vertex rounding");
 +    else if (key == "sync_gpu")
@@ -46393,3 +46632,987 @@ index c56f32c..64e5240 100644
  
    customDriverLibraryName = Config::Get(Config::GFX_DRIVER_LIB_NAME);
  
+diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
+new file mode 100755
+index 0000000..f062744
+--- /dev/null
++++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
+@@ -0,0 +1,863 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "Core/PowerPC/JitPS4/CodeCache.h"
++
++#include <algorithm>
++#include <cstdio>
++#include <cstring>
++#include <type_traits>
++
++#include "Common/FileUtil.h"
++#include "Common/IOFile.h"
++#include "Core/ConfigManager.h"
++#include "Core/HW/Memmap.h"
++#include "Core/PowerPC/JitCommon/JitCache.h"
++#include "Core/PowerPC/JitPS4/Jit.h"
++#include "Core/PowerPC/PPCAnalyst.h"
++#include "Core/PowerPC/PowerPC.h"
++#include "Core/System.h"
++
++extern "C" void ps4_boot_trace(const char* line);  // DolphinPS4 port/ps4_crashlog.cpp
++extern "C" char __text_start[], __eh_frame_start[];  // OpenOrbis link.x: .text and .rodata
++// ps4.ini / menu jit_cache (DolphinNoGUI/MainNoGUI.cpp): 0 off, 1 on, 2 check.
++extern "C" int ps4_jit_cache;
++int ps4_jit_cache = 1;
++
++// The JIT switches that change the code it writes (defined in Core/PowerPC/Jit64).
++extern "C" int ps4_gp_fuse, ps4_lazy_lfs, ps4_jit_inline_dispatch, ps4_jit_lazy_pc,
++    ps4_jit_tlb_inline, ps4_lfs_forward, ps4_jit_accurate_singles, ps4_jit_round_results,
++    ps4_jit_round_operands, ps4_jit_fcmp_merge, ps4_jit_msr_link, ps4_jit_gp_dynamic,
++    ps4_fifo_batch, ps4_fifo_defer;
++extern "C" int ps4_jit_pin[4];
++
++namespace PS4Jit
++{
++namespace
++{
++// Bumped whenever the file layout or what a block's code may refer to changes.
++constexpr u32 FORMAT_VERSION = 1;
++constexpr u32 FILE_MAGIC = 0x434A5044;  // "DPJC"
++// Kept in memory and on disk at most (the file is read whole at the start).
++constexpr size_t MAX_BYTES = 64 * 1024 * 1024;
++
++enum Section : u8
++{
++  NEAR = 0,
++  FAR = 1,
++  ASM = 2,  // the JIT's shared routines (dispatcher, quantizers...), same layout every run
++  CONSTANT = 3,
++  REGION = 4,  // an emulator object (CodeCache::m_regions)
++  NONE = 255,
++};
++
++// A saved block: BlobHeader, then num_ranges pairs of u32 (the guest code's physical address
++// ranges), BlobConst, BlobReloc, BlobLink and BlobBackPatch arrays, then the near and the far
++// code bytes as compiled (before linking or backpatching).
++struct BlobHeader
++{
++  u32 em_address;
++  u32 physical_address;
++  u32 feature_flags;
++  u32 original_size;
++  u64 guest_hash;
++  u32 entry_offset;
++  u32 near_size;
++  u32 far_size;
++  u16 num_ranges;
++  u16 num_consts;
++  u16 num_relocs;
++  u16 num_links;
++  u16 num_backpatches;
++  u16 reserved;
++};
++struct BlobConst
++{
++  u64 source;  // the constant's address in the emulator (.rodata/.data: the same every run)
++  u32 element_size;
++  u32 num_elements;
++};
++struct BlobReloc
++{
++  u32 site;  // where the address is written, in its section
++  u8 section;
++  u8 abs64;  // 8-byte address (else a 32-bit displacement)
++  s8 extra;  // instruction bytes after a displacement
++  u8 target_section;
++  u32 target_id;  // the constant or region
++  u64 target_offset;
++};
++struct BlobLink
++{
++  u32 exit_address;
++  u32 ptr_offset;
++  u32 stub_offset;
++  u8 call;
++  u8 ptr_section;
++  u8 stub_section;
++  u8 reserved;
++};
++struct BlobBackPatch
++{
++  u32 key_offset;
++  u32 start_offset;
++  u8 key_section;
++  u8 start_section;
++  u8 reserved[6];
++  TrampolineInfo info;
++};
++static_assert(std::is_trivially_copyable_v<TrampolineInfo>);
++
++struct FileHeader
++{
++  u32 magic;
++  u32 version;
++  u64 config;
++  u32 count;
++  u32 reserved;
++};
++
++class Writer
++{
++public:
++  explicit Writer(std::vector<u8>* out) : m_out(out) {}
++  template <typename T>
++  void Put(const T& value)
++  {
++    const u8* p = reinterpret_cast<const u8*>(&value);
++    m_out->insert(m_out->end(), p, p + sizeof(T));
++  }
++  void Bytes(const u8* p, size_t n) { m_out->insert(m_out->end(), p, p + n); }
++
++private:
++  std::vector<u8>* m_out;
++};
++
++class Reader
++{
++public:
++  Reader(const u8* p, size_t n) : m_p(p), m_end(p + n) {}
++  template <typename T>
++  bool Get(T* value)
++  {
++    if (size_t(m_end - m_p) < sizeof(T))
++      return false;
++    std::memcpy(value, m_p, sizeof(T));
++    m_p += sizeof(T);
++    return true;
++  }
++  const u8* Skip(size_t n)
++  {
++    if (size_t(m_end - m_p) < n)
++      return nullptr;
++    const u8* p = m_p;
++    m_p += n;
++    return p;
++  }
++
++private:
++  const u8* m_p;
++  const u8* m_end;
++};
++
++u64 Fnv(u64 hash, const void* data, size_t size)
++{
++  const u8* p = static_cast<const u8*>(data);
++  for (size_t i = 0; i < size; i++)
++    hash = (hash ^ p[i]) * 0x100000001B3ull;
++  return hash;
++}
++
++template <typename T>
++u64 Mix(u64 hash, const T& value)
++{
++  return Fnv(hash, &value, sizeof(T));
++}
++
++void Trace(const std::string& line)
++{
++  ps4_boot_trace(("code cache: " + line).c_str());
++}
++
++// The parsed parts of a blob.
++struct Parsed
++{
++  BlobHeader header;
++  const u32* ranges;
++  const BlobConst* consts;
++  const BlobReloc* relocs;
++  const BlobLink* links;
++  const BlobBackPatch* backpatches;
++  const u8* near_code;
++  const u8* far_code;
++};
++
++// The arrays are copied out with memcpy before use (the blob has no alignment guarantee), so the
++// pointers here are only start positions.
++bool Parse(const std::vector<u8>& blob, Parsed* out)
++{
++  Reader r(blob.data(), blob.size());
++  if (!r.Get(&out->header))
++    return false;
++  const BlobHeader& h = out->header;
++  out->ranges = reinterpret_cast<const u32*>(r.Skip(h.num_ranges * 8));
++  out->consts = reinterpret_cast<const BlobConst*>(r.Skip(h.num_consts * sizeof(BlobConst)));
++  out->relocs = reinterpret_cast<const BlobReloc*>(r.Skip(h.num_relocs * sizeof(BlobReloc)));
++  out->links = reinterpret_cast<const BlobLink*>(r.Skip(h.num_links * sizeof(BlobLink)));
++  out->backpatches =
++      reinterpret_cast<const BlobBackPatch*>(r.Skip(h.num_backpatches * sizeof(BlobBackPatch)));
++  out->near_code = r.Skip(h.near_size);
++  out->far_code = r.Skip(h.far_size);
++  return (h.num_ranges == 0 || out->ranges) && (h.num_consts == 0 || out->consts) &&
++         (h.num_relocs == 0 || out->relocs) && (h.num_links == 0 || out->links) &&
++         (h.num_backpatches == 0 || out->backpatches) && out->near_code &&
++         (h.far_size == 0 || out->far_code);
++}
++
++template <typename T>
++T Item(const T* array, size_t i)
++{
++  T value;
++  std::memcpy(&value, reinterpret_cast<const u8*>(array) + i * sizeof(T), sizeof(T));
++  return value;
++}
++
++std::vector<std::pair<u32, u32>> Ranges(const Parsed& p)
++{
++  std::vector<std::pair<u32, u32>> ranges(p.header.num_ranges);
++  for (size_t i = 0; i < ranges.size(); i++)
++  {
++    ranges[i].first = Item(p.ranges, i * 2);
++    ranges[i].second = Item(p.ranges, i * 2 + 1);
++  }
++  return ranges;
++}
++}  // namespace
++
++void CodeCache::Start()
++{
++  m_mode = ps4_jit_cache == 0 ? Mode::Off : ps4_jit_cache == 2 ? Mode::Check : Mode::On;
++  m_opened = false;
++  m_ready = false;
++  m_dirty = false;
++  m_blobs.clear();
++  m_index.clear();
++  m_bytes = 0;
++  m_stats = {};
++}
++
++void CodeCache::Stop()
++{
++  if (m_ready)
++  {
++    Save();
++    Trace("stopped: " + std::to_string(m_stats.restored) + " blocks loaded from the cache, " +
++          std::to_string(m_stats.compiled) + " compiled");
++  }
++  m_ready = false;
++  m_opened = false;
++  m_blobs.clear();
++  m_index.clear();
++}
++
++bool CodeCache::Ready()
++{
++  if (m_mode == Mode::Off)
++    return false;
++  if (!m_opened)
++  {
++    m_opened = true;
++    // The game is known once its code runs (not when the JIT starts).
++    const std::string game = SConfig::GetInstance().GetGameID();
++    if (game.empty() || m_jit.jo.memcheck)
++      return false;
++    const std::string dir = "/data/DolphinPS4/cache/jit/";
++    File::CreateFullPath(dir);
++    m_path = dir + game + ".jitc";
++    m_config = ConfigHash();
++    m_ready = true;
++    Load();
++  }
++  return m_ready;
++}
++
++u64 CodeCache::ConfigHash()
++{
++  u64 h = 0xCBF29CE484222325ull;
++  h = Mix(h, FORMAT_VERSION);
++  // This exact emulator build: its code and constants (the saved code calls into it and its
++  // constants by address).
++  const u64* p = reinterpret_cast<const u64*>(__text_start);
++  const u64* end = reinterpret_cast<const u64*>(__eh_frame_start);
++  u64 build = 0;
++  for (; p < end; p++)
++    build = (build ^ *p) * 0x100000001B3ull + 0x9E3779B97F4A7C15ull;
++  h = Mix(h, build);
++  for (int v : {ps4_gp_fuse, ps4_lazy_lfs, ps4_jit_inline_dispatch, ps4_jit_lazy_pc,
++                ps4_jit_tlb_inline, ps4_lfs_forward, ps4_jit_accurate_singles,
++                ps4_jit_round_results, ps4_jit_round_operands, ps4_jit_fcmp_merge,
++                ps4_jit_msr_link, ps4_jit_gp_dynamic, ps4_fifo_batch, ps4_fifo_defer,
++                ps4_jit_pin[0], ps4_jit_pin[1], ps4_jit_pin[2], ps4_jit_pin[3]})
++  {
++    h = Mix(h, v);
++  }
++  const auto& jo = m_jit.jo;
++  for (bool v : {jo.enableBlocklink, jo.optimizeGatherPipe, jo.accurateSinglePrecision,
++                 jo.fastmem, jo.fastmem_arena, jo.memcheck, jo.fp_exceptions,
++                 jo.div_by_zero_exceptions, m_jit.m_low_dcbz_hack, m_jit.m_accurate_nans,
++                 m_jit.m_accurate_fmadds, m_jit.m_accurate_cpu_cache_enabled,
++                 m_jit.m_system.IsWii()})
++  {
++    h = Mix(h, v);
++  }
++  // The shared routines' size and position in the code space (the saved code jumps into them).
++  h = Mix(h, u64(m_jit.asm_routines.GetRegionStart() - m_jit.GetRegionStart()));
++  h = Mix(h, u64(m_jit.asm_routines.GetRegionSize()));
++  return h;
++}
++
++void CodeCache::RefreshRegions()
++{
++  auto& system = m_jit.m_system;
++  auto& memory = system.GetMemory();
++  const auto impl = system.PS4ImplRange();
++  m_regions = {
++      {static_cast<const u8*>(impl.first), impl.second},
++      {reinterpret_cast<const u8*>(&m_jit), sizeof(JitPS4)},
++      {reinterpret_cast<const u8*>(m_jit.blocks.GetBlockBitSet()), (1ull << 32) / 32 / 8},
++      {memory.GetRAM(), memory.GetRamSizeReal()},
++      {memory.GetEXRAM(), memory.GetEXRAM() ? memory.GetExRamSizeReal() : 0},
++      {memory.GetL1Cache(), memory.GetL1Cache() ? memory.GetL1CacheSize() : 0},
++      // The fastmem windows: only their exact base (MOV RMEM, base). A 4 GiB range would also
++      // catch plain numbers such as an exit's (CPU mode << 32 | PC).
++      {memory.GetLogicalBase(), memory.GetLogicalBase() ? 1u : 0u},
++      {memory.GetPhysicalBase(), memory.GetPhysicalBase() ? 1u : 0u},
++  };
++}
++
++bool CodeCache::GuestHash(const std::vector<std::pair<u32, u32>>& ranges, u64* hash)
++{
++  auto& memory = m_jit.m_system.GetMemory();
++  u64 h = 0xCBF29CE484222325ull;
++  for (const auto& [from, to] : ranges)
++  {
++    if (to <= from)
++      return false;
++    const u32 size = to - from;
++    const u8* p = nullptr;
++    if (u64(from) + size <= memory.GetRamSizeReal() && memory.GetRAM())
++      p = memory.GetRAM() + from;
++    else if ((from >> 28) == 1 && memory.GetEXRAM() &&
++             u64(from & 0x0FFFFFFF) + size <= memory.GetExRamSizeReal())
++      p = memory.GetEXRAM() + (from & 0x0FFFFFFF);
++    if (!p)
++      return false;
++    h = Mix(h, from);
++    h = Mix(h, to);
++    h = Fnv(h, p, size);
++  }
++  *hash = h;
++  return true;
++}
++
++void CodeCache::Load()
++{
++  File::IOFile file(m_path, "rb");
++  if (!file)
++  {
++    Trace("no saved code for this game yet (" + m_path + ")");
++    return;
++  }
++  const u64 size = file.GetSize();
++  std::vector<u8> data(size);
++  if (size < sizeof(FileHeader) || size > MAX_BYTES + 4096 || !file.ReadBytes(data.data(), size))
++  {
++    Trace("unreadable file, starting over");
++    return;
++  }
++  FileHeader header;
++  std::memcpy(&header, data.data(), sizeof(header));
++  if (header.magic != FILE_MAGIC || header.version != FORMAT_VERSION || header.config != m_config)
++  {
++    Trace("saved for another build or other JIT options, starting over");
++    m_dirty = true;  // the next save replaces it
++    return;
++  }
++  Reader r(data.data() + sizeof(header), size - sizeof(header));
++  for (u32 i = 0; i < header.count; i++)
++  {
++    u32 blob_size;
++    const u8* blob = r.Get(&blob_size) ? r.Skip(blob_size) : nullptr;
++    if (!blob || blob_size < sizeof(BlobHeader))
++      break;
++    BlobHeader h;
++    std::memcpy(&h, blob, sizeof(h));
++    m_index[Key(h.em_address, h.feature_flags)] = m_blobs.size();
++    m_blobs.emplace_back(blob, blob + blob_size);
++    m_bytes += blob_size;
++  }
++  m_stats.loaded = m_blobs.size();
++  Trace("loaded " + std::to_string(m_blobs.size()) + " blocks (" +
++        std::to_string(m_bytes / 1024) + " KiB) from " + m_path);
++}
++
++void CodeCache::Save()
++{
++  if (!m_ready || !m_dirty)
++    return;
++  std::vector<u8> data;
++  data.reserve(m_bytes + m_blobs.size() * 4 + sizeof(FileHeader));
++  Writer w(&data);
++  w.Put(FileHeader{FILE_MAGIC, FORMAT_VERSION, m_config, static_cast<u32>(m_blobs.size()), 0});
++  for (const auto& blob : m_blobs)
++  {
++    w.Put(static_cast<u32>(blob.size()));
++    w.Bytes(blob.data(), blob.size());
++  }
++  // Written beside, then renamed: a power cut mid-write leaves the old file.
++  const std::string temp = m_path + ".new";
++  {
++    File::IOFile file(temp, "wb");
++    if (!file || !file.WriteBytes(data.data(), data.size()))
++    {
++      Trace("couldn't write " + temp);
++      return;
++    }
++  }
++  if (!File::Rename(temp, m_path))
++  {
++    Trace("couldn't replace " + m_path);
++    return;
++  }
++  m_dirty = false;
++  char line[256];
++  snprintf(line, sizeof(line),
++           "saved %zu blocks (%zu KiB); this run: %llu loaded from the cache, %llu compiled (%llu "
++           "changed since saved), %llu not saveable (last: %s), %llu no code space; check: %llu "
++           "compared, %llu differed",
++           m_blobs.size(), m_bytes / 1024, static_cast<unsigned long long>(m_stats.restored),
++           static_cast<unsigned long long>(m_stats.compiled),
++           static_cast<unsigned long long>(m_stats.stale),
++           static_cast<unsigned long long>(m_stats.unsaved), m_stats.last_unsaved,
++           static_cast<unsigned long long>(m_stats.no_space),
++           static_cast<unsigned long long>(m_stats.checked),
++           static_cast<unsigned long long>(m_stats.mismatched));
++  Trace(line);
++}
++
++void CodeCache::BeginBlock()
++{
++  if (!Ready())
++    return;
++  m_records.clear();
++  m_backpatches.clear();
++  m_recording = true;
++  Gen::XEmitter::s_reloc_sink = this;
++  m_jit.m_ps4_backpatch_log = &m_backpatches;
++}
++
++void CodeCache::EndBlock()
++{
++  if (!m_recording)
++    return;
++  m_recording = false;
++  Gen::XEmitter::s_reloc_sink = nullptr;
++  m_jit.m_ps4_backpatch_log = nullptr;
++}
++
++void CodeCache::Rel32(u8* disp, int extra, const void* target)
++{
++  m_records.push_back({disp, static_cast<const u8*>(target), static_cast<s8>(extra), false});
++}
++
++void CodeCache::Imm64(u8* at, u64 value)
++{
++  m_records.push_back({at, reinterpret_cast<const u8*>(value), 0, true});
++}
++
++bool CodeCache::Relocate(const std::vector<u8>& blob, u8* near_dest, u8* far_dest, u8* near_at,
++                         u8* far_at)
++{
++  Parsed p;
++  if (!Parse(blob, &p))
++    return false;
++  const BlobHeader& h = p.header;
++  std::memcpy(near_dest, p.near_code, h.near_size);
++  if (h.far_size)
++    std::memcpy(far_dest, p.far_code, h.far_size);
++  for (u16 i = 0; i < h.num_relocs; i++)
++  {
++    const BlobReloc rel = Item(p.relocs, i);
++    const u8* target = nullptr;
++    switch (rel.target_section)
++    {
++    case NEAR:
++      target = near_at + rel.target_offset;
++      break;
++    case FAR:
++      target = far_at + rel.target_offset;
++      break;
++    case ASM:
++      target = m_jit.asm_routines.GetRegionStart() + rel.target_offset;
++      break;
++    case CONSTANT:
++    {
++      if (rel.target_id >= h.num_consts)
++        return false;
++      const BlobConst c = Item(p.consts, rel.target_id);
++      const void* location = m_jit.m_const_pool.PS4TryGetConstant(
++          reinterpret_cast<const void*>(c.source), c.element_size, c.num_elements);
++      if (!location)
++        return false;
++      target = static_cast<const u8*>(location) + rel.target_offset;
++      break;
++    }
++    case REGION:
++      if (rel.target_id >= m_regions.size() || !m_regions[rel.target_id].base)
++        return false;
++      target = m_regions[rel.target_id].base + rel.target_offset;
++      break;
++    default:
++      return false;
++    }
++    const bool near = rel.section == NEAR;
++    if ((near ? h.near_size : h.far_size) < rel.site + (rel.abs64 ? 8u : 4u))
++      return false;
++    u8* dest = (near ? near_dest : far_dest) + rel.site;
++    if (rel.abs64)
++    {
++      const u64 value = reinterpret_cast<u64>(target);
++      std::memcpy(dest, &value, 8);
++    }
++    else
++    {
++      const u8* at = (near ? near_at : far_at) + rel.site;
++      const s64 distance = s64(target - (at + 4 + rel.extra));
++      if (distance < -0x80000000LL || distance >= 0x80000000LL)
++        return false;
++      const s32 d32 = static_cast<s32>(distance);
++      std::memcpy(dest, &d32, 4);
++    }
++  }
++  return true;
++}
++
++bool CodeCache::Restore(u32 em_address)
++{
++  if (m_mode != Mode::On || !Ready())
++    return false;
++  const auto it = m_index.find(Key(em_address, m_jit.m_ppc_state.feature_flags));
++  if (it == m_index.end())
++    return false;
++  const std::vector<u8>& blob = m_blobs[it->second];
++  Parsed p;
++  if (!Parse(blob, &p))
++    return false;
++  const BlobHeader& h = p.header;
++  const auto translated = m_jit.m_mmu.JitCache_TranslateAddress(em_address);
++  if (!translated.valid || translated.address != h.physical_address)
++    return false;
++  const auto ranges = Ranges(p);
++  u64 guest_hash;
++  if (!GuestHash(ranges, &guest_hash) || guest_hash != h.guest_hash)
++  {
++    m_stats.stale++;
++    return false;
++  }
++
++  // Into the free code space JitPS4::Jit has just chosen.
++  u8* near_code = m_jit.GetWritableCodePtr();
++  u8* far_code = m_jit.m_far_code.GetWritableCodePtr();
++  if (size_t(m_jit.GetWritableCodeEnd() - near_code) < h.near_size ||
++      size_t(m_jit.m_far_code.GetWritableCodeEnd() - far_code) < h.far_size)
++  {
++    m_stats.no_space++;
++    return false;
++  }
++  RefreshRegions();
++  if (!Relocate(blob, near_code, far_code, near_code, far_code))
++    return false;
++
++  JitBlock* b = m_jit.blocks.AllocateBlock(em_address);
++  b->near_begin = near_code;
++  b->near_end = near_code + h.near_size;
++  b->far_begin = far_code;
++  b->far_end = far_code + h.far_size;
++  b->normalEntry = near_code + h.entry_offset;
++  const auto at = [&](u8 section, u32 offset) -> u8* {
++    return section == NEAR ? near_code + offset :
++           section == FAR  ? far_code + offset :
++           section == ASM  ? m_jit.asm_routines.GetRegionStart() + offset :
++                             nullptr;
++  };
++  for (u16 i = 0; i < h.num_links; i++)
++  {
++    const BlobLink link = Item(p.links, i);
++    JitBlock::LinkData data{};
++    data.exitPtrs = at(link.ptr_section, link.ptr_offset);
++    data.unlinkedTarget = at(link.stub_section, link.stub_offset);
++    data.exitAddress = link.exit_address;
++    data.linkStatus = false;
++    data.call = link.call != 0;
++    b->linkData.push_back(data);
++  }
++  for (u16 i = 0; i < h.num_backpatches; i++)
++  {
++    const BlobBackPatch bp = Item(p.backpatches, i);
++    TrampolineInfo info = bp.info;
++    info.start = at(bp.start_section, bp.start_offset);
++    m_jit.m_back_patch_info[at(bp.key_section, bp.key_offset)] = info;
++  }
++  if (h.near_size)
++    m_jit.m_free_ranges_near.erase(near_code, near_code + h.near_size);
++  if (h.far_size)
++    m_jit.m_free_ranges_far.erase(far_code, far_code + h.far_size);
++
++  PPCAnalyst::CodeBlock code_block;
++  code_block.m_address = em_address;
++  code_block.m_num_instructions = h.original_size;
++  for (const auto& [from, to] : ranges)
++    code_block.m_physical_addresses.insert(from, to);
++  m_jit.blocks.FinalizeBlock(*b, m_jit.jo.enableBlocklink, code_block, m_jit.m_code_buffer);
++  m_stats.restored++;
++  return true;
++}
++
++void CodeCache::Add(JitBlock& block, const PPCAnalyst::CodeBlock& code_block)
++{
++  if (!m_ready)
++    return;
++  m_stats.compiled++;
++  const auto unsaveable = [&](const char* why) { m_stats.unsaved++, m_stats.last_unsaved = why; };
++
++  u8* const ns = block.near_begin;
++  u8* const ne = block.near_end;
++  u8* const fs = block.far_begin;
++  u8* const fe = block.far_end;
++  // Where a code address lies: this block (end included: a jump to just past it), the shared
++  // routines, or nowhere the file can describe.
++  const auto locate = [&](const u8* a, u8* section, u64* offset) {
++    if (a >= ns && a <= ne)
++      return *section = NEAR, *offset = u64(a - ns), true;
++    if (fs != fe && a >= fs && a <= fe)
++      return *section = FAR, *offset = u64(a - fs), true;
++    if (m_jit.asm_routines.IsInSpace(a))
++      return *section = ASM, *offset = u64(a - m_jit.asm_routines.GetRegionStart()), true;
++    return false;
++  };
++
++  std::vector<BlobConst> consts;
++  std::vector<BlobReloc> relocs;
++  RefreshRegions();
++  // The last record for a place wins (an address may be written more than once while compiling).
++  std::sort(m_records.begin(), m_records.end(),
++            [](const Record& a, const Record& b) { return a.site < b.site; });
++  for (size_t i = 0; i < m_records.size(); i++)
++  {
++    if (i + 1 < m_records.size() && m_records[i + 1].site == m_records[i].site)
++      continue;
++    const Record& rec = m_records[i];
++    BlobReloc rel{};
++    u8 site_section;
++    u64 site_offset;
++    if (!locate(rec.site, &site_section, &site_offset) || site_section == ASM)
++      return unsaveable("address written outside the block");
++    rel.site = static_cast<u32>(site_offset);
++    rel.section = site_section;
++    rel.abs64 = rec.abs64;
++    rel.extra = rec.extra;
++
++    u8 section;
++    u64 offset;
++    const void* source;
++    size_t element_size, num_elements, const_offset;
++    if (locate(rec.target, &section, &offset))
++    {
++      rel.target_section = section;
++      rel.target_offset = offset;
++    }
++    else if (m_jit.m_const_pool.PS4Find(rec.target, &source, &element_size, &num_elements,
++                                        &const_offset))
++    {
++      // Only constants stored in the emulator image itself (the same address every run).
++      if (reinterpret_cast<u64>(source) >= 0x100000000ull)
++        return unsaveable("constant outside the emulator image");
++      rel.target_section = CONSTANT;
++      rel.target_offset = const_offset;
++      const auto c = std::find_if(consts.begin(), consts.end(), [&](const BlobConst& x) {
++        return x.source == reinterpret_cast<u64>(source);
++      });
++      rel.target_id = static_cast<u32>(c - consts.begin());
++      if (c == consts.end())
++        consts.push_back({reinterpret_cast<u64>(source), static_cast<u32>(element_size),
++                          static_cast<u32>(num_elements)});
++    }
++    else if (rec.abs64)
++    {
++      bool found = false;
++      for (size_t r = 0; r < m_regions.size() && !found; r++)
++      {
++        const Region& region = m_regions[r];
++        if (region.base && rec.target >= region.base && u64(rec.target - region.base) < region.size)
++        {
++          rel.target_section = REGION;
++          rel.target_id = static_cast<u32>(r);
++          rel.target_offset = u64(rec.target - region.base);
++          found = true;
++        }
++      }
++      if (!found)
++        continue;  // a plain number (or something the same in every run)
++    }
++    else
++    {
++      return unsaveable("jump to another block or code space");
++    }
++    relocs.push_back(rel);
++  }
++
++  std::vector<BlobLink> links;
++  for (const auto& link : block.linkData)
++  {
++    BlobLink l{};
++    u64 offset;
++    l.exit_address = link.exitAddress;
++    l.call = link.call;
++    if (!locate(link.exitPtrs, &l.ptr_section, &offset))
++      return unsaveable("exit outside the block");
++    l.ptr_offset = static_cast<u32>(offset);
++    l.stub_section = NONE;
++    if (link.unlinkedTarget)
++    {
++      if (!locate(link.unlinkedTarget, &l.stub_section, &offset))
++        return unsaveable("exit stub outside the block");
++      l.stub_offset = static_cast<u32>(offset);
++    }
++    links.push_back(l);
++  }
++
++  std::vector<BlobBackPatch> backpatches;
++  for (u8* key : m_backpatches)
++  {
++    const auto it = m_jit.m_back_patch_info.find(key);
++    if (it == m_jit.m_back_patch_info.end())
++      continue;
++    BlobBackPatch bp{};
++    u64 offset;
++    if (!locate(key, &bp.key_section, &offset))
++      return unsaveable("memory access outside the block");
++    bp.key_offset = static_cast<u32>(offset);
++    if (!locate(it->second.start, &bp.start_section, &offset))
++      return unsaveable("memory access outside the block");
++    bp.start_offset = static_cast<u32>(offset);
++    bp.info = it->second;
++    bp.info.start = nullptr;
++    backpatches.push_back(bp);
++  }
++
++  std::vector<std::pair<u32, u32>> ranges;
++  for (const auto& [from, to] : code_block.m_physical_addresses)
++    ranges.emplace_back(from, to);
++  BlobHeader h{};
++  h.em_address = block.effectiveAddress;
++  h.physical_address = block.physicalAddress;
++  h.feature_flags = block.feature_flags;
++  h.original_size = code_block.m_num_instructions;
++  if (!GuestHash(ranges, &h.guest_hash))
++    return unsaveable("game code outside RAM");
++  h.entry_offset = static_cast<u32>(block.normalEntry - ns);
++  h.near_size = static_cast<u32>(ne - ns);
++  h.far_size = static_cast<u32>(fe - fs);
++  if (ranges.size() > 0xFFFF || consts.size() > 0xFFFF || relocs.size() > 0xFFFF ||
++      links.size() > 0xFFFF || backpatches.size() > 0xFFFF)
++  {
++    return unsaveable("block too big");
++  }
++  h.num_ranges = static_cast<u16>(ranges.size());
++  h.num_consts = static_cast<u16>(consts.size());
++  h.num_relocs = static_cast<u16>(relocs.size());
++  h.num_links = static_cast<u16>(links.size());
++  h.num_backpatches = static_cast<u16>(backpatches.size());
++
++  std::vector<u8> blob;
++  Writer w(&blob);
++  w.Put(h);
++  for (const auto& [from, to] : ranges)
++  {
++    w.Put(from);
++    w.Put(to);
++  }
++  for (const auto& c : consts)
++    w.Put(c);
++  for (const auto& r : relocs)
++    w.Put(r);
++  for (const auto& l : links)
++    w.Put(l);
++  for (const auto& bp : backpatches)
++    w.Put(bp);
++  w.Bytes(ns, h.near_size);
++  w.Bytes(fs, h.far_size);
++
++  const u64 key = Key(h.em_address, h.feature_flags);
++  const auto existing = m_index.find(key);
++  if (m_mode == Mode::Check && existing != m_index.end())
++  {
++    // What the saved copy would have put here, against what was just compiled.
++    Parsed saved;
++    if (Parse(m_blobs[existing->second], &saved) && saved.header.guest_hash == h.guest_hash &&
++        saved.header.physical_address == h.physical_address)
++    {
++      m_stats.checked++;
++      bool same = saved.header.near_size == h.near_size && saved.header.far_size == h.far_size &&
++                  saved.header.entry_offset == h.entry_offset;
++      std::vector<u8> near_copy(saved.header.near_size), far_copy(saved.header.far_size + 1);
++      if (same)
++        same = Relocate(m_blobs[existing->second], near_copy.data(), far_copy.data(), ns, fs) &&
++               std::memcmp(near_copy.data(), ns, h.near_size) == 0 &&
++               std::memcmp(far_copy.data(), fs, h.far_size) == 0;
++      if (!same)
++      {
++        m_stats.mismatched++;
++        if (m_stats.mismatched <= 20)
++        {
++          size_t diff = 0;
++          const size_t n = std::min<size_t>(near_copy.size(), h.near_size);
++          while (diff < n && near_copy[diff] == ns[diff])
++            diff++;
++          char line[200];
++          snprintf(line, sizeof(line),
++                   "check: block %08x differs (near %u/%u bytes, far %u/%u, first near difference "
++                   "at +%zu)",
++                   h.em_address, saved.header.near_size, h.near_size, saved.header.far_size,
++                   h.far_size, diff);
++          Trace(line);
++        }
++      }
++    }
++  }
++
++  if (existing != m_index.end())
++  {
++    m_bytes -= m_blobs[existing->second].size();
++    m_bytes += blob.size();
++    m_blobs[existing->second] = std::move(blob);
++  }
++  else
++  {
++    if (m_bytes + blob.size() > MAX_BYTES)
++      return unsaveable("cache full");
++    m_bytes += blob.size();
++    m_index[key] = m_blobs.size();
++    m_blobs.push_back(std::move(blob));
++  }
++  m_dirty = true;
++}
++}  // namespace PS4Jit
++
++// DolphinNoGUI/PS4IngameMenu.cpp: new blocks saved while the game is paused in the menu.
++extern "C" void ps4_jit_cache_save()
++{
++  auto* jit = PS4Jit::JitPS4::PS4Active();
++  if (jit)
++    jit->PS4CodeCache().Save();
++}
+diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.h b/Source/Core/Core/PowerPC/JitPS4/CodeCache.h
+new file mode 100755
+index 0000000..0d138a3
+--- /dev/null
++++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.h
+@@ -0,0 +1,109 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++#include "Common/CommonTypes.h"
++#include "Common/x64Emitter.h"
++
++struct JitBlock;
++namespace PPCAnalyst
++{
++struct CodeBlock;
++}
++
++namespace PS4Jit
++{
++class JitPS4;
++
++// Compiled game code kept on the hard drive between runs, as RPCS3 keeps its PPU cache:
++// /data/DolphinPS4/cache/jit/<GAME ID>.jitc, read in one go when the game first runs code. When
++// the game reaches a block that was compiled in an earlier run, the saved machine code is copied
++// into place and its addresses fixed (to this run's code space, constants and emulator objects)
++// instead of analysing and compiling it again - as long as the game's code there is unchanged
++// (hashed) and the emulator build and JIT options match (otherwise the file starts over).
++// New blocks are saved when the game stops and when the in-game menu opens.
++// Setting jit_cache: on (default), off, check (compiles everything and compares it with the saved
++// copies: a test that the saved code would have been right, logged to boot-trace.log).
++class CodeCache final : public Gen::XEmitter::RelocSink
++{
++public:
++  explicit CodeCache(JitPS4& jit) : m_jit(jit) {}
++
++  void Start();
++  void Stop();
++  void Save();
++
++  // JitPS4::Jit, before analysing: the saved copy of the block at em_address put in place.
++  bool Restore(u32 em_address);
++  // Around DoJit: records every address the new block's code refers to.
++  void BeginBlock();
++  void EndBlock();
++  // A block just compiled (before it is linked): kept for the file; in check mode compared with
++  // the copy saved in an earlier run first.
++  void Add(JitBlock& block, const PPCAnalyst::CodeBlock& code_block);
++
++  void Rel32(u8* disp, int extra, const void* target) override;
++  void Imm64(u8* at, u64 value) override;
++
++private:
++  enum class Mode
++  {
++    Off,
++    On,
++    Check,
++  };
++  struct Record
++  {
++    u8* site;
++    const u8* target;
++    s8 extra;
++    bool abs64;
++  };
++  struct Region
++  {
++    const u8* base;
++    u64 size;
++  };
++
++  bool Ready();
++  void Load();
++  u64 ConfigHash();
++  void RefreshRegions();
++  bool GuestHash(const std::vector<std::pair<u32, u32>>& ranges, u64* hash);
++  // Fixes the copied code's addresses; false if something it refers to can't be found.
++  bool Relocate(const std::vector<u8>& blob, u8* near_dest, u8* far_dest, u8* near_at,
++                u8* far_at);
++  static u64 Key(u32 em_address, u32 feature_flags)
++  {
++    return (u64(feature_flags) << 32) | em_address;
++  }
++
++  JitPS4& m_jit;
++  Mode m_mode = Mode::Off;
++  bool m_opened = false;
++  bool m_ready = false;
++  bool m_dirty = false;
++  bool m_recording = false;
++  std::string m_path;
++  u64 m_config = 0;
++  std::vector<Record> m_records;
++  std::vector<u8*> m_backpatches;
++  std::vector<Region> m_regions;
++  // Every block's saved form (see CodeCache.cpp for the layout), by address and CPU mode.
++  std::vector<std::vector<u8>> m_blobs;
++  std::unordered_map<u64, size_t> m_index;
++  size_t m_bytes = 0;
++
++  struct Stats
++  {
++    u64 loaded = 0, restored = 0, compiled = 0, stale = 0, unsaved = 0, checked = 0,
++        mismatched = 0, no_space = 0;
++    const char* last_unsaved = "";
++  } m_stats;
++};
++}  // namespace PS4Jit

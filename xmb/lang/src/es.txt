@@ -507,3 +507,7 @@ Recompilador de CPU
 Dolphin JIT
 PS4 JIT (Experimental)
 PS4 JIT: un recompilador hecho solo para el procesador de la PS4, optimizado juego a juego. Experimental: si un juego falla, vuelve a Dolphin JIT.
+# --- Code Cache
+Caché de código
+Comprobar
+Solo PS4 JIT. Activado: el código compilado del juego se guarda en el disco duro y se carga la próxima vez en vez de compilarse de nuevo (menos tirones en sitios ya visitados). Desactivado: se compila de nuevo cada vez. Comprobar: compila de nuevo y lo compara con el código guardado (una prueba).

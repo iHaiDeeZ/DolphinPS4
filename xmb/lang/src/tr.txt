@@ -507,3 +507,7 @@ CPU Yeniden Derleyici
 Dolphin JIT
 PS4 JIT (Deneysel)
 PS4 JIT: yalnızca PS4 işlemcisi için yapılmış, oyun oyun iyileştirilen bir yeniden derleyici. Deneysel: bir oyun sorun çıkarırsa Dolphin JIT'e geri alın.
+# --- Code Cache
+Kod Önbelleği
+Denetle
+Yalnızca PS4 JIT. Açık: oyunun derlenmiş kodu sabit diske kaydedilir ve bir dahaki sefere yeniden derlenmek yerine yüklenir (gidilen yerlerde daha az takılma). Kapalı: her seferinde yeniden derlenir. Denetle: yeniden derler ve kayıtlı kodla karşılaştırır (bir test).
