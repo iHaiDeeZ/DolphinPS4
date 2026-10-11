@@ -21371,7 +21371,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..f097336 100644
+index 3bf40ea..bf356dc 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -21618,13 +21618,13 @@ index 3bf40ea..f097336 100644
 +    // cpu_clock=<percent> of the emulated CPU clock. Underclocking (e.g. 75) is a common speedup
 +    // for games limited by the emulated CPU on slow hosts.
 +    // cpu_clock=auto: the port picks the clock while the game runs (PlatformPS4.cpp): as high as
-+    // the PS4 keeps at full speed, between cpu_clock_min (default 60) and cpu_clock_max (100).
++    // the PS4 keeps at full speed, between cpu_clock_min (default 40) and cpu_clock_max (100).
 +    const std::string cpu_clock_option = Platform::GetPS4Option("cpu_clock", "100");
 +    int cpu_clock = std::atoi(cpu_clock_option.c_str());
 +    if (cpu_clock_option == "auto")
 +    {
 +      ps4_auto_clock_min =
-+          std::clamp(std::atoi(Platform::GetPS4Option("cpu_clock_min", "60").c_str()), 20, 100);
++          std::clamp(std::atoi(Platform::GetPS4Option("cpu_clock_min", "40").c_str()), 20, 100);
 +      ps4_auto_clock_max = std::clamp(
 +          std::atoi(Platform::GetPS4Option("cpu_clock_max", "100").c_str()), ps4_auto_clock_min,
 +          150);
@@ -37201,10 +37201,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..0e69df2
+index 0000000..5dcb917
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,2044 @@
+@@ -0,0 +1,2055 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -37275,7 +37275,7 @@ index 0000000..0e69df2
 +extern "C" double ps4_thread_cpu_seconds(int slot);  // port/ps4_sampler.cpp
 +// cpu_clock=auto (MainNoGUI.cpp): current clock in percent (0 = off) and its range.
 +extern "C" int ps4_auto_clock, ps4_auto_clock_min, ps4_auto_clock_max;
-+int ps4_auto_clock = 0, ps4_auto_clock_min = 60, ps4_auto_clock_max = 100;
++int ps4_auto_clock = 0, ps4_auto_clock_min = 40, ps4_auto_clock_max = 100;
 +extern "C" unsigned long long ps4_scene_stats[8];       // VideoCommon/Statistics.cpp
 +extern "C" long long ps4_wait_total(int slot);            // port/ps4_sampler.cpp
 +extern "C" unsigned long long ps4_present_counter;        // VideoCommon/Present.cpp
@@ -37815,6 +37815,17 @@ index 0000000..0e69df2
 +      const double cpu_busy = (s_last_wall > 0 && cpu > 0 && s_last_cpu > 0) ?
 +                                  (cpu - s_last_cpu) / (wall - s_last_wall) :
 +                                  1.0;
++      // Time the CPU thread spent waiting for the GPU thread (FlushGpu) per wall time: when a game
++      // waits for its GPU work every frame, the CPU thread's work and the GPU thread's run one
++      // after the other - the CPU thread is the limit even though it isn't busy all the time
++      // (Donald Duck's busy areas: 64% busy + 37% waiting, 47% speed at an 85% clock).
++      static long long s_last_gpu_wait = 0;
++      const long long gpu_wait_ns = ps4_wait_total(0);
++      const double gpu_wait = (s_last_wall > 0 && wall > s_last_wall) ?
++                                  (gpu_wait_ns - s_last_gpu_wait) / 1e9 / (wall - s_last_wall) :
++                                  0.0;
++      s_last_gpu_wait = gpu_wait_ns;
++      const double cpu_chain = cpu_busy + gpu_wait;
 +      s_last_wall = wall;
 +      s_last_cpu = cpu;
 +      // Too low a clock shows differently: the emulator keeps up (full speed) but the game
@@ -37868,7 +37879,7 @@ index 0000000..0e69df2
 +      if (running && !reverted)
 +      {
 +        if (s_normal_fps > 0 && speed >= 0.97 && fps > 5.0 && fps < s_normal_fps * 0.85 &&
-+            cpu_busy >= 0.90 && s_since_change >= 2 && clock < ps4_auto_clock_max &&
++            cpu_chain >= 0.90 && s_since_change >= 2 && clock < ps4_auto_clock_max &&
 +            s_lag_block_checks == 0)
 +        {
 +          s_raised_from = clock;
@@ -37882,7 +37893,7 @@ index 0000000..0e69df2
 +                   s_normal_fps, clock);
 +          BootTrace(line);
 +        }
-+        else if (speed < 0.97 && max_speed < 1.0 && cpu_busy >= 0.90 && clock > floor)
++        else if (speed < 0.97 && max_speed < 1.0 && cpu_chain >= 0.90 && clock > floor)
 +        {
 +          // Straight to what the CPU thread sustains (its speed scales with the clock), not 5
 +          // points per second: a match starting at a clock raised during a menu stuttered for
