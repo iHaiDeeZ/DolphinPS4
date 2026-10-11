@@ -23507,10 +23507,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..9df3c32
+index 0000000..0aaec74
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,3178 @@
+@@ -0,0 +1,3177 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -24705,9 +24705,12 @@ index 0000000..9df3c32
 +  Log("closed");
 +}
 +
++void SymbolsDump(Core::System& system);
++
 +void Open(Core::System& system)
 +{
 +  s_game_id = SConfig::GetInstance().GetGameID();
++  SymbolsDump(system);
 +  std::string title = SConfig::GetInstance().GetTitleName();
 +  if (title.empty())
 +    title = s_game_id;
@@ -25414,18 +25417,15 @@ index 0000000..9df3c32
 +// Profiler on: once per session, 20 s into the game, its functions found and the Nintendo SDK
 +// ones named from Dolphin's signature database (Sys/totaldb.dsy), written to
 +// /data/DolphinPS4/symbols-<ID>.txt ("address size name"): the profiles' hot code by name.
-+void SymbolsTick(Core::System& system)
++// The Profiler's list of the game's functions (symbols-<ID>.txt), made the first time the menu
++// opens: the scan stops the game for about a second, which at a fixed time in gameplay showed up
++// as a hitch in every profiled session (Bully, Melee, Donald Duck).
++void SymbolsDump(Core::System& system)
 +{
 +  static bool s_done = false;
-+  static Clock::time_point s_first;
 +  if (s_done)
 +    return;
 +  if (PS4Settings::Get("profile", s_game_id) != "on")
-+    return;
-+  const auto now = Clock::now();
-+  if (s_first == Clock::time_point{})
-+    s_first = now;
-+  if (now - s_first < std::chrono::seconds(20))
 +    return;
 +  s_done = true;
 +  const std::string game = SConfig::GetInstance().GetGameID();
@@ -26563,7 +26563,6 @@ index 0000000..9df3c32
 +    if (Core::GetState(system) == Core::State::Running)
 +    {
 +      RewindTick(system);
-+      SymbolsTick(system);
 +    }
 +    else
 +      s_rewind_tick = Clock::now();
