@@ -520,3 +520,9 @@ Lent seulement la première fois : ensuite le code enregistré est chargé.
 Automatique
 Toujours
 Automatique : enregistre où passe le temps seulement quand le jeu ralentit (30 secondes à chaque fois, quelques fois par session), pour vérifier un passage lent sans rien activer. Toujours : en permanence (coûte des performances). Désactivé : jamais.
+# --- GPU Sync
+Synchro GPU
+Attendre
+Une image de retard
+Ne pas attendre
+Quand le jeu attend entre deux images, Dolphin attend que le GPU émulé ait tout terminé (Attendre). Une image de retard laisse le GPU finir la dernière image pendant que le jeu continue : le CPU et le GPU travaillent en même temps, plus rapide dans les scènes chargées (Donald Duck). Si un jeu clignote ou va trop vite, choisissez Attendre.

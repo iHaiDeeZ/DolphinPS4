@@ -520,3 +520,9 @@ Solo tarda la primera vez: después se carga el código guardado.
 Automático
 Siempre
 Automático: registra en qué se va el tiempo solo cuando el juego va lento (30 segundos cada vez, unas pocas veces por sesión), así se puede revisar una zona lenta sin activar nada. Siempre: todo el tiempo (cuesta rendimiento). Desactivado: nunca.
+# --- GPU Sync
+Sincronización de GPU
+Esperar
+Un fotograma detrás
+No esperar
+Cuando el juego espera entre fotogramas, Dolphin espera a que la GPU emulada termine todo (Esperar). Un fotograma detrás deja que la GPU termine el último fotograma mientras el juego sigue: CPU y GPU trabajan a la vez, más rápido en escenas cargadas (Donald Duck). Si un juego parpadea o va demasiado rápido, elige Esperar.

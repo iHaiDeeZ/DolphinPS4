@@ -522,3 +522,9 @@ Only slow the first time: later starts load the saved code.
 Automatic
 Always
 Automatic: records where the time goes only when the game runs slow (30 seconds at a time, a few times per session), so a slow spot can be checked without turning anything on. Always: the whole time (costs speed). Off: never.
+# --- GPU Sync
+GPU Sync
+Wait
+One Frame Behind
+Don't Wait
+When the game waits between frames, Dolphin waits for the emulated GPU to finish everything (Wait). One Frame Behind lets the GPU finish the last frame while the game goes on: the CPU and GPU work at the same time, faster in busy scenes (Donald Duck). If a game flickers or runs too fast, set Wait.

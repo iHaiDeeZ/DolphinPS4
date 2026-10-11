@@ -27966,10 +27966,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..56ab4c9
+index 0000000..7d2d38e
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1022 @@
+@@ -0,0 +1,1028 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -28097,6 +28097,12 @@ index 0000000..56ab4c9
 +     "PS4 JIT only. On: the game's compiled code is saved to the hard drive and loaded back next "
 +     "time instead of compiled again (fewer stutters in places you've been). Off: compiled fresh "
 +     "every time. Check: compiles fresh and compares with the saved code (a test)."},
++    {"sync_on_idle", "GPU Sync", "Performance",
++     {{"on", "Wait"}, {"frame", "One Frame Behind"}, {"off", "Don't Wait"}}, "on", false,
++     "When the game waits between frames, Dolphin waits for the emulated GPU to finish everything "
++     "(Wait). One Frame Behind lets the GPU finish the last frame while the game goes on: the CPU "
++     "and GPU work at the same time, faster in busy scenes (Donald Duck). If a game flickers or "
++     "runs too fast, set Wait."},
 +    {"speed_mode", "Speed Features", "Performance",
 +     {{"fast", "Fast"}, {"compatible", "Compatible"}}, "fast", false,
 +     "Compatible turns off the port's command-stream shortcuts if a game glitches or freezes."},
