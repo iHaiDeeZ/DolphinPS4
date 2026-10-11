@@ -43677,6 +43677,97 @@ index 0000000..18dc309
 +// the frame's submit, without the video thread waiting). False when the recorder isn't active.
 +bool PS4CommandRecorderQueueCall(void (*fn)(u64, u64, u64, u64), u64 a, u64 b, u64 c, u64 d);
 +}  // namespace Vulkan
+diff --git a/Source/Core/VideoBackends/Vulkan/StateTracker.cpp b/Source/Core/VideoBackends/Vulkan/StateTracker.cpp
+index 623b01f..eff7b46 100644
+--- a/Source/Core/VideoBackends/Vulkan/StateTracker.cpp
++++ b/Source/Core/VideoBackends/Vulkan/StateTracker.cpp
+@@ -520,8 +520,45 @@ void StateTracker::UpdateGXDescriptorSet()
+ 
+   if (m_dirty_flags & DIRTY_FLAG_GX_SAMPLERS || m_gx_descriptor_sets[1] == VK_NULL_HANDLE)
+   {
++#ifdef __ORBIS__
++    const u64 fence = g_command_buffer_mgr->GetCurrentFenceCounter();
++    if (fence != m_ps4_sampler_sets_fence)
++    {
++      m_ps4_sampler_sets.clear();
++      m_ps4_sampler_sets_fence = fence;
++    }
++    u64 key = 0xCBF29CE484222325ull;
++    for (const VkDescriptorImageInfo& s : m_bindings.samplers)
++    {
++      key = (key ^ reinterpret_cast<u64>(s.sampler)) * 0x100000001B3ull;
++      key = (key ^ reinterpret_cast<u64>(s.imageView)) * 0x100000001B3ull;
++      key = (key ^ static_cast<u64>(s.imageLayout)) * 0x100000001B3ull;
++    }
++    const auto same = [this](const PS4SamplerSet& cached) {
++      for (size_t i = 0; i < cached.key.size(); i++)
++      {
++        const VkDescriptorImageInfo& a = cached.key[i];
++        const VkDescriptorImageInfo& b = m_bindings.samplers[i];
++        if (a.sampler != b.sampler || a.imageView != b.imageView || a.imageLayout != b.imageLayout)
++          return false;
++      }
++      return true;
++    };
++    const auto cached = m_ps4_sampler_sets.find(key);
++    if (cached != m_ps4_sampler_sets.end() && same(cached->second))
++    {
++      m_gx_descriptor_sets[1] = cached->second.set;
++      m_dirty_flags = (m_dirty_flags & ~DIRTY_FLAG_GX_SAMPLERS) | DIRTY_FLAG_DESCRIPTOR_SETS;
++    }
++    else
++#endif
++    {
+     m_gx_descriptor_sets[1] = g_command_buffer_mgr->AllocateDescriptorSet(
+         g_object_cache->GetDescriptorSetLayout(DESCRIPTOR_SET_LAYOUT_STANDARD_SAMPLERS));
++#ifdef __ORBIS__
++    if (m_gx_descriptor_sets[1] != VK_NULL_HANDLE)
++      m_ps4_sampler_sets[key] = {m_bindings.samplers, m_gx_descriptor_sets[1]};
++#endif
+ 
+     writes[num_writes++] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                             nullptr,
+@@ -534,6 +571,7 @@ void StateTracker::UpdateGXDescriptorSet()
+                             nullptr,
+                             nullptr};
+     m_dirty_flags = (m_dirty_flags & ~DIRTY_FLAG_GX_SAMPLERS) | DIRTY_FLAG_DESCRIPTOR_SETS;
++    }
+   }
+ 
+   const bool needs_bbox_ssbo = g_backend_info.bSupportsBBox;
+diff --git a/Source/Core/VideoBackends/Vulkan/StateTracker.h b/Source/Core/VideoBackends/Vulkan/StateTracker.h
+index da0e4d8..c5eb5f7 100644
+--- a/Source/Core/VideoBackends/Vulkan/StateTracker.h
++++ b/Source/Core/VideoBackends/Vulkan/StateTracker.h
+@@ -6,6 +6,7 @@
+ #include <array>
+ #include <cstddef>
+ #include <memory>
++#include <unordered_map>
+ 
+ #include "Common/CommonTypes.h"
+ #include "VideoBackends/Vulkan/Constants.h"
+@@ -149,6 +150,20 @@ private:
+     std::array<VkDescriptorImageInfo, VideoCommon::MAX_COMPUTE_SHADER_SAMPLERS> image_textures;
+   } m_bindings = {};
+   std::array<VkDescriptorSet, NUM_GX_DESCRIPTOR_SETS> m_gx_descriptor_sets = {};
++#ifdef __ORBIS__
++  // PS4: the texture/sampler descriptor sets already written in the current command buffer, by
++  // their bindings (UpdateGXDescriptorSet). A busy scene switches between a few hundred texture
++  // combinations over ~1500 draws a frame; each switch allocated and wrote a new set (~6% of the
++  // video thread in Donald Duck's busy areas). Valid until the command buffer's descriptor pools
++  // are reset, so the map is emptied when the command buffer changes.
++  struct PS4SamplerSet
++  {
++    std::array<VkDescriptorImageInfo, VideoCommon::MAX_PIXEL_SHADER_SAMPLERS> key;
++    VkDescriptorSet set;
++  };
++  std::unordered_map<u64, PS4SamplerSet> m_ps4_sampler_sets;
++  u64 m_ps4_sampler_sets_fence = ~0ull;
++#endif
+   std::array<VkDescriptorSet, NUM_UTILITY_DESCRIPTOR_SETS> m_utility_descriptor_sets = {};
+   VkDescriptorSet m_compute_descriptor_set = VK_NULL_HANDLE;
+ 
 diff --git a/Source/Core/VideoBackends/Vulkan/VKMain.cpp b/Source/Core/VideoBackends/Vulkan/VKMain.cpp
 index 6338e52..6383b77 100644
 --- a/Source/Core/VideoBackends/Vulkan/VKMain.cpp
@@ -46477,7 +46568,7 @@ index 4a58c6f..1493495 100644
    clear_scissors = true;
    if (scissors.size() > 1)
 diff --git a/Source/Core/VideoCommon/TextureCacheBase.cpp b/Source/Core/VideoCommon/TextureCacheBase.cpp
-index 4e4567d..88ab994 100644
+index 4e4567d..f5f4223 100644
 --- a/Source/Core/VideoCommon/TextureCacheBase.cpp
 +++ b/Source/Core/VideoCommon/TextureCacheBase.cpp
 @@ -2,6 +2,7 @@
@@ -46496,7 +46587,7 @@ index 4e4567d..88ab994 100644
    if (auto entry = LoadImpl(stage, false))
    {
      if (!DidLinkedAssetsChange(*entry))
-@@ -1311,6 +1313,68 @@ TCacheEntry* TextureCacheBase::LoadImpl(u32 stage, bool force_reload)
+@@ -1311,6 +1313,82 @@ TCacheEntry* TextureCacheBase::LoadImpl(u32 stage, bool force_reload)
    return entry.get();
  }
  
@@ -46545,6 +46636,20 @@ index 4e4567d..88ab994 100644
 +TextureHashMemo s_texture_hash_memo[1024];
 +}  // namespace
 +
++// An EFB copy may write into texture memory: the memoized hashes of what it overlaps are dropped
++// (it used to drop them all - Donald Duck makes ~7 copies a frame, so most textures were hashed
++// again several times a frame).
++static void PS4ForgetTextureHashes(u32 address, u32 size)
++{
++  const u32 from = address & 0x3FFFFFFF, to = from + size;
++  for (TextureHashMemo& memo : s_texture_hash_memo)
++  {
++    const u32 memo_from = memo.address & 0x3FFFFFFF;
++    if (memo_from < to && memo_from + memo.size > from)
++      memo.epoch = 0;
++  }
++}
++
 +static u64 PS4TextureHash(u32 address, const u8* data, u32 size, u32 samples)
 +{
 +  if (!ps4_tex_hash_once)
@@ -46565,7 +46670,7 @@ index 4e4567d..88ab994 100644
  RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSampleSize,
                                             const TextureInfo& texture_info)
  {
-@@ -1347,8 +1411,16 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
+@@ -1347,8 +1425,16 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
  
    // TODO: This doesn't hash GB tiles for preloaded RGBA8 textures (instead, it's hashing more data
    // from the low tmem bank than it should)
@@ -46584,7 +46689,7 @@ index 4e4567d..88ab994 100644
    u32 palette_size = 0;
    if (texture_info.GetPaletteSize())
    {
-@@ -2145,12 +2217,21 @@ bool TextureCacheBase::CopyFilterCanOverflow(const std::array<u32, 3>& coefficie
+@@ -2145,12 +2231,23 @@ bool TextureCacheBase::CopyFilterCanOverflow(const std::array<u32, 3>& coefficie
    return coefficients[0] + coefficients[1] + coefficients[2] >= 128;
  }
  
@@ -46600,13 +46705,15 @@ index 4e4567d..88ab994 100644
  {
 +#ifdef __ORBIS__
 +  ps4_scene_stats[6]++;
-+  ps4_tex_hash_epoch++;  // the copy may write into texture memory: drop memoized hashes
++  // The copy may write into texture memory: the memoized hashes there are dropped (the copy's rows
++  // are dstStride bytes apart; height rows is more than the copy's block rows - on the safe side).
++  PS4ForgetTextureHashes(dstAddr, dstStride * std::max(height, 1u));
 +#endif
 +  PS4_PROFILE(PS4_PROF_EFB_COPY);
    // Emulation methods:
    //
    // - EFB to RAM:
-@@ -3257,7 +3338,11 @@ u64 TCacheEntry::CalculateHash() const
+@@ -3257,7 +3354,11 @@ u64 TCacheEntry::CalculateHash() const
    u8* ptr = memory.GetPointerForRange(addr, size_in_bytes);
    if (memory_stride == bytes_per_row)
    {
