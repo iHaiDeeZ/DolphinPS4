@@ -86,6 +86,12 @@ index 0000000..76b3ce0
 +// once. Without them curl makes sockets non-blocking with fcntl(O_NONBLOCK).
 +#undef SOCK_NONBLOCK
 +#undef SOCK_CLOEXEC
+diff --git a/Externals/imgui/imgui b/Externals/imgui/imgui
+--- a/Externals/imgui/imgui
++++ b/Externals/imgui/imgui
+@@ -1 +1 @@
+-Subproject commit 45acd5e0e82f4c954432533ae9985ff0e1aad6d5
++Subproject commit 45acd5e0e82f4c954432533ae9985ff0e1aad6d5-dirty
 diff --git a/Externals/zstd/CMakeLists.txt b/Externals/zstd/CMakeLists.txt
 index d83ce4c..07b3a67 100644
 --- a/Externals/zstd/CMakeLists.txt
@@ -27162,10 +27168,10 @@ index 0000000..b9b11df
 +}  // namespace PS4IngameMenu
 diff --git a/Source/Core/DolphinNoGUI/PS4Lang.cpp b/Source/Core/DolphinNoGUI/PS4Lang.cpp
 new file mode 100644
-index 0000000..4346475
+index 0000000..f5a5796
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Lang.cpp
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,413 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -27173,12 +27179,16 @@ index 0000000..4346475
 +
 +#include <algorithm>
 +#include <cstdio>
++#include <cstring>
 +#include <fstream>
 +#include <mutex>
 +#include <unordered_map>
 +#include <unordered_set>
 +
 +extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
++
++// The right-to-left hook of ImGui's text drawing (Externals/imgui/imgui/imgui_draw.cpp).
++extern bool (*GImFontRtlReorder)(const char* begin, const char* end, char* out);
 +
 +namespace PS4Lang
 +{
@@ -27193,6 +27203,8 @@ index 0000000..4346475
 +    {"nl", "Nederlands", 5, 6},    {"pl", "Polski", 0, 1},    {"tr", "Türkçe", 0, 1},
 +    {"ru", "Русский", 0, 1},       {"ja", "日本語", 0, 0},     {"zh", "中文 (简体)", 0, 7},
 +    {"ko", "한국어", 0, 9},
++    // Arabic: neither console has it. The name in its joined letter shapes (make-lang.py).
++    {"ar", "\xef\xba\x8d\xef\xbb\x9f\xef\xbb\x8c\xef\xba\xae\xef\xba\x91\xef\xbb\xb4\xef\xba\x94", 0, 1},
 +};
 +
 +struct Pattern
@@ -27422,6 +27434,130 @@ index 0000000..4346475
 +  return &translated == &text ? english : translated.c_str();
 +}
 +
++// Right-to-left drawing (Arabic), for every ImGui text (imgui_draw.cpp, ImFont::RenderText): a
++// line is drawn right to left - runs of Arabic reversed, runs of left-to-right text (Latin words,
++// numbers, paths: neutral characters between two left-to-right ones join them) kept in order,
++// and the runs themselves in reverse order. Brackets inside Arabic runs are mirrored.
++namespace
++{
++bool IsRightToLeft(char32_t c)
++{
++  return (c >= 0x0600 && c <= 0x06FF) || (c >= 0xFB50 && c <= 0xFDFF) || (c >= 0xFE70 && c <= 0xFEFF);
++}
++
++bool IsLeftToRight(char32_t c)
++{
++  return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
++         (c >= 0xC0 && c < 0x0600) || (c >= 0x0700 && c < 0xFB50 && !(c >= 0x2000 && c <= 0x206F)) ||
++         c >= 0x10000;
++}
++
++char32_t Mirror(char32_t c)
++{
++  switch (c)
++  {
++  case '(': return ')';
++  case ')': return '(';
++  case '[': return ']';
++  case ']': return '[';
++  case '<': return '>';
++  case '>': return '<';
++  case 0xAB: return 0xBB;
++  case 0xBB: return 0xAB;
++  default: return c;
++  }
++}
++
++struct Char
++{
++  char32_t c;
++  const char* at;
++  int bytes;
++};
++
++bool ReorderRightToLeft(const char* begin, const char* end, char* out)
++{
++  std::vector<Char> chars;
++  bool any = false;
++  for (const char* p = begin; p < end;)
++  {
++    const unsigned char b = static_cast<unsigned char>(*p);
++    const int n = b < 0x80 ? 1 : b < 0xE0 ? 2 : b < 0xF0 ? 3 : 4;
++    if (p + n > end)
++      return false;
++    char32_t c = n == 1 ? b : n == 2 ? (b & 0x1F) : n == 3 ? (b & 0x0F) : (b & 0x07);
++    for (int i = 1; i < n; i++)
++      c = (c << 6) | (static_cast<unsigned char>(p[i]) & 0x3F);
++    any |= IsRightToLeft(c);
++    chars.push_back({c, p, n});
++    p += n;
++  }
++  if (!any)
++    return false;
++  // Each character's direction: neutrals take left-to-right only between two left-to-right ones.
++  const size_t count = chars.size();
++  std::vector<bool> ltr(count);
++  for (size_t i = 0; i < count; i++)
++    ltr[i] = IsLeftToRight(chars[i].c);
++  for (size_t i = 0; i < count; i++)
++  {
++    if (ltr[i] || IsRightToLeft(chars[i].c))
++      continue;
++    size_t a = i, b = i;
++    while (a > 0 && !ltr[a - 1] && !IsRightToLeft(chars[a - 1].c))
++      a--;
++    while (b + 1 < count && !ltr[b + 1] && !IsRightToLeft(chars[b + 1].c))
++      b++;
++    const bool between = a > 0 && b + 1 < count && ltr[a - 1] && ltr[b + 1];
++    for (size_t k = a; k <= b; k++)
++      ltr[k] = between;
++    i = b;
++  }
++  // Runs, last first; right-to-left runs reversed (and mirrored).
++  char* w = out;
++  size_t run_end = count;
++  while (run_end > 0)
++  {
++    size_t run_begin = run_end - 1;
++    while (run_begin > 0 && ltr[run_begin - 1] == ltr[run_end - 1])
++      run_begin--;
++    if (ltr[run_end - 1])
++    {
++      for (size_t k = run_begin; k < run_end; k++)
++      {
++        std::memcpy(w, chars[k].at, chars[k].bytes);
++        w += chars[k].bytes;
++      }
++    }
++    else
++    {
++      for (size_t k = run_end; k-- > run_begin;)
++      {
++        const char32_t m = Mirror(chars[k].c);
++        if (m != chars[k].c)
++          *w = static_cast<char>(m);  // the mirrored brackets are all one byte or Latin-1 pairs
++        if (m != chars[k].c && chars[k].bytes == 1)
++        {
++          w += 1;
++          continue;
++        }
++        if (m != chars[k].c && chars[k].bytes == 2)
++        {
++          w[0] = static_cast<char>(0xC0 | (m >> 6));
++          w[1] = static_cast<char>(0x80 | (m & 0x3F));
++          w += 2;
++          continue;
++        }
++        std::memcpy(w, chars[k].at, chars[k].bytes);
++        w += chars[k].bytes;
++      }
++    }
++    run_end = run_begin;
++  }
++  return true;
++}
++}  // namespace
++
 +std::vector<std::string> ExtraFonts(const std::string& assets_dir, bool bold)
 +{
 +  // Japanese, Chinese and Korean draw the same Han characters differently: the current
@@ -27439,6 +27575,13 @@ index 0000000..4346475
 +    if (std::ifstream(path).good())
 +      fonts.push_back(path);
 +  }
++  // Arabic (DejaVu Sans, its joined letter shapes), for the language and its name in Settings.
++  const std::string arabic =
++      assets_dir + "/xmb/fonts/DejaVuSansArabic-" + (bold ? "Bold" : "Regular") + ".ttf";
++  if (std::ifstream(arabic).good())
++    fonts.push_back(arabic);
++  // Every text drawn from now on can hold Arabic: lines are drawn right to left where they do.
++  GImFontRtlReorder = &ReorderRightToLeft;
 +  return fonts;
 +}
 +}  // namespace PS4Lang
@@ -28080,10 +28223,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..5b865af
+index 0000000..d8e30be
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1032 @@
+@@ -0,0 +1,1033 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -28250,7 +28393,8 @@ index 0000000..5b865af
 +      {"ru", "Русский"},
 +      {"ja", "日本語"},
 +      {"zh", "中文 (简体)"},
-+      {"ko", "한국어"}},
++      {"ko", "한국어"},
++      {"ar", "\xef\xba\x8d\xef\xbb\x9f\xef\xbb\x8c\xef\xba\xae\xef\xba\x91\xef\xbb\xb4\xef\xba\x94"}},
 +     "en", false,
 +     "The menus' language, and the games' own language where the GameCube or Wii has it. "
 +     "The menu restarts to change it."},
