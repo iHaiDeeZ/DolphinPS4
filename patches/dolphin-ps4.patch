@@ -16089,10 +16089,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..685cd6d
+index 0000000..26d10d1
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,6815 @@
+@@ -0,0 +1,6843 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -17538,6 +17538,34 @@ index 0000000..685cd6d
 +  }
 +  if (aspect)
 +    *aspect = static_cast<float>(width) / static_cast<float>(height);
++  // Shrunk to what the menus draw (covers are at most ~460 pixels tall): full-size GameTDB covers
++  // took several MB of GPU memory each, and a large library ran out (crash at every start).
++  constexpr u32 MAX_SIDE = 512;
++  if (width > MAX_SIDE || height > MAX_SIDE)
++  {
++    const u32 factor = (std::max(width, height) + MAX_SIDE - 1) / MAX_SIDE;
++    const u32 w = std::max(1u, width / factor), h = std::max(1u, height / factor);
++    std::vector<u8> small(static_cast<size_t>(w) * h * 4);
++    for (u32 y = 0; y < h; y++)
++    {
++      for (u32 x = 0; x < w; x++)
++      {
++        u32 sum[4] = {};
++        for (u32 dy = 0; dy < factor; dy++)
++        {
++          const u8* row = pixels.data() + (static_cast<size_t>(y * factor + dy) * width + x * factor) * 4;
++          for (u32 dx = 0; dx < factor; dx++)
++          {
++            for (int c = 0; c < 4; c++)
++              sum[c] += row[dx * 4 + c];
++          }
++        }
++        for (int c = 0; c < 4; c++)
++          small[(static_cast<size_t>(y) * w + x) * 4 + c] = static_cast<u8>(sum[c] / (factor * factor));
++      }
++    }
++    return m_display.CreateTexture(small.data(), w, h);
++  }
 +  return m_display.CreateTexture(pixels.data(), width, height);
 +}
 +
@@ -22966,10 +22994,10 @@ index 0000000..ae13e6a
 +}  // namespace PS4XMB
 diff --git a/Source/Core/DolphinNoGUI/PS4XMBDisplay.cpp b/Source/Core/DolphinNoGUI/PS4XMBDisplay.cpp
 new file mode 100755
-index 0000000..bf489c7
+index 0000000..12d6702
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMBDisplay.cpp
-@@ -0,0 +1,567 @@
+@@ -0,0 +1,611 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -23294,7 +23322,8 @@ index 0000000..bf489c7
 +  cb.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 +  cb.commandBufferCount = 1;
 +  VkCommandBuffer commands = VK_NULL_HANDLE;
-+  vkAllocateCommandBuffers(s_device, &cb, &commands);
++  if (vkAllocateCommandBuffers(s_device, &cb, &commands) != VK_SUCCESS)
++    return VK_NULL_HANDLE;
 +  VkCommandBufferBeginInfo begin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
 +  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 +  vkBeginCommandBuffer(commands, &begin);
@@ -23341,7 +23370,9 @@ index 0000000..bf489c7
 +  info.Device = s_device;
 +  info.QueueFamily = s_queue_family;
 +  info.Queue = s_queue;
-+  info.DescriptorPoolSize = 512;  // the font atlas plus every game banner and wallpaper
++  // The font atlas plus every game's cover and banner and the wallpapers: 512 ran out with large
++  // libraries, and the launcher crashed at every start (v04.00-v04.04).
++  info.DescriptorPoolSize = 4096;
 +  info.RenderPass = s_render_pass;
 +  info.MinImageCount = IMAGES;
 +  info.ImageCount = IMAGES;
@@ -23457,32 +23488,65 @@ index 0000000..bf489c7
 +    return ImTextureID{};
 +  VkMemoryRequirements req;
 +  vkGetImageMemoryRequirements(s_device, texture.image, &req);
++  // Any step failing (out of GPU memory or descriptors with a large library): no texture - the
++  // menu draws its plain tile - instead of a null handle crashing the driver.
++  VkBuffer staging = VK_NULL_HANDLE;
++  VkDeviceMemory staging_memory = VK_NULL_HANDLE;
++  const auto fail = [&](const char* what) {
++    static int s_logged = 0;
++    if (s_logged++ < 5)
++      fprintf(stderr, "[xmb] texture %ux%u not created: %s\n", width, height, what);
++    if (staging != VK_NULL_HANDLE)
++      vkDestroyBuffer(s_device, staging, nullptr);
++    if (staging_memory != VK_NULL_HANDLE)
++      vkFreeMemory(s_device, staging_memory, nullptr);
++    if (texture.view != VK_NULL_HANDLE)
++      vkDestroyImageView(s_device, texture.view, nullptr);
++    vkDestroyImage(s_device, texture.image, nullptr);
++    if (texture.memory != VK_NULL_HANDLE)
++      vkFreeMemory(s_device, texture.memory, nullptr);
++    return ImTextureID{};
++  };
 +  VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
 +  alloc.allocationSize = req.size;
 +  alloc.memoryTypeIndex = MemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-+  vkAllocateMemory(s_device, &alloc, nullptr, &texture.memory);
-+  vkBindImageMemory(s_device, texture.image, texture.memory, 0);
++  if (vkAllocateMemory(s_device, &alloc, nullptr, &texture.memory) != VK_SUCCESS)
++  {
++    texture.memory = VK_NULL_HANDLE;
++    return fail("image memory");
++  }
++  if (vkBindImageMemory(s_device, texture.image, texture.memory, 0) != VK_SUCCESS)
++    return fail("bind image memory");
 +
 +  // Staging buffer with the pixels.
 +  const VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4;
-+  VkBuffer staging = VK_NULL_HANDLE;
-+  VkDeviceMemory staging_memory = VK_NULL_HANDLE;
 +  VkBufferCreateInfo buffer = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
 +  buffer.size = size;
 +  buffer.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-+  vkCreateBuffer(s_device, &buffer, nullptr, &staging);
++  if (vkCreateBuffer(s_device, &buffer, nullptr, &staging) != VK_SUCCESS)
++  {
++    staging = VK_NULL_HANDLE;
++    return fail("staging buffer");
++  }
 +  vkGetBufferMemoryRequirements(s_device, staging, &req);
 +  alloc.allocationSize = req.size;
 +  alloc.memoryTypeIndex = MemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
 +                                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-+  vkAllocateMemory(s_device, &alloc, nullptr, &staging_memory);
++  if (vkAllocateMemory(s_device, &alloc, nullptr, &staging_memory) != VK_SUCCESS)
++  {
++    staging_memory = VK_NULL_HANDLE;
++    return fail("staging memory");
++  }
 +  vkBindBufferMemory(s_device, staging, staging_memory, 0);
 +  void* mapped = nullptr;
-+  vkMapMemory(s_device, staging_memory, 0, size, 0, &mapped);
++  if (vkMapMemory(s_device, staging_memory, 0, size, 0, &mapped) != VK_SUCCESS || !mapped)
++    return fail("map");
 +  std::memcpy(mapped, rgba, size);
 +  vkUnmapMemory(s_device, staging_memory);
 +
 +  VkCommandBuffer commands = BeginOneTimeCommands();
++  if (commands == VK_NULL_HANDLE)
++    return fail("command buffer");
 +  VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
 +  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 +  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -23514,9 +23578,17 @@ index 0000000..bf489c7
 +  view.viewType = VK_IMAGE_VIEW_TYPE_2D;
 +  view.format = FORMAT;
 +  view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-+  vkCreateImageView(s_device, &view, nullptr, &texture.view);
++  staging = VK_NULL_HANDLE;
++  staging_memory = VK_NULL_HANDLE;
++  if (vkCreateImageView(s_device, &view, nullptr, &texture.view) != VK_SUCCESS)
++  {
++    texture.view = VK_NULL_HANDLE;
++    return fail("image view");
++  }
 +  texture.set = ImGui_ImplVulkan_AddTexture(s_sampler, texture.view,
 +                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
++  if (texture.set == VK_NULL_HANDLE)
++    return fail("descriptor set (pool full)");
 +  s_textures.push_back(texture);
 +  return reinterpret_cast<ImTextureID>(texture.set);
 +}
