@@ -6900,10 +6900,10 @@ index 0000000..883477f
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Common/EmuCodeBlock.cpp b/Source/Core/Core/PowerPC/JitPS4/Common/EmuCodeBlock.cpp
 new file mode 100644
-index 0000000..1fd1ac4
+index 0000000..b98a56f
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Common/EmuCodeBlock.cpp
-@@ -0,0 +1,1195 @@
+@@ -0,0 +1,1190 @@
 +// Copyright 2016 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -7732,11 +7732,6 @@ index 0000000..1fd1ac4
 +  SafeWriteRegToReg(R(reg_value), reg_addr, accessSize, offset, registersInUse, flags);
 +}
 +
-+bool EmuCodeBlock::WriteClobbersRegValue(int accessSize, bool swap)
-+{
-+  return false;  // MOVBE stores in place
-+}
-+
 +bool EmuCodeBlock::WriteToConstAddress(int accessSize, OpArg arg, u32 address,
 +                                       BitSet32 registersInUse)
 +{
@@ -8101,10 +8096,10 @@ index 0000000..1fd1ac4
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Common/EmuCodeBlock.h b/Source/Core/Core/PowerPC/JitPS4/Common/EmuCodeBlock.h
 new file mode 100644
-index 0000000..67b1de6
+index 0000000..174425f
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Common/EmuCodeBlock.h
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,160 @@
 +// Copyright 2016 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -8221,9 +8216,6 @@ index 0000000..67b1de6
 +                         BitSet32 registersInUse, int flags = 0);
 +  void SafeWriteRegToReg(Gen::X64Reg reg_value, Gen::X64Reg reg_addr, int accessSize, s32 offset,
 +                         BitSet32 registersInUse, int flags = 0);
-+
-+  // applies to safe and unsafe WriteRegToReg
-+  bool WriteClobbersRegValue(int accessSize, bool swap);
 +
 +  // returns true if an exception could have been caused
 +  bool WriteToConstAddress(int accessSize, Gen::OpArg arg, u32 address, BitSet32 registersInUse);
@@ -15941,10 +15933,10 @@ index 0000000..8dfb1e7
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit_LoadStore.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit_LoadStore.cpp
 new file mode 100644
-index 0000000..c12500e
+index 0000000..5895ed0
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit_LoadStore.cpp
-@@ -0,0 +1,659 @@
+@@ -0,0 +1,634 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -16460,25 +16452,7 @@ index 0000000..c12500e
 +  else
 +  {
 +    RCX64Reg Ra = gpr.Bind(a, update ? RCMode::ReadWrite : RCMode::Read);
-+    RCOpArg reg_value;
-+    if (WriteClobbersRegValue(accessSize, /* swap */ true))
-+    {
-+      if (gpr.IsImm(s))
-+      {
-+        reg_value = RCOpArg::Imm32(gpr.Imm32(s));
-+      }
-+      else
-+      {
-+        RCOpArg Rs = gpr.Use(s, RCMode::Read);
-+        RegCache::Realize(Rs);
-+        reg_value = RCOpArg::R(RSCRATCH2);
-+        MOV(32, reg_value, Rs);
-+      }
-+    }
-+    else
-+    {
-+      reg_value = gpr.BindOrImm(s, RCMode::Read);
-+    }
++    RCOpArg reg_value = gpr.BindOrImm(s, RCMode::Read);  // MOVBE stores leave it intact
 +    RegCache::Realize(Ra, reg_value);
 +    SafeWriteRegToReg(reg_value, Ra, accessSize, offset, CallerSavedRegistersInUse(),
 +                      SAFE_LOADSTORE_CLOBBER_RSCRATCH_INSTEAD_OF_ADDR);
@@ -16495,7 +16469,9 @@ index 0000000..c12500e
 +  int a = inst.RA, b = inst.RB, s = inst.RS;
 +  bool update = !!(inst.SUBOP10 & 32);
 +  bool byte_reverse = !!(inst.SUBOP10 & 512);
-+  FALLBACK_IF(!a || (update && a == s) || (update && jo.memcheck && a == b));
++  // rS == rA with update (stwux sp, sp, r11: the Wii SDK's aligned stack frames, in hot matrix
++  // code) stores rA's old value, then updates rA, as stwu does: no interpreter fallback needed.
++  FALLBACK_IF(!a || (update && jo.memcheck && a == b));
 +
 +  int accessSize;
 +  switch (inst.SUBOP10 & ~32)
@@ -16517,22 +16493,13 @@ index 0000000..c12500e
 +    break;
 +  }
 +
-+  const bool does_clobber = WriteClobbersRegValue(accessSize, /* swap */ !byte_reverse);
-+
 +  RCOpArg Ra = update ? gpr.Bind(a, RCMode::ReadWrite) : gpr.Use(a, RCMode::Read);
 +  RCOpArg Rb = gpr.Use(b, RCMode::Read);
-+  RCOpArg Rs = does_clobber ?
-+                   (gpr.IsImm(s) ? RCOpArg::Imm32(gpr.Imm32(s)) : gpr.Use(s, RCMode::Read)) :
-+                   gpr.BindOrImm(s, RCMode::Read);
++  RCOpArg Rs = gpr.BindOrImm(s, RCMode::Read);  // MOVBE stores leave it intact
 +  RegCache::Realize(Ra, Rb, Rs);
 +
 +  MOV_sum(32, RSCRATCH2, Ra, Rb);
 +
-+  if (!Rs.IsImm() && does_clobber)
-+  {
-+    MOV(32, R(RSCRATCH), Rs);
-+    Rs = RCOpArg::R(RSCRATCH);
-+  }
 +  BitSet32 registersInUse = CallerSavedRegistersInUse();
 +  if (update)
 +    registersInUse[RSCRATCH2] = true;
