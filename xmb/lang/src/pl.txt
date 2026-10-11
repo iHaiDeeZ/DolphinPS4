@@ -502,3 +502,8 @@ Offline
 Brak łatek dla tej gry
 Najnowsze łatki Dolphina dla tej gry, sprawdzane na GitHubie po otwarciu tej strony; nowe są dodawane tak, jak dostarcza je Dolphin.
 Poprawka lub przyspieszenie od Dolphina dla tej gry. Działa od następnego uruchomienia gry.
+# --- CPU Recompiler
+Rekompilator CPU
+Dolphin JIT
+PS4 JIT (Eksperymentalny)
+PS4 JIT: rekompilator stworzony tylko dla procesora PS4, optymalizowany gra po grze. Eksperymentalny: jeśli gra działa źle, wróć do Dolphin JIT.

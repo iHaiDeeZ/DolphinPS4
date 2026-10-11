@@ -502,3 +502,8 @@ Hors ligne
 Aucun patch pour ce jeu
 Les patchs les plus récents de Dolphin pour ce jeu, vérifiés sur GitHub à l'ouverture de cette page ; les nouveaux sont ajoutés tels que Dolphin les fournit.
 Un correctif ou une astuce de vitesse de Dolphin pour ce jeu. S'applique au prochain lancement du jeu.
+# --- CPU Recompiler
+Recompilateur CPU
+Dolphin JIT
+PS4 JIT (Expérimental)
+PS4 JIT : un recompilateur conçu uniquement pour le processeur de la PS4, optimisé jeu par jeu. Expérimental : si un jeu pose problème, revenez à Dolphin JIT.

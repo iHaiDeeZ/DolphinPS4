@@ -502,3 +502,8 @@ Offline
 Keine Patches für dieses Spiel
 Dolphins neueste Patches für dieses Spiel, beim Öffnen dieser Seite auf GitHub geprüft; neue werden so hinzugefügt, wie Dolphin sie ausliefert.
 Ein Fix oder Speed-Hack von Dolphin für dieses Spiel. Gilt ab dem nächsten Spielstart.
+# --- CPU Recompiler
+CPU-Recompiler
+Dolphin JIT
+PS4 JIT (Experimentell)
+PS4 JIT: ein Recompiler nur für den Prozessor der PS4, wird Spiel für Spiel optimiert. Experimentell: Wenn ein Spiel Probleme macht, zurück auf Dolphin JIT stellen.

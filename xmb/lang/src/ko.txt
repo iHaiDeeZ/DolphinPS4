@@ -502,3 +502,8 @@ Dolphin에서 새 패치 {}개
 이 게임용 패치가 없습니다
 이 게임용 Dolphin 최신 패치. 이 페이지를 열면 GitHub에서 확인하고, 새 패치는 Dolphin 기본값대로 추가됩니다.
 이 게임용 Dolphin 수정 또는 속도 핵. 다음에 게임을 시작할 때 적용됩니다.
+# --- CPU Recompiler
+CPU 리컴파일러
+Dolphin JIT
+PS4 JIT (실험적)
+PS4 JIT: PS4 프로세서 전용 리컴파일러로, 게임별로 최적화 중입니다. 실험적 기능: 게임이 이상하면 Dolphin JIT로 되돌리세요.

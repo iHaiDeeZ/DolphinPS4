@@ -502,3 +502,8 @@ Sin conexión
 No hay parches para este juego
 Los parches más recientes de Dolphin para este juego, comprobados en GitHub al abrir esta página; los nuevos se añaden tal como Dolphin los incluye.
 Una corrección o mejora de velocidad de Dolphin para este juego. Se aplica la próxima vez que inicies el juego.
+# --- CPU Recompiler
+Recompilador de CPU
+Dolphin JIT
+PS4 JIT (Experimental)
+PS4 JIT: un recompilador hecho solo para el procesador de la PS4, optimizado juego a juego. Experimental: si un juego falla, vuelve a Dolphin JIT.

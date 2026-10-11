@@ -502,3 +502,8 @@ Dolphin 最新
 此游戏没有补丁
 此游戏的 Dolphin 最新补丁，打开此页面时在 GitHub 上检查；新补丁按 Dolphin 的默认状态加入。
 Dolphin 为此游戏提供的修复或加速补丁。下次启动游戏时生效。
+# --- CPU Recompiler
+CPU 重编译器
+Dolphin JIT
+PS4 JIT（实验性）
+PS4 JIT：专为 PS4 处理器打造的重编译器，正逐个游戏优化。实验性：如果游戏出现问题，请改回 Dolphin JIT。
