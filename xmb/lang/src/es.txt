@@ -526,3 +526,6 @@ Esperar
 Un fotograma detrás
 No esperar
 Cuando el juego espera entre fotogramas, Dolphin espera a que la GPU emulada termine todo (Esperar). Un fotograma detrás deja que la GPU termine el último fotograma mientras el juego sigue: CPU y GPU trabajan a la vez, más rápido en escenas cargadas (Donald Duck). Si un juego parpadea o va demasiado rápido, elige Esperar.
+# --- Recompiler Check
+Comprobación del recompilador
+Solo PS4 JIT: mientras juegas, el código compilado del juego se compara con el intérprete de Dolphin y cada diferencia se registra (boot-trace.log). Más lento; para probar versiones nuevas del recompilador.

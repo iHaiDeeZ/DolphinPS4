@@ -526,3 +526,6 @@ Attendre
 Une image de retard
 Ne pas attendre
 Quand le jeu attend entre deux images, Dolphin attend que le GPU émulé ait tout terminé (Attendre). Une image de retard laisse le GPU finir la dernière image pendant que le jeu continue : le CPU et le GPU travaillent en même temps, plus rapide dans les scènes chargées (Donald Duck). Si un jeu clignote ou va trop vite, choisissez Attendre.
+# --- Recompiler Check
+Vérification du recompilateur
+PS4 JIT uniquement : pendant que vous jouez, le code compilé du jeu est comparé à l'interpréteur de Dolphin et chaque différence est notée (boot-trace.log). Plus lent ; pour tester les nouvelles versions du recompilateur.

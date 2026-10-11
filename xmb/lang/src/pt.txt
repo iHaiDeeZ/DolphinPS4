@@ -527,3 +527,6 @@ Esperar
 Um quadro atrás
 Não esperar
 Quando o jogo espera entre quadros, o Dolphin espera a GPU emulada terminar tudo (Esperar). Um quadro atrás deixa a GPU terminar o último quadro enquanto o jogo continua: CPU e GPU trabalham ao mesmo tempo, mais rápido em cenas pesadas (Donald Duck). Se um jogo piscar ou ficar rápido demais, escolha Esperar.
+# --- Recompiler Check
+Verificação do recompilador
+Só PS4 JIT: enquanto você joga, o código compilado do jogo é comparado com o interpretador do Dolphin e cada diferença é registrada (boot-trace.log). Mais lento; para testar novas versões do recompilador.

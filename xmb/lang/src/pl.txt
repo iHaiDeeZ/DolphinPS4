@@ -526,3 +526,6 @@ Czekaj
 Jedna klatka z tyłu
 Nie czekaj
 Gdy gra czeka między klatkami, Dolphin czeka, aż emulowane GPU skończy wszystko (Czekaj). Jedna klatka z tyłu pozwala GPU dokończyć poprzednią klatkę, gdy gra działa dalej: CPU i GPU pracują jednocześnie, szybciej w ciężkich scenach (Donald Duck). Jeśli gra miga lub działa za szybko, wybierz Czekaj.
+# --- Recompiler Check
+Sprawdzanie rekompilatora
+Tylko PS4 JIT: podczas gry skompilowany kod gry jest porównywany z interpreterem Dolphina, a każda różnica zapisywana (boot-trace.log). Wolniej; do testowania nowych wersji rekompilatora.

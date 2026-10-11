@@ -526,3 +526,6 @@ Attendi
 Un fotogramma indietro
 Non attendere
 Quando il gioco attende tra i fotogrammi, Dolphin attende che la GPU emulata finisca tutto (Attendi). Un fotogramma indietro lascia che la GPU finisca l'ultimo fotogramma mentre il gioco prosegue: CPU e GPU lavorano insieme, più veloce nelle scene pesanti (Donald Duck). Se un gioco sfarfalla o va troppo veloce, scegli Attendi.
+# --- Recompiler Check
+Verifica del ricompilatore
+Solo PS4 JIT: mentre giochi, il codice compilato del gioco viene confrontato con l'interprete di Dolphin e ogni differenza viene registrata (boot-trace.log). Più lento; per provare nuove versioni del ricompilatore.

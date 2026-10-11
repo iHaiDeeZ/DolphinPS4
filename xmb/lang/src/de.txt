@@ -526,3 +526,6 @@ Warten
 Ein Bild zurück
 Nicht warten
 Wenn das Spiel zwischen zwei Bildern wartet, wartet Dolphin, bis die emulierte GPU alles fertig hat (Warten). Ein Bild zurück lässt die GPU das letzte Bild fertigstellen, während das Spiel weiterläuft: CPU und GPU arbeiten gleichzeitig, schneller in vollen Szenen (Donald Duck). Wenn ein Spiel flackert oder zu schnell läuft: Warten.
+# --- Recompiler Check
+Recompiler-Prüfung
+Nur PS4 JIT: Während du spielst, wird der übersetzte Code des Spiels mit Dolphins Interpreter verglichen und jeder Unterschied protokolliert (boot-trace.log). Langsamer; zum Testen neuer Recompiler-Versionen.

@@ -1864,7 +1864,7 @@ index 85444ef..6ccc1d3 100644
    {
      return Core::Init(
 diff --git a/Source/Core/Core/CMakeLists.txt b/Source/Core/Core/CMakeLists.txt
-index 56c8dba..280fb8d 100644
+index 56c8dba..0622dfa 100644
 --- a/Source/Core/Core/CMakeLists.txt
 +++ b/Source/Core/Core/CMakeLists.txt
 @@ -131,6 +131,8 @@ add_library(core
@@ -1885,7 +1885,7 @@ index 56c8dba..280fb8d 100644
    PowerPC/Interpreter/Interpreter.h
    PowerPC/JitCommon/ConstantPropagation.cpp
    PowerPC/JitCommon/ConstantPropagation.h
-@@ -656,6 +660,44 @@ if(_M_X86_64)
+@@ -656,6 +660,46 @@ if(_M_X86_64)
      PowerPC/Jit64Common/TrampolineCache.cpp
      PowerPC/Jit64Common/TrampolineCache.h
      PowerPC/Jit64Common/TrampolineInfo.h
@@ -1907,6 +1907,8 @@ index 56c8dba..280fb8d 100644
 +    PowerPC/JitPS4/CodeCache.cpp
 +    PowerPC/JitPS4/CodeCache.h
 +    PowerPC/JitPS4/Jit.cpp
++    PowerPC/JitPS4/Verify.cpp
++    PowerPC/JitPS4/Verify.h
 +    PowerPC/JitPS4/Jit.h
 +    PowerPC/JitPS4/Jit64_Tables.cpp
 +    PowerPC/JitPS4/JitAsm.cpp
@@ -1930,7 +1932,7 @@ index 56c8dba..280fb8d 100644
    )
  elseif(_M_ARM_64)
    target_sources(core PRIVATE
-@@ -784,7 +826,7 @@ elseif(APPLE)
+@@ -784,7 +828,7 @@ elseif(APPLE)
      HW/EXI/BBA/TAP_Apple.cpp
    )
    target_link_libraries(core PUBLIC ${IOB_LIBRARY})
@@ -9535,10 +9537,10 @@ index 0000000..482d3bc
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
 new file mode 100644
-index 0000000..c936aa2
+index 0000000..a93e665
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
-@@ -0,0 +1,1654 @@
+@@ -0,0 +1,1680 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -9864,7 +9866,8 @@ index 0000000..c936aa2
 +    m_ps4_pins.clear();
 +    gpr.ClearPinned();
 +    std::string pins;
-+    for (int k = 0; k < 4 && !jo.memcheck; k++)
++    // (Not with the recompiler check: its replays read every register from ppcState.)
++    for (int k = 0; k < 4 && !jo.memcheck && !ps4_jit_verify; k++)
 +    {
 +      if (ps4_jit_pin[k] < 0 || ps4_jit_pin[k] > 31)
 +        continue;
@@ -10352,11 +10355,25 @@ index 0000000..c936aa2
 +  }
 +}
 +
++void JitPS4::PS4VerifyExit(std::optional<u32> destination)
++{
++  // Recompiler check: every register is in ppcState here (the exits flush first).
++  if (!ps4_jit_verify)
++    return;
++  ABI_PushRegistersAndAdjustStack(BitSet32{RSCRATCH, RSCRATCH2}, 0);
++  if (destination)
++    ABI_CallFunctionPC(VerifyExitFromJit, this, *destination);
++  else
++    ABI_CallFunctionPR(VerifyExitFromJit, this, RSCRATCH);
++  ABI_PopRegistersAndAdjustStack(BitSet32{RSCRATCH, RSCRATCH2}, 0);
++}
++
 +void JitPS4::WriteExit(u32 destination, bool bl, u32 after)
 +{
 +  if (!m_enable_blr_optimization)
 +    bl = false;
 +
++  PS4VerifyExit(destination);
 +  Cleanup();
 +
 +  if (bl)
@@ -10456,6 +10473,7 @@ index 0000000..c936aa2
 +{
 +  if (!m_enable_blr_optimization)
 +    bl = false;
++  PS4VerifyExit(std::nullopt);
 +  MOV(32, PPCSTATE(pc), R(RSCRATCH));
 +  Cleanup();
 +
@@ -10528,6 +10546,7 @@ index 0000000..c936aa2
 +    WriteExitDestInRSCRATCH();
 +    return;
 +  }
++  PS4VerifyExit(std::nullopt);
 +  MOV(32, PPCSTATE(pc), R(RSCRATCH));
 +  bool disturbed = Cleanup();
 +  if (disturbed)
@@ -10560,6 +10579,7 @@ index 0000000..c936aa2
 +
 +void JitPS4::WriteIdleExit(u32 destination)
 +{
++  PS4VerifyExit(destination);
 +  ABI_PushRegistersAndAdjustStack({}, 0);
 +  ABI_CallFunction(CoreTiming::GlobalIdle);
 +  ABI_PopRegistersAndAdjustStack({}, 0);
@@ -10791,6 +10811,14 @@ index 0000000..c936aa2
 +
 +  // TODO: Test if this or AlignCode16 make a difference from GetCodePtr
 +  b->normalEntry = AlignCode4();
++
++  // Recompiler check (Verify.cpp): the block is replayed in the interpreter first.
++  if (ps4_jit_verify)
++  {
++    ABI_PushRegistersAndAdjustStack({}, 0);
++    ABI_CallFunctionPC(VerifyBeginFromJit, this, em_address);
++    ABI_PopRegistersAndAdjustStack({}, 0);
++  }
 +
 +  // Start up the register allocators
 +  // They use the information in gpa/fpa to preload commonly used registers.
@@ -11195,10 +11223,10 @@ index 0000000..c936aa2
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.h b/Source/Core/Core/PowerPC/JitPS4/Jit.h
 new file mode 100644
-index 0000000..dad23e5
+index 0000000..75f1f26
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.h
-@@ -0,0 +1,327 @@
+@@ -0,0 +1,331 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11224,6 +11252,7 @@ index 0000000..dad23e5
 +#include "Common/RangeSizeSet.h"
 +#include "Common/x64Emitter.h"
 +#include "Core/PowerPC/JitPS4/CodeCache.h"
++#include "Core/PowerPC/JitPS4/Verify.h"
 +#include "Core/PowerPC/JitPS4/JitAsm.h"
 +#include "Core/PowerPC/JitPS4/RegCache/FPURegCache.h"
 +#include "Core/PowerPC/JitPS4/RegCache/GPRRegCache.h"
@@ -11247,6 +11276,7 @@ index 0000000..dad23e5
 +class JitPS4 : public JitBase, public QuantizedMemoryRoutines
 +{
 +  friend class CodeCache;
++  friend class Verifier;
 +
 +public:
 +  explicit JitPS4(Core::System& system);
@@ -11507,6 +11537,8 @@ index 0000000..dad23e5
 +  // CodeCache::Prepare: compiles the block at em_address before the game gets there (false: no
 +  // code space left). Blocks that would rely on the moment's GQRs are left for the game.
 +  bool PS4PrecompileBlock(u32 em_address);
++  // Recompiler check at a block exit (destination: an address, or RSCRATCH's value).
++  void PS4VerifyExit(std::optional<u32> destination);
 +  bool m_ps4_precompiling = false;
 +
 +
@@ -19951,7 +19983,7 @@ index 0000000..c2085e1
 +};
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/MMU.cpp b/Source/Core/Core/PowerPC/MMU.cpp
-index 940e93c..37ac000 100644
+index 940e93c..0622d67 100644
 --- a/Source/Core/Core/PowerPC/MMU.cpp
 +++ b/Source/Core/Core/PowerPC/MMU.cpp
 @@ -24,6 +24,15 @@
@@ -20000,7 +20032,7 @@ index 940e93c..37ac000 100644
    // Instead of storing m_page_table in savestates, we *could* refetch it from memory
    // here in DoState, but this could lead to us getting a more up-to-date set of page mappings
    // than we had when the savestate was created, which could be a problem for TAS determinism.
-@@ -189,6 +209,84 @@ static void EFB_Write(u32 data, u32 addr)
+@@ -189,6 +209,94 @@ static void EFB_Write(u32 data, u32 addr)
    }
  }
  
@@ -20032,6 +20064,16 @@ index 940e93c..37ac000 100644
 +    ps4_soft_tlb_fills;
 +unsigned long long ps4_soft_tlb_flushes = 0, ps4_soft_tlb_sr_flushes = 0, ps4_soft_tlb_page_inv = 0,
 +                   ps4_soft_tlb_fills = 0;
++
++u8* MMU::PS4RamByte(u32 physical)
++{
++  if ((physical & 0xF8000000) == 0 && m_memory.GetRAM())
++    return &m_memory.GetRAM()[physical & m_memory.GetRamMask()];
++  if ((physical >> 28) == 0x1 && m_memory.GetEXRAM() &&
++      (physical & 0x0FFFFFFF) < m_memory.GetExRamSizeReal())
++    return &m_memory.GetEXRAM()[physical & 0x0FFFFFFF];
++  return nullptr;
++}
 +
 +u8* MMU::SoftTlbLookup(bool write, u32 address, u32 size)
 +{
@@ -20085,7 +20127,7 @@ index 940e93c..37ac000 100644
  template <XCheckTLBFlag flag, std::unsigned_integral T, bool never_translate>
  T MMU::ReadFromHardware(u32 em_address)
  {
-@@ -197,6 +295,11 @@ T MMU::ReadFromHardware(u32 em_address)
+@@ -197,6 +305,11 @@ T MMU::ReadFromHardware(u32 em_address)
    // by TryReadInstruction.
    static_assert(flag == XCheckTLBFlag::NoException || flag == XCheckTLBFlag::Read ||
                  flag == XCheckTLBFlag::OpcodeNoException);
@@ -20097,7 +20139,7 @@ index 940e93c..37ac000 100644
  
    const u32 em_address_start_page = em_address & ~HW_PAGE_MASK;
    const u32 em_address_end_page = (em_address + sizeof(T) - 1) & ~HW_PAGE_MASK;
-@@ -215,6 +318,7 @@ T MMU::ReadFromHardware(u32 em_address)
+@@ -215,6 +328,7 @@ T MMU::ReadFromHardware(u32 em_address)
    }
  
    bool wi = false;
@@ -20105,8 +20147,39 @@ index 940e93c..37ac000 100644
  
    if (!never_translate &&
        (IsOpcodeFlag(flag) ? m_ppc_state.msr.IR.Value() : m_ppc_state.msr.DR.Value()))
-@@ -232,6 +336,10 @@ T MMU::ReadFromHardware(u32 em_address)
+@@ -230,8 +344,41 @@ T MMU::ReadFromHardware(u32 em_address)
+     wi = translated_addr.wi;
+   }
  
++#ifdef __ORBIS__
++  if (flag == XCheckTLBFlag::Read && m_ps4_shadow) [[unlikely]]
++  {
++    // JIT check replay: RAM through the overlay, everything else not replayable.
++    T value = 0;
++    for (u32 i = 0; i < sizeof(T); i++)
++    {
++      const u32 a = em_address + i;
++      const u8* host = PS4RamByte(a);
++      if (!host)
++      {
++        m_ps4_shadow->failed = true;
++        return 0;
++      }
++      u8 byte = *host;
++      for (auto it = m_ps4_shadow->bytes.rbegin(); it != m_ps4_shadow->bytes.rend(); ++it)
++      {
++        if (it->first == a)
++        {
++          byte = it->second;
++          break;
++        }
++      }
++      value = static_cast<T>((static_cast<u64>(value) << 8) | byte);
++    }
++    return value;
++  }
++#endif
++
    if (flag == XCheckTLBFlag::Read && (em_address & 0xF8000000) == 0x08000000)
    {
 +#ifdef __ORBIS__
@@ -20116,7 +20189,7 @@ index 940e93c..37ac000 100644
      if (em_address < 0x0c000000)
      {
        return EFB_Read(em_address);
-@@ -259,6 +367,11 @@ T MMU::ReadFromHardware(u32 em_address)
+@@ -259,6 +406,11 @@ T MMU::ReadFromHardware(u32 em_address)
      T value;
      em_address &= m_memory.GetRamMask();
  
@@ -20128,7 +20201,7 @@ index 940e93c..37ac000 100644
      if (!m_ppc_state.m_enable_dcache || wi)
      {
        std::memcpy(&value, &m_memory.GetRAM()[em_address], sizeof(T));
-@@ -278,6 +391,11 @@ T MMU::ReadFromHardware(u32 em_address)
+@@ -278,6 +430,11 @@ T MMU::ReadFromHardware(u32 em_address)
      T value;
      em_address &= 0x0FFFFFFF;
  
@@ -20140,7 +20213,7 @@ index 940e93c..37ac000 100644
      if (!m_ppc_state.m_enable_dcache || wi)
      {
        std::memcpy(&value, &m_memory.GetEXRAM()[em_address], sizeof(T));
-@@ -326,6 +444,11 @@ void MMU::WriteToHardware(u32 em_address, const u32 data, const u32 size)
+@@ -326,6 +483,11 @@ void MMU::WriteToHardware(u32 em_address, const u32 data, const u32 size)
    static_assert(flag == XCheckTLBFlag::NoException || flag == XCheckTLBFlag::Write);
  
    DEBUG_ASSERT(size <= 4);
@@ -20152,7 +20225,7 @@ index 940e93c..37ac000 100644
  
    const u32 em_address_start_page = em_address & ~HW_PAGE_MASK;
    const u32 em_address_end_page = (em_address + size - 1) & ~HW_PAGE_MASK;
-@@ -343,6 +466,7 @@ void MMU::WriteToHardware(u32 em_address, const u32 data, const u32 size)
+@@ -343,6 +505,7 @@ void MMU::WriteToHardware(u32 em_address, const u32 data, const u32 size)
    }
  
    bool wi = false;
@@ -20160,7 +20233,32 @@ index 940e93c..37ac000 100644
  
    if (!never_translate && m_ppc_state.msr.DR)
    {
-@@ -395,6 +519,21 @@ void MMU::WriteToHardware(u32 em_address, const u32 data, const u32 size)
+@@ -357,6 +520,24 @@ void MMU::WriteToHardware(u32 em_address, const u32 data, const u32 size)
+     wi = translated_addr.wi;
+   }
+ 
++#ifdef __ORBIS__
++  if (flag == XCheckTLBFlag::Write && m_ps4_shadow) [[unlikely]]
++  {
++    // JIT check replay: kept in the overlay (big-endian, as memory has it).
++    for (u32 i = 0; i < size; i++)
++    {
++      const u32 a = em_address + i;
++      if (!PS4RamByte(a))
++      {
++        m_ps4_shadow->failed = true;
++        return;
++      }
++      m_ps4_shadow->bytes.emplace_back(a, static_cast<u8>(data >> (8 * (size - 1 - i))));
++    }
++    return;
++  }
++#endif
++
+   // Check for a gather pipe write (which are not implemented through the MMIO system).
+   //
+   // Note that we must mask the address to correctly emulate certain games; Pac-Man World 3
+@@ -395,6 +576,21 @@ void MMU::WriteToHardware(u32 em_address, const u32 data, const u32 size)
  
    if (flag == XCheckTLBFlag::Write && (em_address & 0xF8000000) == 0x08000000)
    {
@@ -20182,7 +20280,7 @@ index 940e93c..37ac000 100644
      if (em_address < 0x0c000000)
      {
        EFB_Write(data, em_address);
-@@ -465,6 +604,11 @@ void MMU::WriteToHardware(u32 em_address, const u32 data, const u32 size)
+@@ -465,6 +661,11 @@ void MMU::WriteToHardware(u32 em_address, const u32 data, const u32 size)
      // mirrors of memory).
      em_address &= m_memory.GetRamMask();
  
@@ -20194,7 +20292,7 @@ index 940e93c..37ac000 100644
      if (m_ppc_state.m_enable_dcache && !wi)
        m_ppc_state.dCache.Write(m_memory, em_address, &swapped_data, size, HID0(m_ppc_state).DLOCK);
  
-@@ -479,6 +623,11 @@ void MMU::WriteToHardware(u32 em_address, const u32 data, const u32 size)
+@@ -479,6 +680,11 @@ void MMU::WriteToHardware(u32 em_address, const u32 data, const u32 size)
    {
      em_address &= 0x0FFFFFFF;
  
@@ -20206,7 +20304,7 @@ index 940e93c..37ac000 100644
      if (m_ppc_state.m_enable_dcache && !wi)
      {
        m_ppc_state.dCache.Write(m_memory, em_address + 0x10000000, &swapped_data, size,
-@@ -1151,6 +1300,11 @@ void MMU::TouchDCacheLine(u32 address, bool store)
+@@ -1151,6 +1357,11 @@ void MMU::TouchDCacheLine(u32 address, bool store)
  
  u32 MMU::IsOptimizableMMIOAccess(u32 address, u32 access_size) const
  {
@@ -20218,7 +20316,7 @@ index 940e93c..37ac000 100644
    if (m_power_pc.GetMemChecks().HasAny())
      return 0;
  
-@@ -1175,6 +1329,23 @@ u32 MMU::IsOptimizableMMIOAccess(u32 address, u32 access_size) const
+@@ -1175,6 +1386,23 @@ u32 MMU::IsOptimizableMMIOAccess(u32 address, u32 access_size) const
    return address;
  }
  
@@ -20242,7 +20340,7 @@ index 940e93c..37ac000 100644
  bool MMU::IsOptimizableGatherPipeWrite(u32 address) const
  {
    if (m_power_pc.GetMemChecks().HasAny())
-@@ -1275,12 +1446,19 @@ void MMU::SDRUpdated()
+@@ -1275,12 +1503,19 @@ void MMU::SDRUpdated()
  
    m_ppc_state.pagetable_base = htaborg << 16;
    m_ppc_state.pagetable_mask = (htabmask << 16) | 0xffc0;
@@ -20262,7 +20360,7 @@ index 940e93c..37ac000 100644
    // Our incremental handling of page table updates can't handle SR changing, so throw away all
    // existing mappings and then reparse the whole page table.
    m_memory.RemoveAllPageTableMappings();
-@@ -1374,7 +1552,25 @@ void MMU::InvalidateTLBEntry(u32 address)
+@@ -1374,7 +1609,25 @@ void MMU::InvalidateTLBEntry(u32 address)
  
    m_ppc_state.tlb[PowerPC::DATA_TLB_INDEX][entry_index].Invalidate();
    m_ppc_state.tlb[PowerPC::INST_TLB_INDEX][entry_index].Invalidate();
@@ -20288,7 +20386,7 @@ index 940e93c..37ac000 100644
    if (m_ppc_state.msr.DR)
      PageTableUpdated();
    else
-@@ -1383,6 +1579,11 @@ void MMU::InvalidateTLBEntry(u32 address)
+@@ -1383,6 +1636,11 @@ void MMU::InvalidateTLBEntry(u32 address)
  
  void MMU::ClearPageTable()
  {
@@ -20300,7 +20398,7 @@ index 940e93c..37ac000 100644
    // If we've skipped processing any update to the page table, we need to remove all host mappings,
    // because we don't know which of them are still valid.
    m_memory.RemoveAllPageTableMappings();
-@@ -1408,6 +1609,12 @@ void MMU::ReloadPageTable()
+@@ -1408,6 +1666,12 @@ void MMU::ReloadPageTable()
  
  void MMU::PageTableUpdated()
  {
@@ -20313,7 +20411,7 @@ index 940e93c..37ac000 100644
    m_ppc_state.pagetable_update_pending = false;
  
    if (!m_system.GetJitInterface().WantsPageTableMappings())
-@@ -2000,6 +2207,9 @@ void MMU::UpdateFakeMMUBat(BatTable& bat_table, u32 start_addr)
+@@ -2000,6 +2264,9 @@ void MMU::UpdateFakeMMUBat(BatTable& bat_table, u32 start_addr)
  
  void MMU::DBATUpdated()
  {
@@ -20323,7 +20421,7 @@ index 940e93c..37ac000 100644
    m_dbat_table = {};
    UpdateBATs(m_dbat_table, SPR_DBAT0U);
    bool extended_bats = m_system.IsWii() && HID4(m_ppc_state).SBE;
-@@ -2028,6 +2238,9 @@ void MMU::DBATUpdated()
+@@ -2028,6 +2295,9 @@ void MMU::DBATUpdated()
  
  void MMU::IBATUpdated()
  {
@@ -20333,7 +20431,7 @@ index 940e93c..37ac000 100644
    m_ibat_table = {};
    UpdateBATs(m_ibat_table, SPR_IBAT0U);
    bool extended_bats = m_system.IsWii() && HID4(m_ppc_state).SBE;
-@@ -2074,6 +2287,14 @@ void ClearDCacheLineFromJit(MMU& mmu, u32 address)
+@@ -2074,6 +2344,14 @@ void ClearDCacheLineFromJit(MMU& mmu, u32 address)
  template <std::unsigned_integral T>
  Common::MakeAtLeastU32<T> ReadFromJit(MMU& mmu, u32 address)
  {
@@ -20348,7 +20446,7 @@ index 940e93c..37ac000 100644
    return mmu.Read<T>(address);
  }
  template u32 ReadFromJit<u8>(MMU& mmu, u32 address);
-@@ -2084,6 +2305,29 @@ template u64 ReadFromJit<u64>(MMU& mmu, u32 address);
+@@ -2084,6 +2362,29 @@ template u64 ReadFromJit<u64>(MMU& mmu, u32 address);
  template <std::unsigned_integral T>
  void WriteFromJit(MMU& mmu, Common::MakeAtLeastU32<T> var, u32 address)
  {
@@ -20378,7 +20476,7 @@ index 940e93c..37ac000 100644
    mmu.Write<T>(var, address);
  }
  template void WriteFromJit<u8>(MMU& mmu, u32 var, u32 address);
-@@ -2092,14 +2336,52 @@ template void WriteFromJit<u32>(MMU& mmu, u32 var, u32 address);
+@@ -2092,14 +2393,52 @@ template void WriteFromJit<u32>(MMU& mmu, u32 var, u32 address);
  template void WriteFromJit<u64>(MMU& mmu, u64 var, u32 address);
  void WriteU16SwapFromJit(MMU& mmu, u32 var, u32 address)
  {
@@ -20432,7 +20530,7 @@ index 940e93c..37ac000 100644
  }
  }  // namespace PowerPC
 diff --git a/Source/Core/Core/PowerPC/MMU.h b/Source/Core/Core/PowerPC/MMU.h
-index 8c12ead..9ee129f 100644
+index 8c12ead..9bb79bc 100644
 --- a/Source/Core/Core/PowerPC/MMU.h
 +++ b/Source/Core/Core/PowerPC/MMU.h
 @@ -28,6 +28,11 @@ namespace Memory
@@ -20460,7 +20558,7 @@ index 8c12ead..9ee129f 100644
    bool IsOptimizableGatherPipeWrite(u32 address) const;
  
    TranslateResult JitCache_TranslateAddress(u32 address);
-@@ -269,7 +280,34 @@ public:
+@@ -269,7 +280,47 @@ public:
    BatTable& GetIBATTable() { return m_ibat_table; }
    BatTable& GetDBATTable() { return m_dbat_table; }
  
@@ -20485,6 +20583,19 @@ index 8c12ead..9ee129f 100644
 +  {
 +    return (write ? m_soft_tlb_write : m_soft_tlb_read).data();
 +  }
++
++  // PS4 JIT check (Core/PowerPC/JitPS4/Verify.cpp): while set, translated data reads and writes
++  // of RAM go through this overlay instead of memory (writes are kept here, reads see them), so
++  // the interpreter can replay a block without changing anything. Any other access (hardware
++  // registers, the GPU pipe, the EFB, locked cache) marks the replay as failed.
++  struct PS4Shadow
++  {
++    std::vector<std::pair<u32, u8>> bytes;  // physical address, value - in write order
++    bool failed = false;
++  };
++  PS4Shadow* m_ps4_shadow = nullptr;
++  // The host byte of a physical RAM address, or nullptr.
++  u8* PS4RamByte(u32 physical);
 +#endif
 +
  private:
@@ -21371,7 +21482,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..bf356dc 100644
+index 3bf40ea..78c4a8e 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -21422,7 +21533,7 @@ index 3bf40ea..bf356dc 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,67 @@
+@@ -31,6 +53,68 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -21457,6 +21568,7 @@ index 3bf40ea..bf356dc 100644
 +extern "C" int ps4_jit_pin[4];            // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_dsp_async;             // Core/HW/DSPHLE/UCodes/AX.cpp
 +extern "C" int ps4_jit_cache;             // Core/PowerPC/JitPS4/CodeCache.cpp
++extern "C" int ps4_jit_verify;            // Core/PowerPC/JitPS4/Verify.cpp
 +extern "C" int ps4_sync_idle_frame;      // Core/CoreTiming.cpp
 +extern "C" int ps4_shader_dump;          // VideoCommon/ShaderCache.cpp
 +extern "C" int ps4_tev_ras_float;        // VideoCommon/PixelShaderGen.cpp
@@ -21490,7 +21602,7 @@ index 3bf40ea..bf356dc 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +256,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +257,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -21501,7 +21613,7 @@ index 3bf40ea..bf356dc 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +271,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +272,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -21520,7 +21632,7 @@ index 3bf40ea..bf356dc 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +303,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +304,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -21531,7 +21643,7 @@ index 3bf40ea..bf356dc 100644
  #endif
        });
  
-@@ -270,7 +370,426 @@ int main(const int argc, char* argv[])
+@@ -270,7 +371,428 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -21758,6 +21870,8 @@ index 3bf40ea..bf356dc 100644
 +      const std::string cache = Platform::GetPS4Option("jit_cache", "on");
 +      ps4_jit_cache = cache == "off" ? 0 : cache == "check" ? 2 : 1;
 +    }
++    // jit_verify=on (Recompiler Check): compiled blocks replayed in the interpreter and compared.
++    ps4_jit_verify = Platform::GetPS4Option("jit_verify", "off") == "on";
 +    // jit_pin=1,3,4,31 (Dolphin Lab, per game; default off): up to four guest GPRs kept in host
 +    // registers across JIT blocks (Core/PowerPC/Jit64/RegCache/JitRegCache.h).
 +    {
@@ -21958,7 +22072,7 @@ index 3bf40ea..bf356dc 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +803,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +806,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -21974,7 +22088,7 @@ index 3bf40ea..bf356dc 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +831,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +834,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -27966,10 +28080,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..7d2d38e
+index 0000000..5b865af
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1028 @@
+@@ -0,0 +1,1032 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -28200,6 +28314,10 @@ index 0000000..7d2d38e
 +     true, "Where the emulator was stuck when a game freezes, stalls or starts slowly."},
 +    {"emu_log", "Emulator Log", "Diagnostics", {{"on", "On"}, {"off", "Off"}}, "on", true,
 +     "Dolphin's own messages (dolphin.log)."},
++    {"jit_verify", "Recompiler Check", "Diagnostics", {{"off", "Off"}, {"on", "On"}}, "off", false,
++     "PS4 JIT only: while you play, the game's compiled code is checked against Dolphin's "
++     "interpreter and any difference is logged (boot-trace.log). Slower; for testing new "
++     "recompiler versions."},
 +    {"profiler", "Profiler", "Diagnostics", {{"auto", "Automatic"}, {"on", "Always"}, {"off", "Off"}},
 +     "auto", true,
 +     "Automatic: records where the time goes only when the game runs slow (30 seconds at a time, a "
@@ -46954,10 +47072,10 @@ index c56f32c..64e5240 100644
  
 diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 new file mode 100755
-index 0000000..8e522df
+index 0000000..13e84a6
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
-@@ -0,0 +1,1196 @@
+@@ -0,0 +1,1197 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -47001,6 +47119,7 @@ index 0000000..8e522df
 +    ps4_jit_round_operands, ps4_jit_fcmp_merge, ps4_jit_msr_link, ps4_jit_gp_dynamic,
 +    ps4_fifo_batch, ps4_fifo_defer;
 +extern "C" int ps4_jit_pin[4];
++extern "C" int ps4_jit_verify;  // JitPS4/Verify.cpp
 +
 +namespace PS4Jit
 +{
@@ -47331,7 +47450,7 @@ index 0000000..8e522df
 +  for (int v : {ps4_gp_fuse, ps4_lazy_lfs, ps4_jit_inline_dispatch, ps4_jit_lazy_pc,
 +                ps4_jit_tlb_inline, ps4_lfs_forward, ps4_jit_accurate_singles,
 +                ps4_jit_round_results, ps4_jit_round_operands, ps4_jit_fcmp_merge,
-+                ps4_jit_msr_link, ps4_jit_gp_dynamic, ps4_fifo_batch, ps4_fifo_defer,
++                ps4_jit_msr_link, ps4_jit_gp_dynamic, ps4_fifo_batch, ps4_fifo_defer, ps4_jit_verify,
 +                ps4_jit_pin[0], ps4_jit_pin[1], ps4_jit_pin[2], ps4_jit_pin[3]})
 +  {
 +    h = Mix(h, v);
@@ -48279,4 +48398,485 @@ index 0000000..a7c64a0
 +    const char* last_unsaved = "";
 +  } m_stats;
 +};
++}  // namespace PS4Jit
+diff --git a/Source/Core/Core/PowerPC/JitPS4/Verify.cpp b/Source/Core/Core/PowerPC/JitPS4/Verify.cpp
+new file mode 100755
+index 0000000..cefffe9
+--- /dev/null
++++ b/Source/Core/Core/PowerPC/JitPS4/Verify.cpp
+@@ -0,0 +1,436 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "Core/PowerPC/JitPS4/Verify.h"
++
++#include <array>
++#include <chrono>
++#include <cmath>
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++#include "Core/HLE/HLE.h"
++#include "Core/PowerPC/Interpreter/Interpreter.h"
++#include "Core/PowerPC/JitPS4/Jit.h"
++#include "Core/PowerPC/MMU.h"
++#include "Core/PowerPC/PowerPC.h"
++#include "Core/System.h"
++
++extern "C" void ps4_boot_trace(const char* line);  // DolphinPS4 port/ps4_crashlog.cpp
++extern "C" int ps4_jit_verify;
++int ps4_jit_verify = 0;
++
++namespace PS4Jit
++{
++namespace
++{
++using PowerPC::ConditionRegister;
++using PowerPC::PairedSingle;
++
++// Each block is checked this many times (the first runs), then left alone.
++constexpr int CHECKS_PER_BLOCK = 3;
++// The longest replay (a block is at most a few hundred instructions).
++constexpr int MAX_STEPS = 2048;
++
++// The registers a block can change (what the replay is compared on and what is put back).
++struct Regs
++{
++  std::array<u32, 32> gpr;
++  std::array<u64, 64> fpr;  // ps0, ps1 of each
++  std::array<u32, 8> cr;
++  u32 lr, ctr, xer_stringctrl;
++  u8 xer_ca, xer_so_ov;
++  std::array<u32, 8> gqr;
++  u32 msr, fpscr;
++  u32 pc, npc;
++  u32 reserve, reserve_address;
++
++  void Capture(const PowerPC::PowerPCState& s)
++  {
++    for (int i = 0; i < 32; i++)
++    {
++      gpr[i] = s.gpr[i];
++      fpr[i * 2] = s.ps[i].PS0AsU64();
++      fpr[i * 2 + 1] = s.ps[i].PS1AsU64();
++    }
++    for (u32 i = 0; i < 8; i++)
++      cr[i] = s.cr.GetField(i);
++    lr = s.spr[SPR_LR];
++    ctr = s.spr[SPR_CTR];
++    xer_stringctrl = s.xer_stringctrl;
++    xer_ca = s.xer_ca;
++    xer_so_ov = s.xer_so_ov;
++    for (int i = 0; i < 8; i++)
++      gqr[i] = s.spr[SPR_GQR0 + i];
++    msr = s.msr.Hex;
++    fpscr = s.fpscr.Hex;
++    pc = s.pc;
++    npc = s.npc;
++    reserve = s.reserve;
++    reserve_address = s.reserve_address;
++  }
++};
++
++// What a replay may change, saved before it and put back after (field by field: the state also
++// holds the caches, which own memory).
++struct SavedState
++{
++  u32 pc, npc;
++  u32 gpr[32];
++  PairedSingle ps[32];
++  ConditionRegister cr;
++  u32 msr;
++  u32 fpscr;
++  u32 exceptions;
++  int downcount;
++  u8 xer_ca, xer_so_ov;
++  u16 xer_stringctrl;
++  u32 reserve_address;
++  bool reserve;
++  std::array<u32, 16> sr;
++  u32 spr[1024];
++
++  void Save(const PowerPC::PowerPCState& s)
++  {
++    pc = s.pc;
++    npc = s.npc;
++    std::memcpy(gpr, s.gpr, sizeof(gpr));
++    for (int i = 0; i < 32; i++)
++      ps[i] = s.ps[i];
++    cr = s.cr;
++    msr = s.msr.Hex;
++    fpscr = s.fpscr.Hex;
++    exceptions = s.Exceptions;
++    downcount = s.downcount;
++    xer_ca = s.xer_ca;
++    xer_so_ov = s.xer_so_ov;
++    xer_stringctrl = s.xer_stringctrl;
++    reserve_address = s.reserve_address;
++    reserve = s.reserve;
++    sr = s.sr;
++    std::memcpy(spr, s.spr, sizeof(spr));
++  }
++  void Restore(PowerPC::PowerPCState& s) const
++  {
++    s.pc = pc;
++    s.npc = npc;
++    std::memcpy(s.gpr, gpr, sizeof(gpr));
++    for (int i = 0; i < 32; i++)
++      s.ps[i] = ps[i];
++    s.cr = cr;
++    s.msr.Hex = msr;
++    s.fpscr.Hex = fpscr;
++    s.Exceptions = exceptions;
++    s.downcount = downcount;
++    s.xer_ca = xer_ca;
++    s.xer_so_ov = xer_so_ov;
++    s.xer_stringctrl = xer_stringctrl;
++    s.reserve_address = reserve_address;
++    s.reserve = reserve;
++    s.sr = sr;
++    std::memcpy(s.spr, spr, sizeof(spr));
++  }
++};
++
++struct Checkpoint
++{
++  u32 next_pc;
++  size_t writes;
++  Regs regs;
++};
++
++struct State
++{
++  bool active = false;
++  bool failed = false;
++  const char* why = "";
++  u32 start = 0;
++  // The register state before the replay, put back before the compiled code runs.
++  SavedState saved;
++  std::vector<Checkpoint> checkpoints;
++  PowerPC::MMU::PS4Shadow shadow;
++  std::unordered_map<u64, int> checked;
++  u64 compared = 0, differed = 0, skipped = 0, lines = 0;
++  std::chrono::steady_clock::time_point last_report{};
++} s;
++
++// Instructions the replay can't do without side effects outside the registers and RAM.
++bool Replayable(UGeckoInstruction inst)
++{
++  switch (inst.OPCD)
++  {
++  case 3:   // twi
++  case 17:  // sc
++    return false;
++  case 4:
++    return inst.SUBOP10 != 1014;  // dcbz_l
++  case 19:
++    return inst.SUBOP10 != 50 && inst.SUBOP10 != 150;  // rfi, isync is fine but keep it simple
++  case 31:
++    switch (inst.SUBOP10)
++    {
++    case 4:     // tw
++    case 54:    // dcbst
++    case 86:    // dcbf
++    case 146:   // mtmsr
++    case 210:   // mtsr
++    case 242:   // mtsrin
++    case 306:   // tlbie
++    case 371:   // mftb
++    case 470:   // dcbi
++    case 566:   // tlbsync
++    case 982:   // icbi
++    case 1014:  // dcbz
++      return false;
++    case 339:  // mfspr
++    case 467:  // mtspr
++    {
++      const u32 spr = (inst.SPRU << 5) | (inst.SPRL & 0x1F);
++      return spr == SPR_LR || spr == SPR_CTR || spr == SPR_XER ||
++             (spr >= SPR_GQR0 && spr <= SPR_GQR0 + 7) || (spr >= SPR_SPRG0 && spr <= SPR_SPRG3);
++    }
++    default:
++      return true;
++    }
++  default:
++    return true;
++  }
++}
++
++void Line(const char* text)
++{
++  ps4_boot_trace((std::string("jit check: ") + text).c_str());
++}
++
++bool SameFloat(u64 a, u64 b)
++{
++  if (a == b)
++    return true;
++  double x, y;
++  std::memcpy(&x, &a, 8);
++  std::memcpy(&y, &b, 8);
++  if (std::isnan(x) && std::isnan(y))
++    return true;
++  const double scale = std::max(std::fabs(x), std::fabs(y));
++  return std::fabs(x - y) <= scale * 1e-5 || std::fabs(x - y) < 1e-30;
++}
++}  // namespace
++
++void Verifier::Begin(JitPS4& jit, u32 pc)
++{
++  s.active = false;
++  auto& ppc = jit.m_ppc_state;
++  const u64 key = (u64(ppc.feature_flags) << 32) | pc;
++  if (s.checked[key]++ >= CHECKS_PER_BLOCK)
++    return;
++  const JitBlock* block = jit.blocks.GetBlockFromStartAddress(pc, ppc.feature_flags);
++  if (!block)
++    return;
++  const u32 count = std::max<u32>(1, block->originalSize);
++
++  s.active = true;
++  s.failed = false;
++  s.why = "";
++  s.start = pc;
++  s.checkpoints.clear();
++  s.shadow.bytes.clear();
++  s.shadow.failed = false;
++  s.saved.Save(ppc);
++
++  auto& system = jit.m_system;
++  auto& mmu = system.GetMMU();
++  auto& interpreter = system.GetInterpreter();
++  mmu.m_ps4_shadow = &s.shadow;
++  u32 current = pc;
++  for (u32 step = 0; step < count && step < MAX_STEPS; step++)
++  {
++    if (HLE::TryReplaceFunction(jit.m_ppc_symbol_db, current, PowerPC::CoreMode::JIT))
++    {
++      s.failed = true, s.why = "HLE";
++      break;
++    }
++    const auto fetched = mmu.TryReadInstruction(current);
++    if (!fetched.valid)
++    {
++      s.failed = true, s.why = "fetch";
++      break;
++    }
++    const UGeckoInstruction inst{fetched.hex};
++    if (!Replayable(inst))
++    {
++      s.failed = true, s.why = "system instruction";
++      break;
++    }
++    ppc.pc = current;
++    ppc.npc = current + 4;
++    Interpreter::RunInterpreterOp(interpreter, inst);
++    if (ppc.Exceptions || s.shadow.failed)
++    {
++      s.failed = true, s.why = s.shadow.failed ? "hardware access" : "exception";
++      break;
++    }
++    const u32 next = ppc.npc;
++    // A place the compiled block can leave from: after a branch, and after its last instruction.
++    if (next != current + 4 || step + 1 == count)
++    {
++      Checkpoint cp;
++      cp.next_pc = next;
++      cp.writes = s.shadow.bytes.size();
++      ppc.pc = next;
++      cp.regs.Capture(ppc);
++      s.checkpoints.push_back(cp);
++    }
++    current = next;
++  }
++  mmu.m_ps4_shadow = nullptr;
++  // Everything back as it was: the compiled block runs from the same state.
++  s.saved.Restore(ppc);
++}
++
++void Verifier::Exit(JitPS4& jit, u32 destination)
++{
++  if (!s.active)
++    return;
++  s.active = false;
++  if (s.failed)
++  {
++    s.skipped++;
++    return;
++  }
++  const Checkpoint* cp = nullptr;
++  for (const Checkpoint& c : s.checkpoints)
++  {
++    if (c.next_pc == destination)
++    {
++      cp = &c;
++      break;
++    }
++  }
++  s.compared++;
++  char line[256];
++  bool bad = false;
++  const auto report = [&](const char* what) {
++    bad = true;
++    if (s.lines++ < 200)
++    {
++      char full[320];
++      snprintf(full, sizeof(full), "block %08x exit %08x: %s", s.start, destination, what);
++      Line(full);
++    }
++  };
++  if (!cp)
++  {
++    std::string seen;
++    for (const Checkpoint& c : s.checkpoints)
++    {
++      snprintf(line, sizeof(line), " %08x", c.next_pc);
++      seen += line;
++    }
++    snprintf(line, sizeof(line), "left to an address the interpreter didn't (it went to%s)",
++             seen.c_str());
++    report(line);
++  }
++  else
++  {
++    Regs now;
++    jit.m_ppc_state.pc = destination;
++    now.Capture(jit.m_ppc_state);
++    const Regs& want = cp->regs;
++    for (int i = 0; i < 32; i++)
++    {
++      if (now.gpr[i] != want.gpr[i])
++      {
++        snprintf(line, sizeof(line), "r%d = %08x, interpreter %08x", i, now.gpr[i], want.gpr[i]);
++        report(line);
++      }
++    }
++    for (int i = 0; i < 64; i++)
++    {
++      if (!SameFloat(now.fpr[i], want.fpr[i]))
++      {
++        snprintf(line, sizeof(line), "f%d.ps%d = %016llx, interpreter %016llx", i / 2, i % 2,
++                 static_cast<unsigned long long>(now.fpr[i]),
++                 static_cast<unsigned long long>(want.fpr[i]));
++        report(line);
++      }
++    }
++    for (int i = 0; i < 8; i++)
++    {
++      if (now.cr[i] != want.cr[i])
++      {
++        snprintf(line, sizeof(line), "cr%d = %x, interpreter %x", i, now.cr[i], want.cr[i]);
++        report(line);
++      }
++    }
++    const auto check = [&](const char* name, u32 a, u32 b) {
++      if (a != b)
++      {
++        snprintf(line, sizeof(line), "%s = %08x, interpreter %08x", name, a, b);
++        report(line);
++      }
++    };
++    check("lr", now.lr, want.lr);
++    check("ctr", now.ctr, want.ctr);
++    check("xer.ca", now.xer_ca, want.xer_ca);
++    check("xer.so/ov", now.xer_so_ov, want.xer_so_ov);
++    check("xer.count", now.xer_stringctrl, want.xer_stringctrl);
++    check("msr", now.msr, want.msr);
++    for (int i = 0; i < 8; i++)
++    {
++      char name[8];
++      snprintf(name, sizeof(name), "gqr%d", i);
++      check(name, now.gqr[i], want.gqr[i]);
++    }
++    // Memory: the last value the replay wrote to each byte (before this exit).
++    auto& mmu = jit.m_system.GetMMU();
++    std::unordered_map<u32, u8> last;
++    for (size_t i = 0; i < cp->writes; i++)
++      last[s.shadow.bytes[i].first] = s.shadow.bytes[i].second;
++    int bad_bytes = 0;
++    u32 first_bad = 0;
++    for (const auto& [address, value] : last)
++    {
++      const u8* host = mmu.PS4RamByte(address);
++      if (host && *host != value)
++      {
++        if (bad_bytes++ == 0)
++          first_bad = address;
++      }
++    }
++    if (bad_bytes)
++    {
++      snprintf(line, sizeof(line), "%d of %zu written bytes differ (first at %08x)", bad_bytes,
++               last.size(), first_bad);
++      report(line);
++    }
++  }
++  if (bad)
++    s.differed++;
++
++  const auto now_time = std::chrono::steady_clock::now();
++  if (now_time - s.last_report > std::chrono::seconds(10))
++  {
++    s.last_report = now_time;
++    snprintf(line, sizeof(line),
++             "%llu block runs compared, %llu differed, %llu skipped (not replayable), %zu blocks "
++             "seen",
++             static_cast<unsigned long long>(s.compared),
++             static_cast<unsigned long long>(s.differed),
++             static_cast<unsigned long long>(s.skipped), s.checked.size());
++    Line(line);
++  }
++}
++
++void VerifyBeginFromJit(JitPS4* jit, u32 pc)
++{
++  Verifier::Begin(*jit, pc);
++}
++
++void VerifyExitFromJit(JitPS4* jit, u32 destination)
++{
++  Verifier::Exit(*jit, destination);
++}
++}  // namespace PS4Jit
+diff --git a/Source/Core/Core/PowerPC/JitPS4/Verify.h b/Source/Core/Core/PowerPC/JitPS4/Verify.h
+new file mode 100755
+index 0000000..42fb4ef
+--- /dev/null
++++ b/Source/Core/Core/PowerPC/JitPS4/Verify.h
+@@ -0,0 +1,33 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "Common/CommonTypes.h"
++
++// Setting "Recompiler Check" (jit_verify): 1 = on (DolphinNoGUI/MainNoGUI.cpp).
++extern "C" int ps4_jit_verify;
++
++namespace PS4Jit
++{
++class JitPS4;
++
++// Recompiler check: every compiled block, the first few times it runs, is replayed in Dolphin's
++// interpreter first - on a copy of the registers, its memory writes kept in an overlay
++// (MMU::PS4Shadow) - and at the block's exit what the compiled code did is compared with the
++// interpreter: the exit address, every register and every memory write. Differences go to
++// boot-trace.log ("jit check: ..."). Blocks that touch hardware, the GPU pipe or the caches, or
++// that HLE replaces, can't be replayed and are skipped. Floating point is compared with a small
++// tolerance (Float Rounding and other accuracy settings round differently on purpose).
++// For testing recompiler changes: slow while new code is being checked.
++class Verifier
++{
++public:
++  static void Begin(JitPS4& jit, u32 pc);
++  static void Exit(JitPS4& jit, u32 destination);
++};
++
++// Called from the compiled code (JitPS4::DoJit and the block exits).
++void VerifyBeginFromJit(JitPS4* jit, u32 pc);
++void VerifyExitFromJit(JitPS4* jit, u32 destination);
 +}  // namespace PS4Jit

@@ -526,3 +526,6 @@ Bekle
 Bir Kare Geride
 Bekleme
 Oyun kareler arasında beklerken Dolphin, öykünülen GPU her şeyi bitirene kadar bekler (Bekle). Bir Kare Geride, oyun devam ederken GPU'nun son kareyi bitirmesine izin verir: CPU ve GPU aynı anda çalışır, kalabalık sahnelerde daha hızlıdır (Donald Duck). Bir oyun titrerse veya çok hızlı giderse Bekle'yi seçin.
+# --- Recompiler Check
+Yeniden Derleyici Denetimi
+Yalnızca PS4 JIT: oynarken oyunun derlenmiş kodu Dolphin'in yorumlayıcısıyla karşılaştırılır ve her fark kaydedilir (boot-trace.log). Daha yavaş; yeni yeniden derleyici sürümlerini denemek için.
