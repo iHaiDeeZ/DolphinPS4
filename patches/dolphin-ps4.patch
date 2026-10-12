@@ -6741,31 +6741,46 @@ index 39e16c7..bba4032 100644
 +#else
  constexpr size_t CODE_SIZE = 1024 * 1024 * 128;
 +#endif
+diff --git a/Source/Core/Core/PowerPC/JitCommon/JitBase.cpp b/Source/Core/Core/PowerPC/JitCommon/JitBase.cpp
+index b2ff246..c2a5e1c 100644
+--- a/Source/Core/Core/PowerPC/JitCommon/JitBase.cpp
++++ b/Source/Core/Core/PowerPC/JitCommon/JitBase.cpp
+@@ -281,6 +281,12 @@ bool JitBase::CanMergeNextInstructions(int count) const
+ {
+   if (m_system.GetCPU().IsStepping() || js.instructionsLeft < count)
+     return false;
++  // jit_join: a branch inside the block lands on this instruction - it starts its own code.
++  for (int i = 1; i <= count; i++)
++  {
++    if (js.op[i].ps4_join)
++      return false;
++  }
+   // Be careful: a breakpoint kills flags in between instructions
+   for (int i = 1; i <= count; i++)
+   {
 diff --git a/Source/Core/Core/PowerPC/JitCommon/JitBase.h b/Source/Core/Core/PowerPC/JitCommon/JitBase.h
-index 612161b..fbee84f 100644
+index 612161b..8d4bbc2 100644
 --- a/Source/Core/Core/PowerPC/JitCommon/JitBase.h
 +++ b/Source/Core/Core/PowerPC/JitCommon/JitBase.h
-@@ -119,6 +119,11 @@ protected:
+@@ -119,6 +119,9 @@ protected:
  
      bool mustCheckFifo;
      u32 fifoBytesSinceCheck;
-+#ifdef __ORBIS__
 +    // Jit64 on PS4: bytes written to the gather pipe at [gather_pipe_ptr + offset] whose pointer
 +    // update is still pending (Jit64::PS4CommitGatherPipe).
 +    u32 ps4_gp_pending;
-+#endif
  
      PPCAnalyst::BlockStats st;
      PPCAnalyst::BlockRegStats gpa;
 diff --git a/Source/Core/Core/PowerPC/JitCommon/JitCache.cpp b/Source/Core/Core/PowerPC/JitCommon/JitCache.cpp
-index 4eecedc..3ad49d1 100644
+index 4eecedc..b44f6b1 100644
 --- a/Source/Core/Core/PowerPC/JitCommon/JitCache.cpp
 +++ b/Source/Core/Core/PowerPC/JitCommon/JitCache.cpp
 @@ -52,8 +52,32 @@ JitBaseBlockCache::JitBaseBlockCache(JitBase& jit) : m_jit{jit}
  
  JitBaseBlockCache::~JitBaseBlockCache() = default;
  
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +// An empty slot never matches: guest addresses are 4-byte aligned, 0xFFFFFFFF isn't.
 +void JitBaseBlockCache::SetDispatch(size_t index, const JitBlock* block)
 +{
@@ -6787,7 +6802,7 @@ index 4eecedc..3ad49d1 100644
 +
  void JitBaseBlockCache::Init()
  {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  for (size_t i = 0; i < m_dispatch.size(); i++)
 +    SetDispatch(i, nullptr);
 +#endif
@@ -6798,7 +6813,7 @@ index 4eecedc..3ad49d1 100644
    else
    {
      m_fast_block_map_fallback[index] = &block;
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +    SetDispatch(index, &block);
 +#endif
    }
@@ -6808,7 +6823,7 @@ index 4eecedc..3ad49d1 100644
      if (m_fast_block_map_fallback[block.fast_block_map_index] == &block)
      {
        m_fast_block_map_fallback[block.fast_block_map_index] = nullptr;
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +      SetDispatch(block.fast_block_map_index, nullptr);
 +#endif
      }
@@ -6818,7 +6833,7 @@ index 4eecedc..3ad49d1 100644
      if (m_fast_block_map_fallback[block->fast_block_map_index] == block)
      {
        m_fast_block_map_fallback[block->fast_block_map_index] = nullptr;
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +      SetDispatch(block->fast_block_map_index, nullptr);
 +#endif
      }
@@ -6828,14 +6843,14 @@ index 4eecedc..3ad49d1 100644
    else
    {
      m_fast_block_map_fallback[index] = block;
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +    SetDispatch(index, block);
 +#endif
    }
    block->fast_block_map_index = index;
  
 diff --git a/Source/Core/Core/PowerPC/JitCommon/JitCache.h b/Source/Core/Core/PowerPC/JitCommon/JitCache.h
-index 8860a42..c38430c 100644
+index 8860a42..747964d 100644
 --- a/Source/Core/Core/PowerPC/JitCommon/JitCache.h
 +++ b/Source/Core/Core/PowerPC/JitCommon/JitCache.h
 @@ -93,6 +93,11 @@ struct JitBlock : public JitBlockData
@@ -6843,7 +6858,7 @@ index 8860a42..c38430c 100644
  #ifdef _M_ARM_64
      const u8* exitFarcode;
 +#endif
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +    // Dolphin Lab (jit_lazy_pc): where the exit jumps while unlinked - a stub that stores the
 +    // destination PC for the dispatcher (linked, the next block doesn't need it).
 +    const u8* unlinkedTarget = nullptr;
@@ -6854,7 +6869,7 @@ index 8860a42..c38430c 100644
    // The size of the fast map is determined like this:
    // ((4 GiB guest memory space) / (4-byte alignment) * sizeof(JitBlock*)) << (3 feature flag bits)
    static constexpr u64 FAST_BLOCK_MAP_SIZE = 0x10'0000'0000;
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  // PS4: the large entry points map (a 64 GiB lazy region) can't be reserved, so every block
 +  // lookup goes through this table. 0x10000 slots cover 256 KiB of code before addresses collide;
 +  // Crash of the Titans' code spans ~4 MiB, and each collision fell back to the C++ dispatcher.
@@ -6870,7 +6885,7 @@ index 8860a42..c38430c 100644
    // Code Cache
    u8** GetEntryPoints();
    JitBlock** GetFastBlockMapFallback();
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  // Dolphin Lab (PS4): the dispatcher's own table, in step with m_fast_block_map_fallback. Each
 +  // slot holds what the dispatcher needs - the block's feature flags and address (compared as one
 +  // 64-bit value, the order of JitBlockData) and its entry point - so a lookup is one memory read
@@ -6892,7 +6907,7 @@ index 8860a42..c38430c 100644
    // in case the shm memory region couldn't be allocated.
    std::array<JitBlock*, FAST_BLOCK_MAP_FALLBACK_ELEMENTS>
        m_fast_block_map_fallback{};  // start_addr & mask -> number
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  alignas(64) std::array<DispatchEntry, FAST_BLOCK_MAP_FALLBACK_ELEMENTS> m_dispatch{};
 +#endif
  };
@@ -9714,10 +9729,10 @@ index 0000000..482d3bc
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
 new file mode 100644
-index 0000000..a93e665
+index 0000000..4c3cc63
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
-@@ -0,0 +1,1680 @@
+@@ -0,0 +1,2022 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -9989,8 +10004,84 @@ index 0000000..a93e665
 +
 +extern "C" int ps4_jit_pin[4];  // ps4.ini jit_pin (DolphinNoGUI/MainNoGUI.cpp)
 +
++// jit_join counts (boot-trace at shutdown): branches joined, refused here, fallen back.
++static u64 s_join_bound, s_join_refused, s_join_fallback, s_join_moves;
++
++#ifdef DOLPHIN_PS4_HOST
++// The PC test bench (scripts/build-host-oracle.sh): no ps4.ini and no PS4 port, so the switches
++// come from the environment and the trace goes to stderr.
++extern "C" int ps4_jit_join, ps4_jit_cache;
++extern "C" void ps4_boot_trace(const char* line)
++{
++  fprintf(stderr, "[trace] %s\n", line);
++}
++// The PS4 JIT's switches, with the PS4's defaults (defined in PS4-only files there).
++extern "C" {
++int ps4_fifo_batch = 0, ps4_fifo_defer = 0, ps4_gp_fuse = 1, ps4_jit_accurate_singles = 1,
++    ps4_jit_fcmp_merge = 1, ps4_jit_gp_dynamic = 1, ps4_jit_inline_dispatch = 1,
++    ps4_jit_lazy_pc = 1, ps4_jit_msr_link = 1, ps4_jit_round_operands = 1,
++    ps4_jit_round_results = 1, ps4_jit_tlb_inline = 1, ps4_lazy_lfs = 1, ps4_lfs_forward = 1;
++int ps4_jit_pin[4] = {-1, -1, -1, -1};
++}
++extern "C" const char* ps4_boot_disc_path()
++{
++  const char* disc = getenv("PS4JIT_DISC");
++  return disc ? disc : "";
++}
++#endif
++
 +void JitPS4::Init()
 +{
++#ifdef DOLPHIN_PS4_HOST
++  // PS4JIT_VERIFY=1: the recompiler check. PS4JIT_JOIN=0: no jit_join. PS4JIT_CACHE=1: the code
++  // cache (off by default here: it lives in /data/DolphinPS4).
++  m_ps4_bench_start = std::chrono::steady_clock::now();
++  m_ps4_bench_thread = pthread_self();
++  // Every 10 s: the CPU thread's CPU time and the emulated cycles so far (the run is stopped from
++  // outside, and some games don't shut down cleanly here).
++  if (getenv("PS4JIT_BENCH"))
++  {
++    std::thread([this, thread = m_ps4_bench_thread] {
++      clockid_t clock;
++      if (pthread_getcpuclockid(thread, &clock) != 0)
++        return;
++      for (int n = 1;; n++)
++      {
++        std::this_thread::sleep_for(std::chrono::seconds(10));
++        timespec cpu{};
++        clock_gettime(clock, &cpu);
++        fprintf(stderr, "[bench] %d s: CPU thread %.3f s, %.0f M cycles\n", n * 10,
++                cpu.tv_sec + cpu.tv_nsec / 1e9, m_system.GetCoreTiming().GetTicks() / 1e6);
++      }
++    }).detach();
++  }
++  if (const char* v = getenv("PS4JIT_VERIFY"))
++    ps4_jit_verify = atoi(v);
++  if (const char* v = getenv("PS4JIT_JOIN"))
++    ps4_jit_join = atoi(v);
++  // PS4JIT_SINGLES=0: jit_accurate_singles=off (Float Rounding off).
++  if (const char* v = getenv("PS4JIT_SINGLES"))
++  {
++    ps4_jit_accurate_singles = atoi(v);
++    ps4_jit_round_results = ps4_jit_round_operands = ps4_jit_accurate_singles;
++  }
++  // PS4JIT_PIN=1,31,3,30: jit_pin.
++  if (const char* v = getenv("PS4JIT_PIN"))
++  {
++    for (int k = 0; k < 4; k++)
++      ps4_jit_pin[k] = -1;
++    int k = 0;
++    for (const char* p = v; *p && k < 4;)
++    {
++      ps4_jit_pin[k++] = atoi(p);
++      while (*p && *p != ',')
++        p++;
++      if (*p == ',')
++        p++;
++    }
++  }
++  ps4_jit_cache = getenv("PS4JIT_CACHE") ? atoi(getenv("PS4JIT_CACHE")) : 0;
++#endif
 +  s_ps4_active = this;
 +  m_code_cache.Start();
 +  InitFastmemArena();
@@ -10043,8 +10134,8 @@ index 0000000..a93e665
 +    m_ps4_pins.clear();
 +    gpr.ClearPinned();
 +    std::string pins;
-+    // (Not with the recompiler check: its replays read every register from ppcState.)
-+    for (int k = 0; k < 4 && !jo.memcheck && !ps4_jit_verify; k++)
++    // (With the recompiler check too: the pinned registers are written to ppcState for it.)
++    for (int k = 0; k < 4 && !jo.memcheck; k++)
 +    {
 +      if (ps4_jit_pin[k] < 0 || ps4_jit_pin[k] > 31)
 +        continue;
@@ -10115,6 +10206,35 @@ index 0000000..a93e665
 +
 +void JitPS4::Shutdown()
 +{
++  if (ps4_jit_verify)
++    VerifySummary();
++  {
++    char line[160];
++    snprintf(line, sizeof(line),
++             "jit join: %llu branches joined (%llu bytes of moves), %llu refused, %llu fell back",
++             static_cast<unsigned long long>(s_join_bound),
++             static_cast<unsigned long long>(s_join_moves),
++             static_cast<unsigned long long>(s_join_refused),
++             static_cast<unsigned long long>(s_join_fallback));
++    ps4_boot_trace(line);
++  }
++#ifdef DOLPHIN_PS4_HOST
++  // The PC test bench's measure: emulated CPU cycles per second of real time.
++  {
++    const double seconds =
++        std::chrono::duration<double>(std::chrono::steady_clock::now() - m_ps4_bench_start).count();
++    const u64 ticks = m_system.GetCoreTiming().GetTicks();
++    // The CPU thread's own CPU time (the JIT's code runs there).
++    timespec cpu{};
++    clockid_t clock;
++    if (pthread_getcpuclockid(m_ps4_bench_thread, &clock) == 0 && clock_gettime(clock, &cpu) == 0)
++    {
++      fprintf(stderr, "[bench] CPU thread %.2f s of CPU time\n", cpu.tv_sec + cpu.tv_nsec / 1e9);
++    }
++    fprintf(stderr, "[bench] %.0f million emulated cycles in %.1f s: %.1f M/s\n", ticks / 1e6,
++            seconds, ticks / 1e6 / seconds);
++  }
++#endif
 +  m_code_cache.Stop();
 +  if (s_ps4_active == this)
 +    s_ps4_active = nullptr;
@@ -10268,6 +10388,12 @@ index 0000000..a93e665
 +  for (u32 i = 0; i < num_instructions; i++)
 +  {
 +    const PPCAnalyst::CodeOp& op = m_code_buffer[i];
++    // jit_join: a branch inside the block lands here - its registers come from elsewhere too.
++    if (op.ps4_join)
++    {
++      for (s32& p : producer)
++        p = -1;
++    }
 +    if (op.skip)
 +    {
 +      if (op.fregOut >= 0)
@@ -10304,7 +10430,7 @@ index 0000000..a93e665
 +    for (u32 k = i + 1; k < num_instructions && ok; k++)
 +    {
 +      const PPCAnalyst::CodeOp& op = m_code_buffer[k];
-+      if (op.skip || op.canEndBlock ||
++      if (op.skip || op.canEndBlock || op.ps4_join ||
 +          (op.opinfo->flags & (FL_PROGRAMEXCEPTION | FL_FLOAT_EXCEPTION |
 +                               FL_FLOAT_DIV)) ||
 +          js.fifoWriteAddresses.contains(op.address) ||
@@ -10334,6 +10460,210 @@ index 0000000..a93e665
 +    m_ps4_raw_single[i] |= 4;
 +    for (u32 k = i + 1; k <= overwrite; k++)
 +      m_ps4_raw_only[k][d] = true;
++  }
++}
++
++// jit_join: whether a conditional forward branch to code further down the block can jump there
++// with the registers where they are: no pinned registers, no MMU (revertable bindings), the carry
++// flag in ppcState, no gather pipe writes waiting for their pointer update, and no register whose
++// value is nowhere (the state there must be one the target's code can be reached from).
++bool JitPS4::PS4CanJoin(const PPCAnalyst::CodeOp& branch) const
++{
++  if (branch.ps4_join_to == 0)
++    return false;
++  const bool ok = m_ps4_pins.empty() && !jo.memcheck && js.carryFlag == CarryFlag::InPPCState &&
++                  js.ps4_gp_pending == 0 && gpr.IsAllUnlocked() && fpr.IsAllUnlocked() &&
++                  !gpr.PS4HasDiscarded() && !fpr.PS4HasDiscarded();
++  if (!ok)
++    s_join_refused++;
++  return ok;
++}
++
++void JitPS4::PS4JoinTaken(const PPCAnalyst::CodeOp& branch, Gen::FixupBranch taken)
++{
++  m_ps4_joins.push_back({branch.ps4_join_to, branch.branchTo, taken, gpr.PS4Save(), fpr.PS4Save(),
++                         m_constant_propagation, js.downcountAmount,
++                         js.firstFPInstructionFound, js.constantGqrValid});
++}
++
++// The instruction at `index` is where branches inside the block land. The code reaching it from
++// above (not taken) first gets to a state the taken branches can reach too: no gather pipe writes
++// waiting, the carry flag in ppcState, no constant a taken branch doesn't know as well. Each taken
++// branch then gets a stub in far code that moves its registers to where this code has them and
++// jumps here.
++void JitPS4::PS4BindJoins(u32 index)
++{
++  if (std::none_of(m_ps4_joins.begin(), m_ps4_joins.end(),
++                   [index](const PS4PendingJoin& join) { return join.target_index == index; }))
++  {
++    return;
++  }
++  PS4CommitGatherPipe(true);
++  if (js.carryFlag != CarryFlag::InPPCState)
++    FlushCarry();
++  bool first_fp = js.firstFPInstructionFound;
++  BitSet8 constant_gqr_valid = js.constantGqrValid;
++  for (preg_t r = 0; r < 32; r++)
++  {
++    if (!m_constant_propagation.HasGPR(r))
++      continue;
++    bool shared = true;
++    for (const PS4PendingJoin& join : m_ps4_joins)
++    {
++      if (join.target_index == index &&
++          !(join.constants.HasGPR(r) &&
++            join.constants.GetGPR(r) == m_constant_propagation.GetGPR(r)))
++      {
++        shared = false;
++      }
++    }
++    if (shared)
++      continue;
++    // Only known as a constant here: written to ppcState if it's nowhere else, then forgotten.
++    if (!gpr.PS4Reg(r).IsInHostRegister() && !gpr.PS4Reg(r).IsInDefaultLocation())
++      gpr.Flush(BitSet32{static_cast<int>(r)}, RegCache::FlushMode::Undirty);
++    m_constant_propagation.ClearGPR(r);
++  }
++  for (const PS4PendingJoin& join : m_ps4_joins)
++  {
++    if (join.target_index == index)
++    {
++      first_fp &= join.first_fp;
++      constant_gqr_valid &= join.constant_gqr_valid;
++    }
++  }
++  // An FP instruction after this checks the FP enable bit again if a taken branch skipped the
++  // check; GQR values only stay known if known on every way here.
++  js.firstFPInstructionFound = first_fp;
++  js.constantGqrValid = constant_gqr_valid;
++
++  const u8* join_point = GetCodePtr();
++  for (auto it = m_ps4_joins.begin(); it != m_ps4_joins.end();)
++  {
++    if (it->target_index != index)
++    {
++      ++it;
++      continue;
++    }
++    SwitchToFarCode();
++    SetJumpTarget(it->taken);
++    const u8* stub = GetCodePtr();
++    PS4JoinMove(*it);
++    s_join_bound++;
++    s_join_moves += GetCodePtr() - stub;
++    // The instructions the branch skipped are counted in js.downcountAmount (the block's exits
++    // subtract it): give their cycles back.
++    if (js.downcountAmount > it->downcount)
++      ADD(32, PPCSTATE(downcount), Imm32(js.downcountAmount - it->downcount));
++    JMP(join_point, true);
++    SwitchToNearCode();
++    it = m_ps4_joins.erase(it);
++  }
++}
++
++// From the state where the branch left (join.*_state) to the cache's current state: first every
++// value the target's code expects in ppcState, or that changes host register, is written there;
++// then the host registers the target's code expects are loaded. (Values only move through
++// ppcState, so no host register is overwritten before it's read. No register is discarded at
++// either end: PS4CanJoin, and a discarded register here is dead here.)
++void JitPS4::PS4JoinMove(const PS4PendingJoin& join)
++{
++  for (preg_t r = 0; r < 32; r++)
++  {
++    const PPCCachedReg& from = join.gpr_state.regs[r];
++    const PPCCachedReg& to = gpr.PS4Reg(r);
++    const X64Reg from_host = from.IsInHostRegister() ? from.GetHostRegister() : INVALID_REG;
++    const X64Reg to_host = to.IsInHostRegister() ? to.GetHostRegister() : INVALID_REG;
++    if (!from.IsInDefaultLocation() &&
++        (to.IsInDefaultLocation() || (to_host != INVALID_REG && to_host != from_host)))
++    {
++      if (from_host != INVALID_REG)
++        MOV(32, gpr.PS4Home(r), R(from_host));
++      else if (join.constants.HasGPR(r))
++        MOV(32, gpr.PS4Home(r), Imm32(join.constants.GetGPR(r)));
++    }
++  }
++  for (preg_t r = 0; r < 32; r++)
++  {
++    const PPCCachedReg& from = join.fpr_state.regs[r];
++    const PPCCachedReg& to = fpr.PS4Reg(r);
++    const X64Reg from_host = from.IsInHostRegister() ? from.GetHostRegister() : INVALID_REG;
++    const X64Reg to_host = to.IsInHostRegister() ? to.GetHostRegister() : INVALID_REG;
++    if (!from.IsInDefaultLocation() && from_host != INVALID_REG &&
++        (to.IsInDefaultLocation() || (to_host != INVALID_REG && to_host != from_host)))
++    {
++      MOVAPD(fpr.PS4Home(r), from_host);
++    }
++  }
++  for (preg_t r = 0; r < 32; r++)
++  {
++    const PPCCachedReg& from = join.gpr_state.regs[r];
++    const PPCCachedReg& to = gpr.PS4Reg(r);
++    if (!to.IsInHostRegister() ||
++        (from.IsInHostRegister() && from.GetHostRegister() == to.GetHostRegister()))
++    {
++      continue;
++    }
++    if (join.constants.HasGPR(r))
++      MOV(32, R(to.GetHostRegister()), Imm32(join.constants.GetGPR(r)));
++    else
++      MOV(32, R(to.GetHostRegister()), gpr.PS4Home(r));
++  }
++  for (preg_t r = 0; r < 32; r++)
++  {
++    const PPCCachedReg& from = join.fpr_state.regs[r];
++    const PPCCachedReg& to = fpr.PS4Reg(r);
++    if (!to.IsInHostRegister() ||
++        (from.IsInHostRegister() && from.GetHostRegister() == to.GetHostRegister()))
++    {
++      continue;
++    }
++    MOVAPD(to.GetHostRegister(), fpr.PS4Home(r));
++  }
++}
++
++// The branch's target never started its own code in this block: the taken branch leaves the
++// block as it did before jit_join, from the state it left in.
++void JitPS4::PS4JoinFallback(const PS4PendingJoin& join)
++{
++  const RegCache::PS4State gpr_now = gpr.PS4Save();
++  const RegCache::PS4State fpr_now = fpr.PS4Save();
++  const JitCommon::ConstantPropagation constants_now = m_constant_propagation;
++  const u32 downcount_now = js.downcountAmount;
++  const CarryFlag carry_now = js.carryFlag;
++  const u32 gp_pending_now = js.ps4_gp_pending;
++  SwitchToFarCode();
++  SetJumpTarget(join.taken);
++  gpr.PS4Restore(join.gpr_state);
++  fpr.PS4Restore(join.fpr_state);
++  m_constant_propagation = join.constants;
++  js.downcountAmount = join.downcount;
++  js.carryFlag = CarryFlag::InPPCState;
++  js.ps4_gp_pending = 0;
++  gpr.Flush();
++  fpr.Flush();
++  WriteExit(join.target_address);
++  gpr.PS4Restore(gpr_now);
++  fpr.PS4Restore(fpr_now);
++  m_constant_propagation = constants_now;
++  js.downcountAmount = downcount_now;
++  js.carryFlag = carry_now;
++  js.ps4_gp_pending = gp_pending_now;
++  SwitchToNearCode();
++}
++
++void JitPS4::PS4JoinFallbacks(u32 first_index, u32 last_index)
++{
++  for (auto it = m_ps4_joins.begin(); it != m_ps4_joins.end();)
++  {
++    if (it->target_index < first_index || it->target_index > last_index)
++    {
++      ++it;
++      continue;
++    }
++    PS4JoinFallback(*it);
++    s_join_fallback++;
++    it = m_ps4_joins.erase(it);
 +  }
 +}
 +
@@ -10534,10 +10864,12 @@ index 0000000..a93e665
 +
 +void JitPS4::PS4VerifyExit(std::optional<u32> destination)
 +{
-+  // Recompiler check: every register is in ppcState here (the exits flush first).
++  // Recompiler check: every register is in ppcState here (the exits flush first; pinned registers
++  // are written there for the check).
 +  if (!ps4_jit_verify)
 +    return;
 +  ABI_PushRegistersAndAdjustStack(BitSet32{RSCRATCH, RSCRATCH2}, 0);
++  PS4StorePinned();
 +  if (destination)
 +    ABI_CallFunctionPC(VerifyExitFromJit, this, *destination);
 +  else
@@ -10993,6 +11325,7 @@ index 0000000..a93e665
 +  if (ps4_jit_verify)
 +  {
 +    ABI_PushRegistersAndAdjustStack({}, 0);
++    PS4StorePinned();  // the replay starts from ppcState (it puts everything back after)
 +    ABI_CallFunctionPC(VerifyBeginFromJit, this, em_address);
 +    ABI_PopRegistersAndAdjustStack({}, 0);
 +  }
@@ -11049,11 +11382,28 @@ index 0000000..a93e665
 +
 +  PS4AnalyzeRawSingles(code_block.m_num_instructions);
 +
++#ifdef DOLPHIN_PS4_HOST
++  // PS4JIT_JOINLOG=<address>: the block starting there, instruction by instruction (jit_join).
++  if (const char* want = getenv("PS4JIT_JOINLOG");
++      want && strtoul(want, nullptr, 16) == js.blockStart)
++  {
++    for (u32 k = 0; k < code_block.m_num_instructions; k++)
++    {
++      const PPCAnalyst::CodeOp& o = m_code_buffer[k];
++      fprintf(stderr, "[join] %3u %08x %s%s join_to=%u%s\n", k, o.address,
++              Common::GekkoDisassembler::Disassemble(o.inst.hex, o.address).c_str(),
++              o.skip ? " SKIP" : "", o.ps4_join_to, o.ps4_join ? " JOIN" : "");
++    }
++  }
++#endif
 +  // Translate instructions
 +  js.ps4_gp_pending = 0;
++  m_ps4_joins.clear();
 +  for (u32 i = 0; i < code_block.m_num_instructions; i++)
 +  {
 +    PPCAnalyst::CodeOp& op = m_code_buffer[i];
++    if (op.ps4_join && !m_ps4_joins.empty())
++      PS4BindJoins(i);
 +    if (js.ps4_gp_pending != 0 && !PS4CanDeferGatherPipeCommit(op))
 +      PS4CommitGatherPipe(true);
 +
@@ -11265,9 +11615,15 @@ index 0000000..a93e665
 +        ++js.numFloatingPointInst;
 +    }
 +
++    // jit_join: an instruction merged into this one can't be a branch's landing place.
++    if (js.skipInstructions != 0 && !m_ps4_joins.empty())
++      PS4JoinFallbacks(i + 1, i + js.skipInstructions);
 +    i += js.skipInstructions;
 +    js.skipInstructions = 0;
 +  }
++  // jit_join: targets the block didn't get to (it ended or broke off first).
++  if (!m_ps4_joins.empty())
++    PS4JoinFallbacks(0, UINT32_MAX);
 +
 +  if (code_block.m_broken)
 +  {
@@ -11341,6 +11697,7 @@ index 0000000..a93e665
 +  analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_CARRY_MERGE);
 +  analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_BRANCH_FOLLOW);
 +  analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_PS4_UNROLL);
++  analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_PS4_JOIN);
 +}
 +
 +void JitPS4::IntializeSpeculativeConstants()
@@ -11400,10 +11757,10 @@ index 0000000..a93e665
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.h b/Source/Core/Core/PowerPC/JitPS4/Jit.h
 new file mode 100644
-index 0000000..75f1f26
+index 0000000..fc01b53
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.h
-@@ -0,0 +1,331 @@
+@@ -0,0 +1,364 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11422,6 +11779,11 @@ index 0000000..75f1f26
 +// Settings
 +// ----------
 +#pragma once
++
++#include <chrono>
++#ifdef DOLPHIN_PS4_HOST
++#include <pthread.h>
++#endif
 +
 +#include <optional>
 +
@@ -11538,6 +11900,34 @@ index 0000000..75f1f26
 +
 +  void AndWithMask(Gen::X64Reg reg, u32 mask);
 +  void RotateLeft(int bits, Gen::X64Reg regOp, const Gen::OpArg& arg, u8 rotate);
++
++  // jit_join (PPCAnalyst OPTION_PS4_JOIN): a taken branch to code further down the block, waiting
++  // for its target to be compiled - then it jumps there, moving its registers to where that code
++  // expects them (PS4BindJoins); or, if the target never starts its own code in this block, it
++  // leaves the block as before (PS4JoinFallback).
++  struct PS4PendingJoin
++  {
++    u32 target_index;
++    u32 target_address;
++    Gen::FixupBranch taken;
++    RegCache::PS4State gpr_state;
++    RegCache::PS4State fpr_state;
++    JitCommon::ConstantPropagation constants;
++    u32 downcount;
++    bool first_fp;
++    BitSet8 constant_gqr_valid;
++  };
++  std::vector<PS4PendingJoin> m_ps4_joins;
++  std::chrono::steady_clock::time_point m_ps4_bench_start;  // the PC test bench (Shutdown)
++#ifdef DOLPHIN_PS4_HOST
++  pthread_t m_ps4_bench_thread{};
++#endif
++  bool PS4CanJoin(const PPCAnalyst::CodeOp& branch) const;
++  void PS4JoinTaken(const PPCAnalyst::CodeOp& branch, Gen::FixupBranch taken);
++  void PS4BindJoins(u32 index);
++  void PS4JoinMove(const PS4PendingJoin& join);
++  void PS4JoinFallback(const PS4PendingJoin& join);
++  void PS4JoinFallbacks(u32 first_index, u32 last_index);
 +
 +  bool CheckMergedBranch(u32 crf) const;
 +  void DoMergedBranch();
@@ -12620,10 +13010,10 @@ index 0000000..4690bbf
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit_Branch.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit_Branch.cpp
 new file mode 100644
-index 0000000..1e1aabf
+index 0000000..b11d825
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit_Branch.cpp
-@@ -0,0 +1,316 @@
+@@ -0,0 +1,326 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -12734,6 +13124,16 @@ index 0000000..1e1aabf
 +void JitPS4::bcx(UGeckoInstruction inst)
 +{
 +  INSTRUCTION_START
++
++  // jit_join: an "if" - a conditional branch to code further down this block. Taken, it jumps
++  // there with the registers where they are (JitPS4::PS4BindJoins).
++  if ((inst.BO & BO_DONT_DECREMENT_FLAG) && !(inst.BO & BO_DONT_CHECK_CONDITION) && !inst.LK &&
++      PS4CanJoin(*js.op))
++  {
++    PS4JoinTaken(*js.op, JumpIfCRFieldBit(inst.BI >> 2, 3 - (inst.BI & 3),
++                                          !!(inst.BO_2 & BO_BRANCH_IF_TRUE)));
++    return;
++  }
 +
 +  // USES_CR
 +
@@ -13905,10 +14305,10 @@ index 0000000..e1f3049
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit_Integer.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit_Integer.cpp
 new file mode 100644
-index 0000000..8dfb1e7
+index 0000000..fd35e7d
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit_Integer.cpp
-@@ -0,0 +1,2471 @@
+@@ -0,0 +1,2501 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -14334,6 +14734,28 @@ index 0000000..8dfb1e7
 +
 +  ASSERT(gpr.IsAllUnlocked());
 +
++  // jit_join: an "if" to code further down this block. Taken, it jumps there with the registers
++  // where they are (JitPS4::PS4BindJoins); not taken, it goes on here.
++  if (next.OPCD == 16 && !next.LK && PS4CanJoin(js.op[1]))
++  {
++    switch (test_bit)
++    {
++    case PowerPC::CR_LT_BIT:
++      PS4JoinTaken(js.op[1], J_CC(condition ? CC_L : CC_GE, Jump::Near));
++      break;
++    case PowerPC::CR_GT_BIT:
++      PS4JoinTaken(js.op[1], J_CC(condition ? CC_G : CC_LE, Jump::Near));
++      break;
++    case PowerPC::CR_EQ_BIT:
++      PS4JoinTaken(js.op[1], J_CC(condition ? CC_E : CC_NE, Jump::Near));
++      break;
++    case PowerPC::CR_SO_BIT:
++      // Never taken (SO isn't emulated for cmp).
++      break;
++    }
++    return;
++  }
++
 +  FixupBranch pDontBranch;
 +  switch (test_bit)
 +  {
@@ -14401,6 +14823,14 @@ index 0000000..8dfb1e7
 +  case PowerPC::CR_SO_BIT:
 +    // SO bit, do not branch (we don't emulate SO for cmp).
 +    break;
++  }
++
++  // jit_join: an "if" to code further down this block, decided at compile time.
++  if (next.OPCD == 16 && !next.LK && PS4CanJoin(js.op[1]))
++  {
++    if (branch)
++      PS4JoinTaken(js.op[1], J(Jump::Near));
++    return;
 +  }
 +
 +  if (branch)
@@ -19879,10 +20309,10 @@ index 0000000..8fb1556
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/RegCache/JitRegCache.h b/Source/Core/Core/PowerPC/JitPS4/RegCache/JitRegCache.h
 new file mode 100644
-index 0000000..0671cac
+index 0000000..5a5e971
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/RegCache/JitRegCache.h
-@@ -0,0 +1,255 @@
+@@ -0,0 +1,281 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -20064,6 +20494,32 @@ index 0000000..0671cac
 +// every entry from JIT code and reloads them after its own C++ calls; interpreter fallbacks and HLE
 +// calls store them before and reload them after. The register cache never spills, stores, frees or
 +// discards them. Off with MMU emulation (memcheck: revertable bindings).
++  // jit_join (JitPS4::PS4BindJoins): the cache's state where a branch inside the block leaves, kept
++  // until its target is compiled; and what it takes to move from there to the state there.
++  struct PS4State
++  {
++    std::array<PPCCachedReg, 32> regs;
++    std::array<X64CachedReg, NUM_XREGS> xregs;
++  };
++  PS4State PS4Save() const { return {m_regs, m_xregs}; }
++  void PS4Restore(const PS4State& state)
++  {
++    m_regs = state.regs;
++    m_xregs = state.xregs;
++  }
++  const PPCCachedReg& PS4Reg(preg_t preg) const { return m_regs[preg]; }
++  Gen::OpArg PS4Home(preg_t preg) const { return GetDefaultLocation(preg); }
++  // A register whose value is nowhere (discarded: dead at this point).
++  bool PS4HasDiscarded() const
++  {
++    for (preg_t i = 0; i < m_regs.size(); i++)
++    {
++      if (!m_regs[i].IsInHostRegister() && !m_regs[i].IsInDefaultLocation() && !IsImm(i))
++        return true;
++    }
++    return false;
++  }
++
 +  void ClearPinned() { m_pinned.fill(Gen::INVALID_REG); }
 +  void SetPinned(preg_t preg, Gen::X64Reg xr) { m_pinned[preg] = xr; }
 +  bool IsPinned(preg_t preg) const { return preg < 32 && m_pinned[preg] != Gen::INVALID_REG; }
@@ -20160,7 +20616,7 @@ index 0000000..c2085e1
 +};
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/MMU.cpp b/Source/Core/Core/PowerPC/MMU.cpp
-index 940e93c..0622d67 100644
+index 940e93c..1f68460 100644
 --- a/Source/Core/Core/PowerPC/MMU.cpp
 +++ b/Source/Core/Core/PowerPC/MMU.cpp
 @@ -24,6 +24,15 @@
@@ -20171,7 +20627,7 @@ index 940e93c..0622d67 100644
 +
 +#include "VideoCommon/PS4Profile.h"
 +
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +// ps4.ini pagetable_fastmem=deferred, set by DolphinNoGUI.
 +extern "C" int ps4_pagetable_deferred;
 +int ps4_pagetable_deferred = 0;
@@ -20183,7 +20639,7 @@ index 940e93c..0622d67 100644
  
  #include "VideoCommon/EFBInterface.h"
  
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +extern "C" int ps4_fifo_defer;  // VideoCommon/Fifo.cpp (ps4.ini fifo_defer)
 +#endif
 +
@@ -20194,7 +20650,7 @@ index 940e93c..0622d67 100644
  
  void MMU::Reset()
  {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  SoftTlbFlush();
 +#endif
    ClearPageTable();
@@ -20202,7 +20658,7 @@ index 940e93c..0622d67 100644
  
  void MMU::DoState(PointerWrap& p, bool sr_changed)
  {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  if (p.IsReadMode())
 +    SoftTlbFlush();
 +#endif
@@ -20213,7 +20669,7 @@ index 940e93c..0622d67 100644
    }
  }
  
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +// Soft TLB (PS4 port). An entry maps one 4 KiB guest page to its host RAM page. It is filled only
 +// by a successful translated guest read (read table) or write (write table) of plain RAM, so the
 +// R and C bits in the page table are already set exactly as the full path would set them. The tag
@@ -20328,7 +20784,7 @@ index 940e93c..0622d67 100644
      wi = translated_addr.wi;
    }
  
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  if (flag == XCheckTLBFlag::Read && m_ps4_shadow) [[unlikely]]
 +  {
 +    // JIT check replay: RAM through the overlay, everything else not replayable.
@@ -20359,7 +20815,7 @@ index 940e93c..0622d67 100644
 +
    if (flag == XCheckTLBFlag::Read && (em_address & 0xF8000000) == 0x08000000)
    {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +    if (ps4_fifo_defer)  // the game may be looking at the GPU: hand it everything first
 +      m_system.GetGPFifo().FastCheckGatherPipe();
 +#endif
@@ -20370,7 +20826,7 @@ index 940e93c..0622d67 100644
      T value;
      em_address &= m_memory.GetRamMask();
  
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +    if (flag == XCheckTLBFlag::Read && !never_translate && !m_ppc_state.m_enable_dcache && !wi)
 +      SoftTlbFill(false, logical_address, &m_memory.GetRAM()[em_address & ~HW_PAGE_MASK]);
 +#endif
@@ -20382,7 +20838,7 @@ index 940e93c..0622d67 100644
      T value;
      em_address &= 0x0FFFFFFF;
  
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +    if (flag == XCheckTLBFlag::Read && !never_translate && !m_ppc_state.m_enable_dcache && !wi)
 +      SoftTlbFill(false, logical_address, &m_memory.GetEXRAM()[em_address & ~HW_PAGE_MASK]);
 +#endif
@@ -20414,7 +20870,7 @@ index 940e93c..0622d67 100644
      wi = translated_addr.wi;
    }
  
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  if (flag == XCheckTLBFlag::Write && m_ps4_shadow) [[unlikely]]
 +  {
 +    // JIT check replay: kept in the overlay (big-endian, as memory has it).
@@ -20439,7 +20895,7 @@ index 940e93c..0622d67 100644
  
    if (flag == XCheckTLBFlag::Write && (em_address & 0xF8000000) == 0x08000000)
    {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +    if (ps4_fifo_defer)  // e.g. FIFO pointer changes: pending bursts belong to the old FIFO
 +    {
 +      // Except a FIFO reset (PI_FIFO_RESET bit 0, from GXAbortFrame): it throws away what is
@@ -20461,7 +20917,7 @@ index 940e93c..0622d67 100644
      // mirrors of memory).
      em_address &= m_memory.GetRamMask();
  
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +    if (flag == XCheckTLBFlag::Write && !never_translate && !m_ppc_state.m_enable_dcache && !wi)
 +      SoftTlbFill(true, logical_address, &m_memory.GetRAM()[em_address & ~HW_PAGE_MASK]);
 +#endif
@@ -20473,7 +20929,7 @@ index 940e93c..0622d67 100644
    {
      em_address &= 0x0FFFFFFF;
  
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +    if (flag == XCheckTLBFlag::Write && !never_translate && !m_ppc_state.m_enable_dcache && !wi)
 +      SoftTlbFill(true, logical_address, &m_memory.GetEXRAM()[em_address & ~HW_PAGE_MASK]);
 +#endif
@@ -20485,7 +20941,7 @@ index 940e93c..0622d67 100644
  
  u32 MMU::IsOptimizableMMIOAccess(u32 address, u32 access_size) const
  {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  // fifo_defer: MMIO accesses must take the slow path, which flushes the gather pipe first.
 +  if (ps4_fifo_defer)
 +    return 0;
@@ -20497,7 +20953,7 @@ index 940e93c..0622d67 100644
    return address;
  }
  
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +bool MMU::PS4IsGatherPipeWrite(u32 address) const
 +{
 +  if ((address & 0xFFFFF000) != 0xCC008000 || !m_ppc_state.msr.DR)
@@ -20521,7 +20977,7 @@ index 940e93c..0622d67 100644
  
    m_ppc_state.pagetable_base = htaborg << 16;
    m_ppc_state.pagetable_mask = (htabmask << 16) | 0xffc0;
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  SoftTlbFlush();
 +#endif
  
@@ -20530,7 +20986,7 @@ index 940e93c..0622d67 100644
  
  void MMU::SRUpdated()
  {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  ps4_soft_tlb_sr_flushes++;
 +  SoftTlbFlush();
 +#endif
@@ -20541,14 +20997,14 @@ index 940e93c..0622d67 100644
  
    m_ppc_state.tlb[PowerPC::DATA_TLB_INDEX][entry_index].Invalidate();
    m_ppc_state.tlb[PowerPC::INST_TLB_INDEX][entry_index].Invalidate();
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  if (ps4_soft_tlb_precise)
 +    SoftTlbInvalidatePage(address);
 +  else
 +    SoftTlbFlush();
 +#endif
  
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  PS4_PROFILE(PS4_PROF_TLBIE);
 +  // PS4 (ps4.ini pagetable_fastmem=deferred): games issue tlbie in bursts, and each rescan of
 +  // the page table is expensive here. The architecture only guarantees that a TLB invalidation
@@ -20567,7 +21023,7 @@ index 940e93c..0622d67 100644
  
  void MMU::ClearPageTable()
  {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  // (Reset, state loads, SDR1 and segment register changes flush the soft TLB themselves.)
 +  if (!ps4_soft_tlb_precise)
 +    SoftTlbFlush();
@@ -20579,7 +21035,7 @@ index 940e93c..0622d67 100644
  
  void MMU::PageTableUpdated()
  {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  // After a tlbie its page was invalidated already (InvalidateTLBEntry).
 +  if (!ps4_soft_tlb_precise)
 +    SoftTlbFlush();
@@ -20592,7 +21048,7 @@ index 940e93c..0622d67 100644
  
  void MMU::DBATUpdated()
  {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  SoftTlbFlush();
 +#endif
    m_dbat_table = {};
@@ -20602,7 +21058,7 @@ index 940e93c..0622d67 100644
  
  void MMU::IBATUpdated()
  {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  SoftTlbFlush();
 +#endif
    m_ibat_table = {};
@@ -20612,7 +21068,7 @@ index 940e93c..0622d67 100644
  template <std::unsigned_integral T>
  Common::MakeAtLeastU32<T> ReadFromJit(MMU& mmu, u32 address)
  {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  if (const u8* host = mmu.SoftTlbLookup(false, address, sizeof(T)))
 +  {
 +    T value;
@@ -20627,7 +21083,7 @@ index 940e93c..0622d67 100644
  template <std::unsigned_integral T>
  void WriteFromJit(MMU& mmu, Common::MakeAtLeastU32<T> var, u32 address)
  {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  // GPU commands stored through an address the JIT couldn't resolve (Shadow the Hedgehog: ~4% of
 +  // the CPU thread went through WriteToHardware for them): straight into the gather pipe.
 +  if (mmu.PS4IsGatherPipeWrite(address)) [[unlikely]]
@@ -20657,7 +21113,7 @@ index 940e93c..0622d67 100644
  template void WriteFromJit<u64>(MMU& mmu, u64 var, u32 address);
  void WriteU16SwapFromJit(MMU& mmu, u32 var, u32 address)
  {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  if (mmu.PS4IsGatherPipeWrite(address)) [[unlikely]]
 +  {
 +    mmu.PS4GatherPipe().Write16(Common::swap16(static_cast<u16>(var)));
@@ -20675,7 +21131,7 @@ index 940e93c..0622d67 100644
  }
  void WriteU32SwapFromJit(MMU& mmu, u32 var, u32 address)
  {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  if (mmu.PS4IsGatherPipeWrite(address)) [[unlikely]]
 +  {
 +    mmu.PS4GatherPipe().Write32(Common::swap32(var));
@@ -20691,7 +21147,7 @@ index 940e93c..0622d67 100644
  }
  void WriteU64SwapFromJit(MMU& mmu, u64 var, u32 address)
  {
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  if (mmu.PS4IsGatherPipeWrite(address)) [[unlikely]]
 +  {
 +    mmu.PS4GatherPipe().Write64(Common::swap64(var));
@@ -20707,7 +21163,7 @@ index 940e93c..0622d67 100644
  }
  }  // namespace PowerPC
 diff --git a/Source/Core/Core/PowerPC/MMU.h b/Source/Core/Core/PowerPC/MMU.h
-index 8c12ead..9bb79bc 100644
+index 8c12ead..5f87b87 100644
 --- a/Source/Core/Core/PowerPC/MMU.h
 +++ b/Source/Core/Core/PowerPC/MMU.h
 @@ -28,6 +28,11 @@ namespace Memory
@@ -20726,7 +21182,7 @@ index 8c12ead..9bb79bc 100644
    // memory access.  Does not consider page tables.
    bool IsOptimizableRAMAddress(u32 address, u32 access_size) const;
    u32 IsOptimizableMMIOAccess(u32 address, u32 access_size) const;
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  // PS4: true when a data store to `address` lands in the gather pipe (the JIT slow path's
 +  // shortcut, see WriteFromJit).
 +  bool PS4IsGatherPipeWrite(u32 address) const;
@@ -20739,7 +21195,7 @@ index 8c12ead..9bb79bc 100644
    BatTable& GetIBATTable() { return m_ibat_table; }
    BatTable& GetDBATTable() { return m_dbat_table; }
  
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  // PS4 port: soft TLB for the JIT's slow memory path (MMU.cpp). Games that use the page table
 +  // can't be fast-mapped on the PS4 (16 KiB host pages, their 4 KiB pages are scattered), so every
 +  // such access went through the full translation. This caches guest page -> host RAM page.
@@ -20776,7 +21232,7 @@ index 8c12ead..9bb79bc 100644
 +#endif
 +
  private:
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  std::array<SoftTlbEntry, SOFT_TLB_SIZE> m_soft_tlb_read{};
 +  std::array<SoftTlbEntry, SOFT_TLB_SIZE> m_soft_tlb_write{};
 +#endif
@@ -20784,10 +21240,18 @@ index 8c12ead..9bb79bc 100644
    {
      BAT_TRANSLATED,
 diff --git a/Source/Core/Core/PowerPC/PPCAnalyst.cpp b/Source/Core/Core/PowerPC/PPCAnalyst.cpp
-index 386e349..106ffbe 100644
+index 386e349..720c629 100644
 --- a/Source/Core/Core/PowerPC/PPCAnalyst.cpp
 +++ b/Source/Core/Core/PowerPC/PPCAnalyst.cpp
-@@ -36,10 +36,25 @@
+@@ -4,6 +4,7 @@
+ #include "Core/PowerPC/PPCAnalyst.h"
+ 
+ #include <algorithm>
++#include <array>
+ #include <map>
+ #include <string>
+ #include <vector>
+@@ -36,10 +37,35 @@
  // library functions.
  // We don't do this much currently. Only for the special case Super Monkey Ball.
  
@@ -20796,6 +21260,16 @@ index 386e349..106ffbe 100644
 +// iteration to the next (the JIT writes them all back and reloads them at every block exit).
 +extern "C" int ps4_jit_unroll;
 +int ps4_jit_unroll = 1;
++
++// ps4.ini jit_join (Dolphin Lab): an "if" - a conditional branch to code further down the same
++// block - jumps there inside the block, its registers staying in host registers, instead of
++// writing them all back, leaving the block and loading them again in the target's own block
++// (WWE '13: ~1.2 of them per 33 instructions of its busiest code).
++// Off by default: correct (recompiler check: no new differences in Donald Duck, WWE '13, Bully),
++// but no faster - Bully's busiest scene used as much CPU with it (PC test bench, 2026-10-12): the
++// code after a joined branch knows less (constants, merged compares, single-precision values).
++extern "C" int ps4_jit_join;
++int ps4_jit_join = 0;
 +
  namespace PPCAnalyst
  {
@@ -20813,7 +21287,7 @@ index 386e349..106ffbe 100644
  
  constexpr u32 INVALID_BRANCH_TARGET = 0xFFFFFFFF;
  
-@@ -832,6 +847,8 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
+@@ -832,6 +858,8 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
    u32 num_inst = 0;
  
    const bool enable_follow = m_enable_branch_following;
@@ -20822,7 +21296,7 @@ index 386e349..106ffbe 100644
  
    auto& system = Core::System::GetInstance();
    auto& mmu = system.GetMMU();
-@@ -949,6 +966,26 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
+@@ -949,6 +977,26 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
      code[i].branchIsIdleLoop =
          code[i].branchTo == block->m_address && IsBusyWaitLoop(block, code, i);
  
@@ -20849,21 +21323,96 @@ index 386e349..106ffbe 100644
      if (follow && numFollows < BRANCH_FOLLOWING_THRESHOLD)
      {
        // Follow the unconditional branch.
+@@ -984,6 +1032,35 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
+     block->m_broken = true;
+   }
+ 
++  // jit_join: a conditional forward branch (bc, no link, no CTR) whose target is an instruction
++  // further down this block, every instruction in between being the next one in memory (nothing
++  // followed, inlined or reordered on the way), stays inside the block.
++  if (ps4_jit_join && HasOption(OPTION_PS4_JOIN))
++  {
++    const u32 n = block->m_num_instructions;
++    for (u32 i = 0; i < n; i++)
++    {
++      CodeOp& op = code[i];
++      const UGeckoInstruction inst = op.inst;
++      if (op.skip || inst.OPCD != 16 || inst.LK || inst.AA ||
++          !(inst.BO & BO_DONT_DECREMENT_FLAG) || (inst.BO & BO_DONT_CHECK_CONDITION) ||
++          op.branchIsIdleLoop || op.ps4_unroll || op.branchTo <= op.address)
++      {
++        continue;
++      }
++      const u32 j = i + (op.branchTo - op.address) / 4;
++      if (j >= n)
++        continue;
++      bool contiguous = true;
++      for (u32 k = i + 1; k <= j && contiguous; k++)
++        contiguous = !code[k].skip && code[k].address == op.address + 4 * (k - i);
++      if (!contiguous)
++        continue;
++      op.ps4_join_to = j;
++      code[j].ps4_join = true;
++    }
++  }
++
+   auto& power_pc = system.GetPowerPC();
+   auto& ppc_symbol_db = power_pc.GetSymbolDB();
+   // Scan for flag dependencies; assume the next block (or any branch that can leave the block)
+@@ -1075,10 +1152,33 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
+   // Forward scan, for flags that need the other direction for calculation.
+   BitSet32 fprIsSingle, fprIsDuplicated, fprIsStoreSafe;
+   BitSet8 gqrUsed, gqrModified;
++  // jit_join: what holds where a branch inside the block lands holds on both ways there.
++  std::map<u32, std::array<BitSet32, 3>> join_facts;
+   for (u32 i = 0; i < block->m_num_instructions; i++)
+   {
+     CodeOp& op = code[i];
+ 
++    if (op.ps4_join)
++    {
++      if (const auto it = join_facts.find(i); it != join_facts.end())
++      {
++        fprIsSingle &= it->second[0];
++        fprIsDuplicated &= it->second[1];
++        fprIsStoreSafe &= it->second[2];
++      }
++    }
++    if (op.ps4_join_to != 0)
++    {
++      const auto [it, added] = join_facts.try_emplace(
++          op.ps4_join_to, std::array<BitSet32, 3>{fprIsSingle, fprIsDuplicated, fprIsStoreSafe});
++      if (!added)
++      {
++        it->second[0] &= fprIsSingle;
++        it->second[1] &= fprIsDuplicated;
++        it->second[2] &= fprIsStoreSafe;
++      }
++    }
++
+     op.fprIsSingle = fprIsSingle;
+     op.fprIsDuplicated = fprIsDuplicated;
+     op.fprIsStoreSafeBeforeInst = fprIsStoreSafe;
 diff --git a/Source/Core/Core/PowerPC/PPCAnalyst.h b/Source/Core/Core/PowerPC/PPCAnalyst.h
-index f9081ba..3593a20 100644
+index f9081ba..e7efb21 100644
 --- a/Source/Core/Core/PowerPC/PPCAnalyst.h
 +++ b/Source/Core/Core/PowerPC/PPCAnalyst.h
-@@ -51,6 +51,9 @@ struct CodeOp  // 16B
+@@ -51,6 +51,14 @@ struct CodeOp  // 16B
    bool canCauseException = false;
    bool skipLRStack = false;
    bool skip = false;  // followed BL-s for example
 +  // Dolphin Lab (jit_unroll): a loop's branch back to the block's start whose next copy of the
 +  // loop body follows in this block - the branch exits only when it is NOT taken.
 +  bool ps4_unroll = false;
++  // Dolphin Lab (jit_join): a conditional forward branch to an instruction further down this
++  // block (ps4_join_to: that instruction's index), and the instructions such a branch reaches
++  // (ps4_join). Taken, the branch jumps there with the registers where they are.
++  u32 ps4_join_to = 0;
++  bool ps4_join = false;
    BitSet8 crWillBeRead;
    BitSet8 crWillBeWritten;
    BitSet8 crDiscardable;
-@@ -174,6 +177,10 @@ public:
+@@ -174,6 +182,14 @@ public:
  
      // Reorder cror instructions next to their associated fcmp.
      OPTION_CROR_MERGE = (1 << 6),
@@ -20871,6 +21420,10 @@ index f9081ba..3593a20 100644
 +    // Dolphin Lab (PS4): unroll short loops back to the block's start (ps4_unroll ops). Only for
 +    // the x86 JIT, which compiles those branches inverted (the cached interpreter doesn't).
 +    OPTION_PS4_UNROLL = (1 << 7),
++
++    // Dolphin Lab (PS4): conditional forward branches inside a block stay inside it (ps4_join_to,
++    // ps4_join). Only for the PS4 JIT (JitPS4::PS4BindJoins).
++    OPTION_PS4_JOIN = (1 << 8),
    };
  
    // Option setting/getting
@@ -20921,7 +21474,7 @@ index 564d74d..56197a1 100644
                                                              (perfmon ? FEATURE_FLAG_PERFMON : 0));
  }
 diff --git a/Source/Core/Core/PowerPC/PowerPC.h b/Source/Core/Core/PowerPC/PowerPC.h
-index 8d84ed1..3b8d3d0 100644
+index 8d84ed1..7b9d933 100644
 --- a/Source/Core/Core/PowerPC/PowerPC.h
 +++ b/Source/Core/Core/PowerPC/PowerPC.h
 @@ -38,6 +38,7 @@ enum class CPUCore
@@ -20937,7 +21490,7 @@ index 8d84ed1..3b8d3d0 100644
    void UpdateFPRFDouble(double dvalue);
    void UpdateFPRFSingle(float fvalue);
 +
-+#ifdef __ORBIS__
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
 +  // Jit64 on PS4: the raw 32 bits an lfs loaded, for a later stfs of the same, unchanged register
 +  // in the same block (see Jit64::PS4AnalyzeRawSingles). Scratch storage, not guest state.
 +  u32 ps4_raw_single[32] = {};
@@ -21659,7 +22212,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..78c4a8e 100644
+index 3bf40ea..bf9f6e3 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -21710,7 +22263,7 @@ index 3bf40ea..78c4a8e 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,68 @@
+@@ -31,6 +53,69 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -21734,6 +22287,7 @@ index 3bf40ea..78c4a8e 100644
 +extern "C" int ps4_jit_inline_dispatch;  // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_lazy_pc;          // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_unroll;           // Core/PowerPC/PPCAnalyst.cpp
++extern "C" int ps4_jit_join;             // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_gp_dynamic;       // Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 +extern "C" int ps4_jit_accurate_singles;  // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_round_results, ps4_jit_round_operands;  // Jit64/Jit_FloatingPoint.cpp
@@ -21779,7 +22333,7 @@ index 3bf40ea..78c4a8e 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +257,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +258,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -21790,7 +22344,7 @@ index 3bf40ea..78c4a8e 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +272,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +273,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -21809,7 +22363,7 @@ index 3bf40ea..78c4a8e 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +304,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +305,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -21820,7 +22374,7 @@ index 3bf40ea..78c4a8e 100644
  #endif
        });
  
-@@ -270,7 +371,428 @@ int main(const int argc, char* argv[])
+@@ -270,7 +372,437 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -22014,6 +22568,9 @@ index 3bf40ea..78c4a8e 100644
 +    ps4_jit_lazy_pc = Platform::GetPS4Option("jit_lazy_pc", "on") == "on";
 +    // jit_unroll=off (Dolphin Lab): loops are compiled one iteration per block again.
 +    ps4_jit_unroll = Platform::GetPS4Option("jit_unroll", "on") == "on";
++    // jit_join=on (Dolphin Lab): an "if" inside a block jumps further down the block when taken
++    // instead of leaving it (PPCAnalyst.cpp; off by default: no faster).
++    ps4_jit_join = Platform::GetPS4Option("jit_join", "off") == "on";
 +    // jit_gp_dynamic=off (Dolphin Lab): gather pipe writes through a pointer call MMU::Write again.
 +    ps4_jit_gp_dynamic = Platform::GetPS4Option("jit_gp_dynamic", "on") == "on";
 +    // jit_accurate_singles=off (per game): no rounding to single precision after float ops.
@@ -22049,12 +22606,18 @@ index 3bf40ea..78c4a8e 100644
 +    }
 +    // jit_verify=on (Recompiler Check): compiled blocks replayed in the interpreter and compared.
 +    ps4_jit_verify = Platform::GetPS4Option("jit_verify", "off") == "on";
-+    // jit_pin=1,3,4,31 (Dolphin Lab, per game; default off): up to four guest GPRs kept in host
-+    // registers across JIT blocks (Core/PowerPC/Jit64/RegCache/JitRegCache.h).
++    // jit_pin=1,3,4,31 (Dolphin Lab, per game): up to four guest GPRs kept in host registers
++    // across JIT blocks (Core/PowerPC/Jit64/RegCache/JitRegCache.h). The PS4 JIT pins r1, r3, r4
++    // and r31 for every game unless the game says otherwise (jit_pin=off): the stack pointer, the
++    // first arguments / return value and the frame register are what blocks load and store most
++    // (Bully's busiest scene: 5% less CPU time on the PC test bench; recompiler check: no
++    // differences in Donald Duck, Bully, WWE '13). Dolphin's own JIT keeps none by default.
 +    {
 +      for (int& pin : ps4_jit_pin)
 +        pin = -1;
-+      const std::string pin_list = Platform::GetPS4Option("jit_pin", "off");
++      const bool ps4_jit = Platform::GetPS4Option("cpu_core", "jit") == "jitps4";
++      const std::string pin_list =
++          Platform::GetPS4Option("jit_pin", ps4_jit ? "1,3,4,31" : "off");
 +      int count = 0;
 +      size_t at = 0;
 +      while (count < 4 && at < pin_list.size())
@@ -22249,7 +22812,7 @@ index 3bf40ea..78c4a8e 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +806,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +816,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -22265,7 +22828,7 @@ index 3bf40ea..78c4a8e 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +834,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +844,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -47713,10 +48276,10 @@ index c56f32c..64e5240 100644
  
 diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 new file mode 100755
-index 0000000..13e84a6
+index 0000000..4604703
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
-@@ -0,0 +1,1197 @@
+@@ -0,0 +1,1228 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -47759,6 +48322,7 @@ index 0000000..13e84a6
 +    ps4_jit_tlb_inline, ps4_lfs_forward, ps4_jit_accurate_singles, ps4_jit_round_results,
 +    ps4_jit_round_operands, ps4_jit_fcmp_merge, ps4_jit_msr_link, ps4_jit_gp_dynamic,
 +    ps4_fifo_batch, ps4_fifo_defer;
++extern "C" int ps4_jit_unroll, ps4_jit_join;  // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_pin[4];
 +extern "C" int ps4_jit_verify;  // JitPS4/Verify.cpp
 +
@@ -47769,8 +48333,11 @@ index 0000000..13e84a6
 +// Bumped whenever the file layout or what a block's code may refer to changes.
 +constexpr u32 FORMAT_VERSION = 2;
 +constexpr u32 FILE_MAGIC = 0x434A5044;  // "DPJC"
-+// Kept in memory and on disk at most (the file is read whole at the start).
-+constexpr size_t MAX_BYTES = 64 * 1024 * 1024;
++// Kept in memory and on disk at most. Big games fill 64 MiB (WWE '13: ~95 MiB of blocks); the
++// file is read and written block by block, so this is all the memory it takes.
++constexpr size_t MAX_BYTES = 128 * 1024 * 1024;
++// One block's saved code and relocations at most (a damaged file stops loading there).
++constexpr u32 MAX_BLOB_BYTES = 4 * 1024 * 1024;
 +
 +enum Section : u8
 +{
@@ -48082,17 +48649,19 @@ index 0000000..13e84a6
 +  h = Mix(h, FORMAT_VERSION);
 +  // This exact emulator build: its code and constants (the saved code calls into it and its
 +  // constants by address).
++  u64 build = 0;
++#ifndef DOLPHIN_PS4_HOST  // (the PC test bench has no such linker symbols; no cache there)
 +  const u64* p = reinterpret_cast<const u64*>(__text_start);
 +  const u64* end = reinterpret_cast<const u64*>(__eh_frame_start);
-+  u64 build = 0;
 +  for (; p < end; p++)
 +    build = (build ^ *p) * 0x100000001B3ull + 0x9E3779B97F4A7C15ull;
++#endif
 +  h = Mix(h, build);
 +  for (int v : {ps4_gp_fuse, ps4_lazy_lfs, ps4_jit_inline_dispatch, ps4_jit_lazy_pc,
 +                ps4_jit_tlb_inline, ps4_lfs_forward, ps4_jit_accurate_singles,
 +                ps4_jit_round_results, ps4_jit_round_operands, ps4_jit_fcmp_merge,
 +                ps4_jit_msr_link, ps4_jit_gp_dynamic, ps4_fifo_batch, ps4_fifo_defer, ps4_jit_verify,
-+                ps4_jit_pin[0], ps4_jit_pin[1], ps4_jit_pin[2], ps4_jit_pin[3]})
++                ps4_jit_unroll, ps4_jit_join, ps4_jit_pin[0], ps4_jit_pin[1], ps4_jit_pin[2], ps4_jit_pin[3]})
 +  {
 +    h = Mix(h, v);
 +  }
@@ -48164,38 +48733,60 @@ index 0000000..13e84a6
 +    return;
 +  }
 +  const u64 size = file.GetSize();
-+  std::vector<u8> data(size);
-+  if (size < sizeof(FileHeader) || size > MAX_BYTES + 4096 || !file.ReadBytes(data.data(), size))
++  FileHeader header;
++  if (size < sizeof(FileHeader) || !file.ReadBytes(&header, sizeof(header)))
 +  {
 +    Trace("unreadable file, starting over");
 +    return;
 +  }
-+  FileHeader header;
-+  std::memcpy(&header, data.data(), sizeof(header));
 +  if (header.magic != FILE_MAGIC || header.version != FORMAT_VERSION || header.config != m_config)
 +  {
 +    Trace("saved for another build or other JIT options, starting over");
 +    m_dirty = true;  // the next save replaces it
 +    return;
 +  }
-+  Reader r(data.data() + sizeof(header), size - sizeof(header));
++  // Block by block straight from the file: no second copy of the whole cache in memory.
++  bool complete = true;
 +  for (u32 i = 0; i < header.count; i++)
 +  {
 +    u32 blob_size;
-+    const u8* blob = r.Get(&blob_size) ? r.Skip(blob_size) : nullptr;
-+    if (!blob || blob_size < sizeof(BlobHeader))
++    if (!file.ReadBytes(&blob_size, sizeof(blob_size)) || blob_size < sizeof(BlobHeader) ||
++        blob_size > MAX_BLOB_BYTES || m_bytes + blob_size > MAX_BYTES)
++    {
++      complete = false;
 +      break;
++    }
++    std::vector<u8> blob(blob_size);
++    if (!file.ReadBytes(blob.data(), blob_size))
++    {
++      complete = false;
++      break;
++    }
 +    BlobHeader h;
-+    std::memcpy(&h, blob, sizeof(h));
++    std::memcpy(&h, blob.data(), sizeof(h));
 +    m_index[Key(h.em_address, h.feature_flags)] = m_blobs.size();
-+    m_blobs.emplace_back(blob, blob + blob_size);
 +    m_bytes += blob_size;
++    m_blobs.push_back(std::move(blob));
 +  }
 +  // What the JIT learned in earlier runs: known from the start, so blocks compile the way they
-+  // were saved.
-+  GetSet(&r, &m_jit.js.fifoWriteAddresses);
-+  GetSet(&r, &m_jit.js.pairedQuantizeAddresses);
-+  GetSet(&r, &m_jit.js.noSpeculativeConstantsAddresses);
++  // were saved. (A file cut short keeps its blocks; the next save writes it whole again.)
++  if (complete)
++  {
++    const u64 at = file.Tell();
++    std::vector<u8> rest(at < size ? size - at : 0);
++    if (!rest.empty() && file.ReadBytes(rest.data(), rest.size()))
++    {
++      Reader r(rest.data(), rest.size());
++      GetSet(&r, &m_jit.js.fifoWriteAddresses);
++      GetSet(&r, &m_jit.js.pairedQuantizeAddresses);
++      GetSet(&r, &m_jit.js.noSpeculativeConstantsAddresses);
++    }
++  }
++  else
++  {
++    Trace("file cut short after " + std::to_string(m_blobs.size()) + " blocks");
++    m_dirty = true;
++  }
 +  m_stats.loaded = m_blobs.size();
 +  Trace("loaded " + std::to_string(m_blobs.size()) + " blocks (" +
 +        std::to_string(m_bytes / 1024) + " KiB) from " + m_path);
@@ -48205,23 +48796,26 @@ index 0000000..13e84a6
 +{
 +  if (!m_ready || !m_dirty)
 +    return;
-+  std::vector<u8> data;
-+  data.reserve(m_bytes + m_blobs.size() * 4 + sizeof(FileHeader));
-+  Writer w(&data);
-+  w.Put(FileHeader{FILE_MAGIC, FORMAT_VERSION, m_config, static_cast<u32>(m_blobs.size()), 0});
-+  for (const auto& blob : m_blobs)
-+  {
-+    w.Put(static_cast<u32>(blob.size()));
-+    w.Bytes(blob.data(), blob.size());
-+  }
-+  PutSet(&data, m_jit.js.fifoWriteAddresses);
-+  PutSet(&data, m_jit.js.pairedQuantizeAddresses);
-+  PutSet(&data, m_jit.js.noSpeculativeConstantsAddresses);
-+  // Written beside, then renamed: a power cut mid-write leaves the old file.
++  std::vector<u8> sets;
++  PutSet(&sets, m_jit.js.fifoWriteAddresses);
++  PutSet(&sets, m_jit.js.pairedQuantizeAddresses);
++  PutSet(&sets, m_jit.js.noSpeculativeConstantsAddresses);
++  // Written beside, then renamed: a power cut mid-write leaves the old file. Block by block: no
++  // second copy of the whole cache in memory.
 +  const std::string temp = m_path + ".new";
 +  {
 +    File::IOFile file(temp, "wb");
-+    if (!file || !file.WriteBytes(data.data(), data.size()))
++    const FileHeader header{FILE_MAGIC, FORMAT_VERSION, m_config,
++                            static_cast<u32>(m_blobs.size()), 0};
++    bool written = file.IsOpen() && file.WriteBytes(&header, sizeof(header));
++    for (const auto& blob : m_blobs)
++    {
++      const u32 blob_size = static_cast<u32>(blob.size());
++      written = written && file.WriteBytes(&blob_size, sizeof(blob_size)) &&
++                file.WriteBytes(blob.data(), blob.size());
++    }
++    written = written && file.WriteBytes(sets.data(), sets.size());
++    if (!written)
 +    {
 +      Trace("couldn't write " + temp);
 +      return;
@@ -49042,10 +49636,10 @@ index 0000000..a7c64a0
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Verify.cpp b/Source/Core/Core/PowerPC/JitPS4/Verify.cpp
 new file mode 100755
-index 0000000..cefffe9
+index 0000000..1a41837
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Verify.cpp
-@@ -0,0 +1,436 @@
+@@ -0,0 +1,471 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -49321,8 +49915,11 @@ index 0000000..cefffe9
 +      break;
 +    }
 +    const u32 next = ppc.npc;
-+    // A place the compiled block can leave from: after a branch, and after its last instruction.
-+    if (next != current + 4 || step + 1 == count)
++    // A place the compiled block can leave from: after a branch (also one to the next
++    // instruction - "b +4" can end a block), and after its last instruction.
++    const bool branch = inst.OPCD == 16 || inst.OPCD == 18 ||
++                        (inst.OPCD == 19 && (inst.SUBOP10 == 16 || inst.SUBOP10 == 528));
++    if (next != current + 4 || branch || step + 1 == count)
 +    {
 +      Checkpoint cp;
 +      cp.next_pc = next;
@@ -49348,17 +49945,111 @@ index 0000000..cefffe9
 +    s.skipped++;
 +    return;
 +  }
-+  const Checkpoint* cp = nullptr;
-+  for (const Checkpoint& c : s.checkpoints)
-+  {
-+    if (c.next_pc == destination)
-+    {
-+      cp = &c;
-+      break;
-+    }
-+  }
 +  s.compared++;
 +  char line[256];
++  // Every place the replay left to `destination` is a candidate: a block can reach the same
++  // address more than once (a function called twice through followed branches, a loop's copies).
++  // The compiled code matches one of them - the closest is reported if none matches exactly.
++  Regs now;
++  jit.m_ppc_state.pc = destination;
++  now.Capture(jit.m_ppc_state);
++  auto& mmu = jit.m_system.GetMMU();
++  const auto differences = [&](const Checkpoint& c, std::vector<std::string>* out) {
++    const auto add = [&](const char* text) {
++      if (out)
++        out->emplace_back(text);
++    };
++    size_t count = 0;
++    const Regs& want = c.regs;
++    for (int i = 0; i < 32; i++)
++    {
++      if (now.gpr[i] != want.gpr[i])
++      {
++        count++;
++        snprintf(line, sizeof(line), "r%d = %08x, interpreter %08x", i, now.gpr[i], want.gpr[i]);
++        add(line);
++      }
++    }
++    for (int i = 0; i < 64; i++)
++    {
++      if (!SameFloat(now.fpr[i], want.fpr[i]))
++      {
++        count++;
++        snprintf(line, sizeof(line), "f%d.ps%d = %016llx, interpreter %016llx", i / 2, i % 2,
++                 static_cast<unsigned long long>(now.fpr[i]),
++                 static_cast<unsigned long long>(want.fpr[i]));
++        add(line);
++      }
++    }
++    for (int i = 0; i < 8; i++)
++    {
++      // Not the SO bit: Dolphin's JITs don't emulate it for compares (on purpose).
++      if ((now.cr[i] & ~1u) != (want.cr[i] & ~1u))
++      {
++        count++;
++        snprintf(line, sizeof(line), "cr%d = %x, interpreter %x", i, now.cr[i], want.cr[i]);
++        add(line);
++      }
++    }
++    const auto check = [&](const char* name, u32 a, u32 b) {
++      if (a != b)
++      {
++        count++;
++        snprintf(line, sizeof(line), "%s = %08x, interpreter %08x", name, a, b);
++        add(line);
++      }
++    };
++    check("lr", now.lr, want.lr);
++    check("ctr", now.ctr, want.ctr);
++    check("xer.ca", now.xer_ca, want.xer_ca);
++    check("xer.so/ov", now.xer_so_ov, want.xer_so_ov);
++    check("xer.count", now.xer_stringctrl, want.xer_stringctrl);
++    check("msr", now.msr, want.msr);
++    for (int i = 0; i < 8; i++)
++    {
++      char name[8];
++      snprintf(name, sizeof(name), "gqr%d", i);
++      check(name, now.gqr[i], want.gqr[i]);
++    }
++    // Memory: the last value the replay wrote to each byte (before this exit).
++    std::unordered_map<u32, u8> last;
++    for (size_t i = 0; i < c.writes; i++)
++      last[s.shadow.bytes[i].first] = s.shadow.bytes[i].second;
++    int bad_bytes = 0;
++    u32 first_bad = 0;
++    for (const auto& [address, value] : last)
++    {
++      const u8* host = mmu.PS4RamByte(address);
++      if (host && *host != value)
++      {
++        if (bad_bytes++ == 0)
++          first_bad = address;
++      }
++    }
++    if (bad_bytes)
++    {
++      count++;
++      snprintf(line, sizeof(line), "%d of %zu written bytes differ (first at %08x)", bad_bytes,
++               last.size(), first_bad);
++      add(line);
++    }
++    return count;
++  };
++  const Checkpoint* cp = nullptr;
++  size_t best = SIZE_MAX;
++  for (const Checkpoint& c : s.checkpoints)
++  {
++    if (c.next_pc != destination)
++      continue;
++    const size_t count = differences(c, nullptr);
++    if (count < best)
++    {
++      best = count;
++      cp = &c;
++    }
++    if (count == 0)
++      break;
++  }
 +  bool bad = false;
 +  const auto report = [&](const char* what) {
 +    bad = true;
@@ -49381,79 +50072,12 @@ index 0000000..cefffe9
 +             seen.c_str());
 +    report(line);
 +  }
-+  else
++  else if (best != 0)
 +  {
-+    Regs now;
-+    jit.m_ppc_state.pc = destination;
-+    now.Capture(jit.m_ppc_state);
-+    const Regs& want = cp->regs;
-+    for (int i = 0; i < 32; i++)
-+    {
-+      if (now.gpr[i] != want.gpr[i])
-+      {
-+        snprintf(line, sizeof(line), "r%d = %08x, interpreter %08x", i, now.gpr[i], want.gpr[i]);
-+        report(line);
-+      }
-+    }
-+    for (int i = 0; i < 64; i++)
-+    {
-+      if (!SameFloat(now.fpr[i], want.fpr[i]))
-+      {
-+        snprintf(line, sizeof(line), "f%d.ps%d = %016llx, interpreter %016llx", i / 2, i % 2,
-+                 static_cast<unsigned long long>(now.fpr[i]),
-+                 static_cast<unsigned long long>(want.fpr[i]));
-+        report(line);
-+      }
-+    }
-+    for (int i = 0; i < 8; i++)
-+    {
-+      if (now.cr[i] != want.cr[i])
-+      {
-+        snprintf(line, sizeof(line), "cr%d = %x, interpreter %x", i, now.cr[i], want.cr[i]);
-+        report(line);
-+      }
-+    }
-+    const auto check = [&](const char* name, u32 a, u32 b) {
-+      if (a != b)
-+      {
-+        snprintf(line, sizeof(line), "%s = %08x, interpreter %08x", name, a, b);
-+        report(line);
-+      }
-+    };
-+    check("lr", now.lr, want.lr);
-+    check("ctr", now.ctr, want.ctr);
-+    check("xer.ca", now.xer_ca, want.xer_ca);
-+    check("xer.so/ov", now.xer_so_ov, want.xer_so_ov);
-+    check("xer.count", now.xer_stringctrl, want.xer_stringctrl);
-+    check("msr", now.msr, want.msr);
-+    for (int i = 0; i < 8; i++)
-+    {
-+      char name[8];
-+      snprintf(name, sizeof(name), "gqr%d", i);
-+      check(name, now.gqr[i], want.gqr[i]);
-+    }
-+    // Memory: the last value the replay wrote to each byte (before this exit).
-+    auto& mmu = jit.m_system.GetMMU();
-+    std::unordered_map<u32, u8> last;
-+    for (size_t i = 0; i < cp->writes; i++)
-+      last[s.shadow.bytes[i].first] = s.shadow.bytes[i].second;
-+    int bad_bytes = 0;
-+    u32 first_bad = 0;
-+    for (const auto& [address, value] : last)
-+    {
-+      const u8* host = mmu.PS4RamByte(address);
-+      if (host && *host != value)
-+      {
-+        if (bad_bytes++ == 0)
-+          first_bad = address;
-+      }
-+    }
-+    if (bad_bytes)
-+    {
-+      snprintf(line, sizeof(line), "%d of %zu written bytes differ (first at %08x)", bad_bytes,
-+               last.size(), first_bad);
-+      report(line);
-+    }
++    std::vector<std::string> lines;
++    differences(*cp, &lines);
++    for (const std::string& text : lines)
++      report(text.c_str());
 +  }
 +  if (bad)
 +    s.differed++;
@@ -49462,14 +50086,19 @@ index 0000000..cefffe9
 +  if (now_time - s.last_report > std::chrono::seconds(10))
 +  {
 +    s.last_report = now_time;
-+    snprintf(line, sizeof(line),
-+             "%llu block runs compared, %llu differed, %llu skipped (not replayable), %zu blocks "
-+             "seen",
-+             static_cast<unsigned long long>(s.compared),
-+             static_cast<unsigned long long>(s.differed),
-+             static_cast<unsigned long long>(s.skipped), s.checked.size());
-+    Line(line);
++    VerifySummary();
 +  }
++}
++
++void VerifySummary()
++{
++  char line[256];
++  snprintf(line, sizeof(line),
++           "%llu block runs compared, %llu differed, %llu skipped (not replayable), %zu blocks "
++           "seen",
++           static_cast<unsigned long long>(s.compared), static_cast<unsigned long long>(s.differed),
++           static_cast<unsigned long long>(s.skipped), s.checked.size());
++  Line(line);
 +}
 +
 +void VerifyBeginFromJit(JitPS4* jit, u32 pc)
@@ -49484,10 +50113,10 @@ index 0000000..cefffe9
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Verify.h b/Source/Core/Core/PowerPC/JitPS4/Verify.h
 new file mode 100755
-index 0000000..42fb4ef
+index 0000000..3317422
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Verify.h
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,36 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -49516,6 +50145,9 @@ index 0000000..42fb4ef
 +  static void Begin(JitPS4& jit, u32 pc);
 +  static void Exit(JitPS4& jit, u32 destination);
 +};
++
++// The totals so far, to boot-trace.log (also when the JIT shuts down).
++void VerifySummary();
 +
 +// Called from the compiled code (JitPS4::DoJit and the block exits).
 +void VerifyBeginFromJit(JitPS4* jit, u32 pc);
