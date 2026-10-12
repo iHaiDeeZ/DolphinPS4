@@ -9764,10 +9764,10 @@ index 0000000..482d3bc
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
 new file mode 100644
-index 0000000..95677d8
+index 0000000..0f50600
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
-@@ -0,0 +1,2473 @@
+@@ -0,0 +1,2485 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10308,6 +10308,7 @@ index 0000000..95677d8
 +std::vector<std::unique_ptr<CountBlock>> s_count_blocks;
 +bool s_count_on = false;    // PC test bench: count every block, never retrace
 +bool s_trace_learn = false;  // jit_trace: new blocks count, then retrace
++bool s_trace_profile = false;  // PC test bench: the decisions came from a profile file
 +extern "C" int ps4_jit_trace;
 +extern "C" bool (*ps4_trace_taken)(u32 src, u32 dest);
 +std::unordered_set<u64> s_trace_taken;    // src << 32 | dest: usually taken
@@ -10408,6 +10409,7 @@ index 0000000..95677d8
 +  }
 +  ps4_jit_trace = 1;
 +  ps4_trace_taken = TraceTaken;
++  s_trace_profile = true;
 +  fprintf(stderr, "[bench] jit_trace: %zu usually-taken branches from %s\n", s_trace_taken.size(),
 +          path);
 +}
@@ -10495,8 +10497,18 @@ index 0000000..95677d8
 +  ps4_jit_cache = getenv("PS4JIT_CACHE") ? atoi(getenv("PS4JIT_CACHE")) : 0;
 +#endif
 +  s_ps4_active = this;
-+  // jit_trace: the analyzer asks which branches are usually taken; new blocks learn it.
-+  s_trace_learn = ps4_jit_trace && !s_count_on && s_trace_taken.empty();
++  // jit_trace: the analyzer asks which branches are usually taken; new blocks learn it. Each
++  // game (each start of the JIT) learns from scratch: the code of the last one is gone.
++  if (!s_trace_profile)
++  {
++    s_trace_taken.clear();
++    s_traced_blocks.clear();
++  }
++  {
++    std::lock_guard lock(s_count_mutex);
++    s_count_blocks.clear();
++  }
++  s_trace_learn = ps4_jit_trace && !s_count_on && !s_trace_profile;
 +  if (ps4_jit_trace)
 +    ps4_trace_taken = TraceTaken;
 +  m_code_cache.Start();
