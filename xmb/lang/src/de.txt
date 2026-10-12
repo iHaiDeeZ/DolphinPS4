@@ -529,3 +529,20 @@ Wenn das Spiel zwischen zwei Bildern wartet, wartet Dolphin, bis die emulierte G
 # --- Recompiler Check
 Recompiler-Prüfung
 Nur PS4 JIT: Während du spielst, wird der übersetzte Code des Spiels mit Dolphins Interpreter verglichen und jeder Unterschied protokolliert (boot-trace.log). Langsamer; zum Testen neuer Recompiler-Versionen.
+# --- Network Shares
+Netzwerkfreigaben
+Spiele auf einem PC oder NAS (NFS, SMB)
+Freigaben
+Noch keine Freigaben
+Hinzufügen
+NFS-Freigabe hinzufügen
+SMB-Freigabe hinzufügen
+Neu einlesen
+Noch einmal drücken zum Entfernen
+Fertig
+Verbunden
+Keine nfs://- oder smb://-Adresse
+Spiele werden über das Netzwerk gelesen (PC, NAS): Nichts wird auf die PS4 kopiert.
+NFS: nfs://192.168.0.10/export/games (NFS 4: ?version=4 anhängen)
+SMB: smb://benutzer:passwort@192.168.0.10/share/games (ohne Benutzer: Guest)
+Zweimal Kreuz auf einer Freigabe entfernt sie. Am besten per Kabel verbunden.

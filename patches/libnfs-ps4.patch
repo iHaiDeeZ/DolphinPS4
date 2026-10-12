@@ -1,0 +1,22 @@
+diff --git a/lib/socket.c b/lib/socket.c
+index 7897efb..c2cd98a 100644
+--- a/lib/socket.c
++++ b/lib/socket.c
+@@ -1991,7 +1991,7 @@ rpc_connect_sockaddr_async(struct rpc_context *rpc)
+ 				case AF_INET6:
+ 					sin6->sin6_port = port;
+ 					sin6->sin6_family = AF_INET6;
+-#ifdef HAVE_SOCKADDR_LEN
++#if defined(HAVE_SOCKADDR_LEN) && !defined(__ORBIS__) /* PS4: musl sockaddr_in6 has no sin6_len */
+ 					sin6->sin6_len =
+                                                 sizeof(struct sockaddr_in6);
+ #endif
+@@ -2109,7 +2109,7 @@ rpc_set_sockaddr(struct rpc_context *rpc, const char *server, int port)
+ 		((struct sockaddr_in6 *)&rpc->s)->sin6_port = htons(port);
+ 		((struct sockaddr_in6 *)&rpc->s)->sin6_addr =
+                         ((struct sockaddr_in6 *)(void *)(ai->ai_addr))->sin6_addr;
+-#ifdef HAVE_SOCKADDR_LEN
++#if defined(HAVE_SOCKADDR_LEN) && !defined(__ORBIS__) /* PS4: musl sockaddr_in6 has no sin6_len */
+ 		((struct sockaddr_in6 *)&rpc->s)->sin6_len =
+                         sizeof(struct sockaddr_in6);
+ #endif

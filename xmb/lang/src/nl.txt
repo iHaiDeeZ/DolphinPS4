@@ -529,3 +529,20 @@ Als het spel tussen beelden wacht, wacht Dolphin tot de geëmuleerde GPU alles a
 # --- Recompiler Check
 Recompilercontrole
 Alleen PS4 JIT: tijdens het spelen wordt de gecompileerde code van het spel vergeleken met Dolphins interpreter en elk verschil vastgelegd (boot-trace.log). Trager; om nieuwe recompilerversies te testen.
+# --- Network Shares
+Netwerkshares
+Games op een pc of NAS (NFS, SMB)
+Shares
+Nog geen shares
+Toevoegen
+NFS-share toevoegen
+SMB-share toevoegen
+Opnieuw zoeken
+Druk nogmaals om te verwijderen
+Klaar
+Verbonden
+Geen nfs://- of smb://-adres
+Games worden via het netwerk gelezen (pc, NAS): er wordt niets naar de PS4 gekopieerd.
+NFS: nfs://192.168.0.10/export/games (NFS 4: voeg ?version=4 toe)
+SMB: smb://gebruiker:wachtwoord@192.168.0.10/share/games (geen gebruiker: Guest)
+Twee keer Kruis op een share verwijdert hem. Een bekabelde verbinding is het best.

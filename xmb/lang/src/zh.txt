@@ -529,3 +529,20 @@ GPU 同步
 # --- Recompiler Check
 重编译器检查
 仅限 PS4 JIT：游玩时将游戏编译后的代码与 Dolphin 的解释器比较，并记录每个差异（boot-trace.log）。较慢；用于测试新的重编译器版本。
+# --- Network Shares
+网络共享
+PC 或 NAS 上的游戏（NFS、SMB）
+共享
+还没有共享
+添加
+添加 NFS 共享
+添加 SMB 共享
+重新扫描
+再按一次即可删除
+完成
+已连接
+不是 nfs:// 或 smb:// 地址
+游戏通过网络读取（PC、NAS）：不会向 PS4 复制任何内容。
+NFS：nfs://192.168.0.10/export/games（NFS 4：添加 ?version=4）
+SMB：smb://user:password@192.168.0.10/share/games（无用户：Guest）
+在共享上按两次叉键即可删除。建议使用有线连接。

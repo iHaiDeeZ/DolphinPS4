@@ -529,3 +529,20 @@ GPU 동기화
 # --- Recompiler Check
 리컴파일러 검사
 PS4 JIT 전용: 플레이하는 동안 게임의 컴파일된 코드를 Dolphin 인터프리터와 비교하고 차이를 기록합니다(boot-trace.log). 느려집니다. 새 리컴파일러 버전 시험용입니다.
+# --- Network Shares
+네트워크 공유
+PC 또는 NAS의 게임 (NFS, SMB)
+공유
+아직 공유가 없습니다
+추가
+NFS 공유 추가
+SMB 공유 추가
+다시 검색
+한 번 더 누르면 삭제
+완료
+연결됨
+nfs:// 또는 smb:// 주소가 아닙니다
+게임을 네트워크로 읽습니다 (PC, NAS): PS4에는 아무것도 복사되지 않습니다.
+NFS: nfs://192.168.0.10/export/games (NFS 4: ?version=4 추가)
+SMB: smb://user:password@192.168.0.10/share/games (사용자 없음: Guest)
+공유에서 엑스를 두 번 누르면 삭제됩니다. 유선 연결을 권장합니다.

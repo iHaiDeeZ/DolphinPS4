@@ -529,3 +529,20 @@ Oyun kareler arasında beklerken Dolphin, öykünülen GPU her şeyi bitirene ka
 # --- Recompiler Check
 Yeniden Derleyici Denetimi
 Yalnızca PS4 JIT: oynarken oyunun derlenmiş kodu Dolphin'in yorumlayıcısıyla karşılaştırılır ve her fark kaydedilir (boot-trace.log). Daha yavaş; yeni yeniden derleyici sürümlerini denemek için.
+# --- Network Shares
+Ağ Paylaşımları
+PC veya NAS'taki oyunlar (NFS, SMB)
+Paylaşımlar
+Henüz paylaşım yok
+Ekle
+NFS Paylaşımı Ekle
+SMB Paylaşımı Ekle
+Yeniden Tara
+Kaldırmak için tekrar bas
+Tamam
+Bağlandı
+nfs:// veya smb:// adresi değil
+Oyunlar ağ üzerinden okunur (PC, NAS): PS4'e hiçbir şey kopyalanmaz.
+NFS: nfs://192.168.0.10/export/games (NFS 4: ?version=4 ekle)
+SMB: smb://kullanici:sifre@192.168.0.10/share/games (kullanıcı yoksa: Guest)
+Bir paylaşımda iki kez Çarpı onu kaldırır. Kablolu bağlantı en iyisidir.

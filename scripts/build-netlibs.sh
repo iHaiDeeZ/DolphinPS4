@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Network shares (DolphinNoGUI/PS4NetFS.cpp): libnfs (NFS v3/v4) and libsmb2 (SMB 2/3), user-space
+# clients (LGPL-2.1+), built static with Dolphin's PS4 toolchain into PS4_SYSROOT.
+#   build-netlibs.sh        (sources: ~/dolphinps4-build/src/libnfs, src/libsmb2 from GitHub sahlberg/)
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+source "$HERE/ps4-env.sh"
+SYSROOT="${PS4_SYSROOT:-$PS4_BUILD_ROOT/sysroot}"
+TOOLCHAIN="$HERE/../toolchain/ps4-love-modern.cmake"
+build() {
+    local name="$1"; shift
+    local build="$PS4_BUILD_ROOT/build/$name"
+    rm -rf "$build"
+    env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u LIBS \
+        cmake -S "$PS4_BUILD_ROOT/src/$name" -B "$build" -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX="$SYSROOT" \
+        -DBUILD_SHARED_LIBS=OFF "$@" > "$build.configure.log" 2>&1 ||
+        { tail -30 "$build.configure.log"; exit 1; }
+    ninja -C "$build" install > "$build.build.log" 2>&1 || { grep -B2 -A8 "error" "$build.build.log" | head -60; exit 1; }
+    echo "$name: built"
+}
+for lib in libnfs libsmb2; do
+    git -C "$PS4_BUILD_ROOT/src/$lib" apply --check "$HERE/../patches/$lib-ps4.patch" 2>/dev/null &&
+        git -C "$PS4_BUILD_ROOT/src/$lib" apply "$HERE/../patches/$lib-ps4.patch"
+done
+build libsmb2 -DENABLE_EXAMPLES=OFF -DENABLE_UTILS=OFF -DENABLE_LIBKRB5=OFF -DENABLE_GSSAPI=OFF \
+    -DENABLE_LIBDCERPC=OFF
+build libnfs -DENABLE_TESTS=OFF -DENABLE_DOCUMENTATION=OFF -DENABLE_UTILS=OFF -DENABLE_EXAMPLES=OFF \
+    -DENABLE_MULTITHREADING=OFF
+ls -la "$SYSROOT/lib/libsmb2.a" "$SYSROOT/lib/libnfs.a"

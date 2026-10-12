@@ -530,3 +530,20 @@ Quando o jogo espera entre quadros, o Dolphin espera a GPU emulada terminar tudo
 # --- Recompiler Check
 Verificação do recompilador
 Só PS4 JIT: enquanto você joga, o código compilado do jogo é comparado com o interpretador do Dolphin e cada diferença é registrada (boot-trace.log). Mais lento; para testar novas versões do recompilador.
+# --- Network Shares
+Compartilhamentos de rede
+Jogos em um PC ou NAS (NFS, SMB)
+Compartilhamentos
+Nenhum compartilhamento ainda
+Adicionar
+Adicionar compartilhamento NFS
+Adicionar compartilhamento SMB
+Procurar de novo
+Pressione de novo para remover
+Pronto
+Conectado
+Não é um endereço nfs:// ou smb://
+Os jogos são lidos pela rede (PC, NAS): nada é copiado para o PS4.
+NFS: nfs://192.168.0.10/export/games (NFS 4: adicione ?version=4)
+SMB: smb://usuario:senha@192.168.0.10/share/games (sem usuário: Guest)
+X duas vezes em um compartilhamento o remove. Conexão por cabo é melhor.

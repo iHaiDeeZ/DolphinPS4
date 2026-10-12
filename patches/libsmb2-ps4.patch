@@ -1,0 +1,40 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6d542e0..382326e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -188,10 +188,8 @@ endif()
+       add_definitions(-DNEED_READV -DNEED_WRITEV -DNEED_GETLOGIN_R)
+     elseif(PS4)
+       add_definitions(-DPS4_PLATFORM)
+-      set(CMAKE_C_FLAGS "-funwind-tables")
+-      #-fuse-init-array -emit-llvm broken...
+-      set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS}")    
+-      add_compile_options("${CMAKE_C_FLAGS}")
++      # DolphinPS4: keep the toolchain flags (target, sysroot); replacing them built for Linux.
++      add_compile_options(-funwind-tables)
+     elseif(EE)
+       add_definitions(-DNEED_BE64TOH -DNEED_POLL -DNEED_WRITEV -DNEED_READV -DNEED_GETLOGIN_R)
+       if(EE AND PS2RPC)
+diff --git a/include/portable-endian.h b/include/portable-endian.h
+index dd0352c..8ec4146 100644
+--- a/include/portable-endian.h
++++ b/include/portable-endian.h
+@@ -73,15 +73,15 @@
+ #define _LITTLE_ENDIAN LITTLE_ENDIAN
+ #endif
+ 
+-#ifndef __bswap16
++#if !defined(__bswap16) && !defined(__ORBIS__) /* DolphinPS4: OpenOrbis has them as functions */
+ #define __bswap16 __bswap_16
+ #endif
+ 
+-#ifndef __bswap32
++#if !defined(__bswap32) && !defined(__ORBIS__) /* DolphinPS4: OpenOrbis has them as functions */
+ #define __bswap32 __bswap_32
+ #endif
+ 
+-#ifndef __bswap64
++#if !defined(__bswap64) && !defined(__ORBIS__) /* DolphinPS4: OpenOrbis has them as functions */
+ #define __bswap64 __bswap_64
+ #endif
+ 

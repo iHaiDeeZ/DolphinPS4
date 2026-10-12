@@ -350,10 +350,10 @@ index 472a84b..1450cd3 100644
    std::mutex m_wait_lock;
    std::mutex m_prepare_lock;
 diff --git a/Source/Core/Common/CMakeLists.txt b/Source/Core/Common/CMakeLists.txt
-index 97d8ad8..eec1c4a 100644
+index 97d8ad8..037feb2 100644
 --- a/Source/Core/Common/CMakeLists.txt
 +++ b/Source/Core/Common/CMakeLists.txt
-@@ -244,6 +244,11 @@ elseif(APPLE)
+@@ -244,6 +244,16 @@ elseif(APPLE)
      Logging/ConsoleListenerNix.cpp
      MemArenaDarwin.cpp
    )
@@ -361,11 +361,16 @@ index 97d8ad8..eec1c4a 100644
 +  target_sources(common PRIVATE
 +    Logging/ConsoleListenerNix.cpp
 +    MemArenaPS4.cpp
++    PS4NetFS.cpp
++    PS4NetFS.h
 +  )
++  # Network shares: libnfs and libsmb2 (DolphinPS4 scripts/build-netlibs.sh, in PS4_SYSROOT).
++  target_include_directories(common PRIVATE ${PS4_SYSROOT}/include)
++  target_link_libraries(common PRIVATE ${PS4_SYSROOT}/lib/libnfs.a ${PS4_SYSROOT}/lib/libsmb2.a)
  else()
    target_sources(common PRIVATE
      Logging/ConsoleListenerNix.cpp
-@@ -327,6 +332,13 @@ elseif(HAIKU)
+@@ -327,6 +337,13 @@ elseif(HAIKU)
      GL/GLInterface/BGL.h
      GL/GLInterface/BGL.cpp
    )
@@ -432,6 +437,111 @@ index 8c6291d..741c2b0 100644
    bool IsInSpaceOrChildSpace(const u8* ptr) const
    {
      return ptr >= region && ptr < (region + total_region_size);
+diff --git a/Source/Core/Common/DirectIOFile.cpp b/Source/Core/Common/DirectIOFile.cpp
+index bfe598d..3700067 100644
+--- a/Source/Core/Common/DirectIOFile.cpp
++++ b/Source/Core/Common/DirectIOFile.cpp
+@@ -32,6 +32,10 @@
+ 
+ #include "Common/Assert.h"
+ 
++#ifdef __ORBIS__
++#include "Common/PS4NetFS.h"  // nfs:// and smb:// paths (network shares)
++#endif
++
+ namespace File
+ {
+ DirectIOFile::DirectIOFile() = default;
+@@ -79,6 +83,17 @@ bool DirectIOFile::Open(const std::string& path, AccessMode access_mode, OpenMod
+   if (access_mode == AccessMode::Read && open_mode == OpenMode::Truncate)
+     return false;
+ 
++#ifdef __ORBIS__
++  if (Common::NetFS::IsNetPath(path))
++  {
++    // Network shares are read-only.
++    if (access_mode != AccessMode::Read)
++      return false;
++    m_fd = Common::NetFS::OpenHandle(path);
++    return IsOpen();
++  }
++#endif
++
+ #if defined(_WIN32)
+   DWORD desired_access = GENERIC_READ | GENERIC_WRITE;
+   if (access_mode == AccessMode::Read)
+@@ -171,6 +186,13 @@ bool DirectIOFile::Close()
+ #if defined(_WIN32)
+   return CloseHandle(std::exchange(m_handle, INVALID_HANDLE_VALUE)) != 0;
+ #else
++#ifdef __ORBIS__
++  if (Common::NetFS::IsHandle(m_fd))
++  {
++    Common::NetFS::CloseHandle(std::exchange(m_fd, -1));
++    return true;
++  }
++#endif
+   return close(std::exchange(m_fd, -1)) == 0;
+ #endif
+ }
+@@ -219,6 +241,10 @@ bool DirectIOFile::OffsetRead(u64 offset, u8* out_ptr, u64 size)
+ #if defined(_WIN32)
+   return OverlappedTransfer<ReadFile>(m_handle, offset, out_ptr, size);
+ #else
++#ifdef __ORBIS__
++  if (Common::NetFS::IsHandle(m_fd))
++    return Common::NetFS::ReadAt(m_fd, offset, out_ptr, size);
++#endif
+   return pread(m_fd, out_ptr, size, off_t(offset)) == ssize_t(size);
+ #endif
+ }
+@@ -228,6 +254,10 @@ bool DirectIOFile::OffsetWrite(u64 offset, const u8* in_ptr, u64 size)
+ #if defined(_WIN32)
+   return OverlappedTransfer<WriteFile>(m_handle, offset, in_ptr, size);
+ #else
++#ifdef __ORBIS__
++  if (Common::NetFS::IsHandle(m_fd))
++    return false;
++#endif
+   return pwrite(m_fd, in_ptr, size, off_t(offset)) == ssize_t(size);
+ #endif
+ }
+@@ -239,6 +269,10 @@ u64 DirectIOFile::GetSize() const
+   if (GetFileSizeEx(m_handle, &result) != 0)
+     return result.QuadPart;
+ #else
++#ifdef __ORBIS__
++  if (Common::NetFS::IsHandle(m_fd))
++    return Common::NetFS::HandleSize(m_fd);
++#endif
+   struct stat st{};
+   if (fstat(m_fd, &st) == 0)
+     return st.st_size;
+@@ -278,6 +312,10 @@ bool DirectIOFile::Flush()
+ #if defined(_WIN32)
+   return FlushFileBuffers(m_handle) != 0;
+ #else
++#ifdef __ORBIS__
++  if (Common::NetFS::IsHandle(m_fd))
++    return true;
++#endif
+   return fsync(m_fd) == 0;
+ #endif
+ }
+@@ -307,7 +345,12 @@ DirectIOFile DirectIOFile::Duplicate() const
+     ERROR_LOG_FMT(COMMON, "DuplicateHandle: {}", Common::GetLastErrorString());
+   }
+ #else
+-  result.m_fd = dup(m_fd);
++#ifdef __ORBIS__
++  if (Common::NetFS::IsHandle(m_fd))
++    result.m_fd = Common::NetFS::DuplicateHandle(m_fd);
++  else
++#endif
++    result.m_fd = dup(m_fd);
+ #endif
+ 
+   ASSERT(result.IsOpen());
 diff --git a/Source/Core/Common/Event.h b/Source/Core/Common/Event.h
 index 67dbd1e..3f5baed 100644
 --- a/Source/Core/Common/Event.h
@@ -456,7 +566,7 @@ index 67dbd1e..3f5baed 100644
  
    template <class Rep, class Period>
 diff --git a/Source/Core/Common/FileUtil.cpp b/Source/Core/Common/FileUtil.cpp
-index 053614f..f2e011a 100644
+index 053614f..3373476 100644
 --- a/Source/Core/Common/FileUtil.cpp
 +++ b/Source/Core/Common/FileUtil.cpp
 @@ -8,6 +8,9 @@
@@ -469,7 +579,18 @@ index 053614f..f2e011a 100644
  #include <filesystem>
  #include <limits.h>
  #include <stack>
-@@ -60,6 +63,10 @@
+@@ -25,6 +28,10 @@
+ #include "Common/DynamicLibrary.h"
+ #endif
+ #include "Common/IOFile.h"
++
++#ifdef __ORBIS__
++#include "Common/PS4NetFS.h"  // nfs:// and smb:// paths (network shares)
++#endif
+ #include "Common/Logging/Log.h"
+ #include "Common/StringUtil.h"
+ 
+@@ -60,6 +67,10 @@
  
  namespace fs = std::filesystem;
  
@@ -480,7 +601,27 @@ index 053614f..f2e011a 100644
  namespace File
  {
  #ifdef ANDROID
-@@ -516,10 +523,49 @@ FSTEntry ScanDirectoryTree(const std::string& directory, bool recursive)
+@@ -95,6 +106,19 @@ FileInfo::FileInfo(const char* path)
+     m_exists = result != -1;
+   }
+   else
++#endif
++#ifdef __ORBIS__
++      if (Common::NetFS::IsNetPath(path))
++  {
++    u64 size = 0;
++    bool directory = false;
++    m_exists = Common::NetFS::Stat(path, &size, &directory);
++    m_status.type(!m_exists  ? fs::file_type::not_found :
++                  directory ? fs::file_type::directory :
++                              fs::file_type::regular);
++    m_size = size;
++  }
++  else
+ #endif
+   {
+     const auto fs_path = StringToPath(path);
+@@ -516,10 +540,49 @@ FSTEntry ScanDirectoryTree(const std::string& directory, bool recursive)
  }
  
  // Deletes the given directory and anything under it. Returns true on success.
@@ -530,7 +671,7 @@ index 053614f..f2e011a 100644
    std::error_code error;
    const std::uintmax_t num_removed = std::filesystem::remove_all(StringToPath(directory), error);
    const bool success = num_removed != static_cast<std::uintmax_t>(-1) && !error;
-@@ -731,6 +777,10 @@ std::string GetExePath()
+@@ -731,6 +794,10 @@ std::string GetExePath()
    return PathToString(exe_path_absolute);
  #elif defined(__APPLE__)
    return GetBundleDirectory();
@@ -1064,6 +1205,36 @@ index 94a4664..bb4c3dc 100644
 +#endif
      return {};
    }
+ 
+diff --git a/Source/Core/Common/IOFile.cpp b/Source/Core/Common/IOFile.cpp
+index 9402da1..815b329 100644
+--- a/Source/Core/Common/IOFile.cpp
++++ b/Source/Core/Common/IOFile.cpp
+@@ -4,8 +4,13 @@
+ #include "Common/IOFile.h"
+ 
+ #include <cstdio>
++#include <cstring>
+ #include <string>
+ 
++#ifdef __ORBIS__
++#include "Common/PS4NetFS.h"  // nfs:// and smb:// paths (network shares)
++#endif
++
+ #ifdef _WIN32
+ #include <io.h>
+ 
+@@ -82,6 +87,11 @@ bool IOFile::Open(const std::string& filename, const char openmode[],
+   if (IsPathAndroidContent(filename))
+     m_file = fdopen(OpenAndroidContent(filename, OpenModeToAndroid(openmode)), openmode);
+   else
++#endif
++#ifdef __ORBIS__
++      if (Common::NetFS::IsNetPath(filename))
++    m_file = std::strpbrk(openmode, "wa+") ? nullptr : Common::NetFS::OpenStream(filename);
++  else
+ #endif
+     m_file = std::fopen(filename.c_str(), openmode);
  
 diff --git a/Source/Core/Common/LinearDiskCache.h b/Source/Core/Common/LinearDiskCache.h
 index 061f7d4..bde3303 100644
@@ -29862,10 +30033,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..a8a0d53
+index 0000000..3e98df7
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,6847 @@
+@@ -0,0 +1,7047 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -29916,6 +30087,9 @@ index 0000000..a8a0d53
 +#include "VideoCommon/GraphicsModSystem/Config/GraphicsModGroup.h"
 +#include "Common/FileSearch.h"
 +#include "Common/FileUtil.h"
++#include "Common/PS4NetFS.h"
++#include <fcntl.h>
++#include <unistd.h>
 +#include "Common/HttpRequest.h"
 +#include <mz.h>
 +#include <mz_strm.h>
@@ -30566,6 +30740,7 @@ index 0000000..a8a0d53
 +  SET_AUTO_UPDATE,   // Automatic Updates on/off
 +  SET_UPDATE,        // the update panel: prompt, progress, result
 +  SET_GAMES_DIR,     // Game Folder: a folder browser
++  SET_SHARES,        // Network Shares: NFS / SMB shares whose games join the library
 +  SET_CENTER,        // Game Settings Center: the recommended settings per game
 +  SET_STYLE,         // Menu Style: Library or XMB
 +  SET_LANGUAGE,      // Language: the menus' (and games') language, a list of all of them
@@ -30715,6 +30890,11 @@ index 0000000..a8a0d53
 +  // RetroAchievements.ini (Enabled, Username, ApiToken, HardcoreEnabled).
 +  void OpenAchievementsPage();
 +  void BuildAchievementRows();
++  void OpenSharesPage();
++  void BuildSharesRows();
++  void AddShare(std::string address);
++  int m_share_remove = -1;    // the share a first Cross asked to remove
++  std::string m_share_status;  // the last add or rescan
 +  void StartKeyboard(int purpose, const char* title, const std::string& initial, bool password);
 +  void UpdateKeyboard();
 +  void StartAchievementLogin(const std::string& user, const std::string& password);
@@ -31117,6 +31297,31 @@ index 0000000..a8a0d53
 +  {
 +    if (game.homebrew)
 +      continue;  // no banner in a program file
++    // A network game's banner is kept in data_dir/cache/banners (width, height, RGBA): the menu
++    // doesn't read every disc over the network when it opens. Wii discs have none.
++    const bool network = Common::NetFS::IsNetPath(game.path);
++    if (network && game.wii && !game.wad)
++      continue;
++    const std::string cached_banner = m_data_dir + "/cache/banners/" + game.id + "-" +
++                                      std::to_string(game.revision) + (game.wad ? "-wad" : "") +
++                                      ".rgba";
++    if (network && !game.id.empty())
++    {
++      std::string data;
++      if (File::ReadFileToString(cached_banner, data) && data.size() > 8)
++      {
++        u32 width, height;
++        std::memcpy(&width, data.data(), 4);
++        std::memcpy(&height, data.data() + 4, 4);
++        if (width > 0 && height > 0 && data.size() == 8 + size_t(width) * height * 4)
++        {
++          game.banner = m_display.CreateTexture(reinterpret_cast<const u8*>(data.data() + 8), width,
++                                                height);
++          game.banner_aspect = static_cast<float>(width) / static_cast<float>(height);
++          continue;
++        }
++      }
++    }
 +    // GameCube discs and Wii title packages carry a banner; Wii discs only in a NAND.
 +    std::unique_ptr<DiscIO::Volume> volume =
 +        game.wad ? std::unique_ptr<DiscIO::Volume>(DiscIO::CreateWAD(game.path)) :
@@ -31139,6 +31344,15 @@ index 0000000..a8a0d53
 +      rgba[i * 4 + 1] = (argb >> 8) & 0xFF;
 +      rgba[i * 4 + 2] = argb & 0xFF;
 +      rgba[i * 4 + 3] = argb >> 24;
++    }
++    if (network && !game.id.empty())
++    {
++      std::string data(8, '\0');
++      std::memcpy(data.data(), &width, 4);
++      std::memcpy(data.data() + 4, &height, 4);
++      data.append(reinterpret_cast<const char*>(rgba.data()), rgba.size());
++      File::CreateFullPath(cached_banner);
++      File::WriteStringToFile(cached_banner, data);
 +    }
 +    game.banner = m_display.CreateTexture(rgba.data(), width, height);
 +    game.banner_aspect = static_cast<float>(width) / static_cast<float>(height);
@@ -31398,6 +31612,7 @@ index 0000000..a8a0d53
 +  settings.push_back({"Wii Menu", "The Wii Menu and the Mii Channel, from Nintendo", -1, -1,
 +                      SET_WIIMENU});
 +  settings.push_back({"Game Folder", GamesFolder(), -1, -1, SET_GAMES_DIR});
++  settings.push_back({"Network Shares", "Games on a PC or NAS (NFS, SMB)", -1, -1, SET_SHARES});
 +  settings.push_back({"Game Settings Center", "Recommended settings per game, from GitHub", -1, -1,
 +                      SET_CENTER});
 +  settings.push_back({"Download Covers", "Box art from GameTDB for your games", -1, -1,
@@ -31605,6 +31820,9 @@ index 0000000..a8a0d53
 +  case SET_ACHIEVEMENTS:
 +    OpenAchievementsPage();
 +    return;
++  case SET_SHARES:
++    OpenSharesPage();
++    return;
 +  case SET_WIIMENU:
 +    OpenWiiMenuPage();
 +    return;
@@ -31630,6 +31848,7 @@ index 0000000..a8a0d53
 +    m_panel.lines = {"Dolphin for PS4",
 +                     "GameCube and Wii emulator",
 +                     "Ported to PS4 by ShiroKlein",
++                     "github.com/iHaiDeeZ/DolphinPS4",
 +                     "Version " + m_version + InstalledPackageNote(),
 +                     "",
 +                     "Games: " + m_data_dir + "/games",
@@ -31860,6 +32079,46 @@ index 0000000..a8a0d53
 +      Play("launch");
 +    }
 +    BuildWiiMenuRows();
++    return;
++  }
++  if (m_panel.setting == SET_SHARES)
++  {
++    const std::string key = m_panel.rows[m_panel.selected].key;
++    const int remove = m_share_remove;
++    m_share_remove = -1;
++    if (key == "share:nfs")
++    {
++      StartKeyboard(3, "NFS share address", "nfs://", false);
++    }
++    else if (key == "share:smb")
++    {
++      StartKeyboard(3, "SMB share address", "smb://", false);
++    }
++    else if (key == "share:rescan")
++    {
++      RefreshGames();
++      m_share_status = Common::NetFS::LastError().empty() ? "Done" : Common::NetFS::LastError();
++    }
++    else if (key.rfind("share:#", 0) == 0 && cross)
++    {
++      // The first Cross asks, the second removes.
++      const int index = std::atoi(key.c_str() + 7);
++      std::vector<std::string> shares = PS4XMB::NetworkShares(m_data_dir);
++      if (remove == index && index < static_cast<int>(shares.size()))
++      {
++        Log("network shares: removed " + Common::NetFS::Redact(shares[index]));
++        shares.erase(shares.begin() + index);
++        PS4XMB::SaveNetworkShares(m_data_dir, shares);
++        Common::NetFS::SetShares(shares);
++        RefreshGames();
++        m_share_status = "Removed";
++      }
++      else
++      {
++        m_share_remove = index;
++      }
++    }
++    BuildSharesRows();
 +    return;
 +  }
 +  if (m_panel.setting == SET_ACHIEVEMENTS)
@@ -35627,6 +35886,74 @@ index 0000000..a8a0d53
 +  MoveSettingRow(0);
 +}
 +
++void Menu::OpenSharesPage()
++{
++  m_panel = {};
++  m_panel.open = true;
++  m_panel.setting = SET_SHARES;
++  m_panel.title = "Network Shares";
++  m_share_remove = -1;
++  BuildSharesRows();
++  m_panel.selected = 0;
++  MoveSettingRow(0);
++}
++
++void Menu::BuildSharesRows()
++{
++  const std::vector<std::string> shares = PS4XMB::NetworkShares(m_data_dir);
++  std::vector<SettingRow> rows;
++  rows.push_back({"Shares", "", "", true});
++  for (size_t i = 0; i < shares.size(); i++)
++  {
++    std::string base = shares[i];
++    while (!base.empty() && base.back() == '/')
++      base.pop_back();
++    size_t games = 0;
++    for (const Game& game : m_games)
++      games += game.path.compare(0, base.size() + 1, base + "/") == 0;
++    std::string value = static_cast<int>(i) == m_share_remove ? "Press again to remove" :
++                        games == 1                            ? "1 game" :
++                                                                std::to_string(games) + " games";
++    rows.push_back({Common::NetFS::Redact(shares[i]), value, "share:#" + std::to_string(i)});
++  }
++  if (shares.empty())
++    rows.push_back({"No shares yet", "", "share:none"});
++  rows.push_back({"Add", "", "", true});
++  rows.push_back({"Add NFS Share", "nfs://", "share:nfs"});
++  rows.push_back({"Add SMB Share", "smb://", "share:smb"});
++  rows.push_back({"Rescan", m_share_status, "share:rescan"});
++  m_panel.rows = std::move(rows);
++  m_panel.lines = {"Games are read over the network (PC, NAS): nothing is copied to the PS4.",
++                   "NFS: nfs://192.168.0.10/export/games (NFS 4: add ?version=4)",
++                   "SMB: smb://user:password@192.168.0.10/share/games (no user: Guest)",
++                   "Cross twice on a share removes it. A wired connection is best."};
++}
++
++void Menu::AddShare(std::string address)
++{
++  while (!address.empty() && (address.back() == ' ' || address.back() == '/'))
++    address.pop_back();
++  while (!address.empty() && address.front() == ' ')
++    address.erase(address.begin());
++  if (!Common::NetFS::IsNetPath(address) || address.size() <= 6)
++  {
++    m_share_status = "Not an nfs:// or smb:// address";
++    return;
++  }
++  std::vector<std::string> shares = PS4XMB::NetworkShares(m_data_dir);
++  if (std::find(shares.begin(), shares.end(), address) == shares.end())
++    shares.push_back(address);
++  PS4XMB::SaveNetworkShares(m_data_dir, shares);
++  Common::NetFS::SetShares(shares);
++  std::vector<Common::NetFS::Entry> entries;
++  const bool reached = Common::NetFS::List(address, &entries);
++  Log("network shares: added " + Common::NetFS::Redact(address) +
++      (reached ? " (" + std::to_string(entries.size()) + " entries)" :
++                 " - " + Common::NetFS::LastError()));
++  m_share_status = reached ? "Connected" : Common::NetFS::LastError();
++  RefreshGames();
++}
++
 +void Menu::BuildAchievementRows()
 +{
 +  const std::string user = RaGet("Username");
@@ -35792,9 +36119,15 @@ index 0000000..a8a0d53
 +    {
 +      StartAchievementLogin(RaGet("Username"), text);
 +    }
++    else if (purpose == 3)
++    {
++      AddShare(text);
++    }
 +  }
 +  if (m_panel.open && m_panel.setting == SET_ACHIEVEMENTS)
 +    BuildAchievementRows();
++  if (m_panel.open && m_panel.setting == SET_SHARES)
++    BuildSharesRows();
 +}
 +
 +// The password goes to retroachievements.org once; only the token it answers with is kept.
@@ -36706,6 +37039,44 @@ index 0000000..a8a0d53
 +  return prefs.games_dir.empty() ? data_dir + "/games" : prefs.games_dir;
 +}
 +
++std::vector<std::string> NetworkShares(const std::string& data_dir)
++{
++  std::vector<std::string> shares;
++  std::ifstream file(data_dir + "/shares.txt");
++  std::string line;
++  while (std::getline(file, line))
++  {
++    while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
++      line.pop_back();
++    const size_t start = line.find_first_not_of(" \t");
++    if (start == std::string::npos || line[start] == '#')
++      continue;
++    shares.push_back(line.substr(start));
++  }
++  return shares;
++}
++
++void SaveNetworkShares(const std::string& data_dir, const std::vector<std::string>& shares)
++{
++  // Written beside it, flushed, then renamed over it: a power cut leaves the old or the new file.
++  const std::string path = data_dir + "/shares.txt", temp = path + ".tmp";
++  {
++    std::ofstream file(temp, std::ios::trunc);
++    file << "# Network shares with games (Settings -> Network Shares), one per line:\n"
++            "#   nfs://192.168.0.10/export/games       (NFS 4: nfs://...?version=4)\n"
++            "#   smb://user:password@192.168.0.10/share/games   (no user: Guest)\n";
++    for (const std::string& share : shares)
++      file << share << '\n';
++  }
++  const int fd = open(temp.c_str(), O_RDONLY);
++  if (fd >= 0)
++  {
++    fsync(fd);
++    close(fd);
++  }
++  std::rename(temp.c_str(), path.c_str());
++}
++
 +std::string Run(const ScanFunction& scan, const std::string& data_dir,
 +                const std::string& assets_dir, const std::string& version)
 +{
@@ -36715,10 +37086,10 @@ index 0000000..a8a0d53
 +}  // namespace PS4XMB
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.h b/Source/Core/DolphinNoGUI/PS4XMB.h
 new file mode 100755
-index 0000000..ae13e6a
+index 0000000..0c09011
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.h
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,55 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -36759,6 +37130,11 @@ index 0000000..ae13e6a
 +// The folder games are looked for in: Settings -> Game Folder (xmb.ini games_dir), by default
 +// data_dir/games.
 +std::string GamesDir(const std::string& data_dir);
++
++// Network shares (Settings -> Network Shares): data_dir/shares.txt, one nfs:// or smb:// address
++// per line. Their games join the library (Common/PS4NetFS.h reads them over the network).
++std::vector<std::string> NetworkShares(const std::string& data_dir);
++void SaveNetworkShares(const std::string& data_dir, const std::vector<std::string>& shares);
 +
 +// The game that starts by itself when the app is opened (Triangle on a game -> Set as Default
 +// ISO; xmb.ini default_game), or empty.
@@ -37463,10 +37839,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..5dcb917
+index 0000000..4c22c1c
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,2055 @@
+@@ -0,0 +1,2176 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -37475,6 +37851,7 @@ index 0000000..5dcb917
 +// started without arguments.
 +
 +#include "Common/FileUtil.h"
++#include "Common/PS4NetFS.h"
 +#include "DolphinNoGUI/Platform.h"
 +
 +#include <atomic>
@@ -37484,6 +37861,7 @@ index 0000000..5dcb917
 +#include <cstdio>
 +#include <cstring>
 +#include <filesystem>
++#include <fstream>
 +#include <map>
 +#include <string>
 +#include <thread>
@@ -38498,25 +38876,138 @@ index 0000000..5dcb917
 +  return false;
 +}
 +
++// What the library read from the network shares' discs (data_dir/cache/network-library.txt): a
++// file whose size hasn't changed isn't read again, so the menu opens without reading every disc
++// over the network. One line per file: size, path, game ID, revision, disc, wad, homebrew, wii,
++// title (tab-separated).
++constexpr const char* NETWORK_LIBRARY_CACHE = "/cache/network-library.txt";
++
++std::map<std::string, std::pair<u64, LibraryEntry>> LoadNetworkLibrary()
++{
++  std::map<std::string, std::pair<u64, LibraryEntry>> cached;
++  std::ifstream file(std::string(PS4_DATA_DIR_PATH) + NETWORK_LIBRARY_CACHE);
++  std::string line;
++  while (std::getline(file, line))
++  {
++    std::vector<std::string> fields;
++    size_t start = 0;
++    for (size_t tab; (tab = line.find('\t', start)) != std::string::npos; start = tab + 1)
++      fields.push_back(line.substr(start, tab - start));
++    fields.push_back(line.substr(start));
++    if (fields.size() != 9)
++      continue;
++    LibraryEntry game;
++    game.path = fields[1];
++    game.game_id = fields[2];
++    game.revision = static_cast<u16>(std::atoi(fields[3].c_str()));
++    game.disc = std::atoi(fields[4].c_str());
++    game.wad = fields[5] == "1";
++    game.homebrew = fields[6] == "1";
++    game.wii = fields[7] == "1";
++    game.title = fields[8];
++    cached[game.path] = {std::strtoull(fields[0].c_str(), nullptr, 10), std::move(game)};
++  }
++  return cached;
++}
++
++void SaveNetworkLibrary(const std::vector<std::pair<u64, LibraryEntry>>& entries)
++{
++  std::string text;
++  for (const auto& [size, game] : entries)
++  {
++    std::string title = game.title;
++    std::replace_if(title.begin(), title.end(), [](char c) { return c == '\t' || c == '\n' || c == '\r'; }, ' ');
++    text += fmt::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", size, game.path, game.game_id,
++                        game.revision, game.disc, game.wad ? 1 : 0, game.homebrew ? 1 : 0,
++                        game.wii ? 1 : 0, title);
++  }
++  const std::string path = std::string(PS4_DATA_DIR_PATH) + NETWORK_LIBRARY_CACHE;
++  File::CreateFullPath(path);
++  File::WriteStringToFile(path, text);
++}
++
 +std::vector<LibraryEntry> ScanLibrary(const std::string& games_dir)
 +{
 +  std::vector<LibraryEntry> s_library;
++  // The files to look at: the games folder's, then each network share's (Settings -> Network
++  // Shares) and those of the folders in it ("Game [ID]/game.wbfs" layouts).
++  struct Candidate
++  {
++    std::string name;
++    std::string path;
++    u64 size = 0;
++    bool network = false;
++  };
++  std::vector<Candidate> candidates;
 +  std::error_code error;
 +  std::filesystem::directory_iterator it(games_dir, error);
 +  if (error)
 +    Platform::BootTrace(("library: can't read " + games_dir + ": " + error.message()).c_str());
 +  for (const auto& entry : it)
++    candidates.push_back({entry.path().filename().string(), entry.path().string()});
++  const std::vector<std::string> shares = PS4XMB::NetworkShares(PS4_DATA_DIR_PATH);
++  Common::NetFS::SetShares(shares);
++  for (const std::string& share : shares)
 +  {
-+    const std::string name = entry.path().filename().string();
++    std::string base = share;
++    while (!base.empty() && base.back() == '/')
++      base.pop_back();
++    std::vector<Common::NetFS::Entry> entries;
++    if (!Common::NetFS::List(base, &entries))
++    {
++      Platform::BootTrace(("library: share " + Common::NetFS::Redact(base) + " unreachable (" +
++                           Common::NetFS::LastError() + ")")
++                              .c_str());
++      continue;
++    }
++    const size_t before = candidates.size();
++    for (const Common::NetFS::Entry& entry : entries)
++    {
++      if (!entry.directory)
++      {
++        candidates.push_back({entry.name, base + "/" + entry.name, entry.size, true});
++        continue;
++      }
++      std::vector<Common::NetFS::Entry> inner;
++      if (!Common::NetFS::List(base + "/" + entry.name, &inner))
++        continue;
++      for (const Common::NetFS::Entry& file : inner)
++      {
++        if (!file.directory)
++        {
++          candidates.push_back(
++              {file.name, base + "/" + entry.name + "/" + file.name, file.size, true});
++        }
++      }
++    }
++    Platform::BootTrace(("library: share " + Common::NetFS::Redact(base) + ": " +
++                         std::to_string(candidates.size() - before) + " files")
++                            .c_str());
++  }
++  const auto cached = shares.empty() ? decltype(LoadNetworkLibrary()){} : LoadNetworkLibrary();
++  std::vector<std::pair<u64, LibraryEntry>> network_games;
++  for (const Candidate& candidate : candidates)
++  {
++    const std::string& name = candidate.name;
 +    if (!IsDiscImage(name))
 +      continue;
++    if (candidate.network)
++    {
++      const auto hit = cached.find(candidate.path);
++      if (hit != cached.end() && hit->second.first == candidate.size)
++      {
++        network_games.push_back(hit->second);
++        s_library.push_back(hit->second.second);
++        continue;
++      }
++    }
 +    LibraryEntry game;
-+    game.path = entry.path().string();
++    game.path = candidate.path;
 +    if (HasExtension(name, ".dff"))
 +    {
 +      // A FIFO recording: no game ID; its file name is its title. Dolphin's FIFO player replays it.
 +      game.homebrew = true;
-+      game.title = entry.path().stem().string();
++      game.title = std::filesystem::path(name).stem().string();
 +      if (const auto file = FifoDataFile::Load(game.path, true))
 +        game.wii = file->GetIsWii();
 +    }
@@ -38524,7 +39015,7 @@ index 0000000..5dcb917
 +    {
 +      // Homebrew: no game ID; its file name is its title. Dolphin boots it directly.
 +      game.homebrew = true;
-+      game.title = entry.path().stem().string();
++      game.title = std::filesystem::path(name).stem().string();
 +      if (HasExtension(name, ".dol"))
 +      {
 +        const DolReader reader(game.path);
@@ -38557,9 +39048,15 @@ index 0000000..5dcb917
 +      game.revision = disc->GetRevision().value_or(0);
 +      game.disc = disc->GetDiscNumber().value_or(0);
 +      game.title = disc->GetInternalName();
++      game.wii = disc->GetVolumeType() == DiscIO::Platform::WiiDisc;
 +    }
++    // A network disc that couldn't be read (the connection dropped) is read again next time.
++    if (candidate.network && (!game.game_id.empty() || game.homebrew))
++      network_games.emplace_back(candidate.size, game);
 +    s_library.push_back(std::move(game));
 +  }
++  if (!shares.empty() || !cached.empty())
++    SaveNetworkLibrary(network_games);
 +  std::sort(s_library.begin(), s_library.end(), [](const LibraryEntry& a, const LibraryEntry& b) {
 +    return std::tie(a.title, a.game_id, a.disc, a.path) <
 +           std::tie(b.title, b.game_id, b.disc, b.path);
@@ -49024,3 +49521,921 @@ index 0000000..42fb4ef
 +void VerifyBeginFromJit(JitPS4* jit, u32 pc);
 +void VerifyExitFromJit(JitPS4* jit, u32 destination);
 +}  // namespace PS4Jit
+diff --git a/Source/Core/Common/PS4NetFS.cpp b/Source/Core/Common/PS4NetFS.cpp
+new file mode 100755
+index 0000000..75bac96
+--- /dev/null
++++ b/Source/Core/Common/PS4NetFS.cpp
+@@ -0,0 +1,845 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "Common/PS4NetFS.h"
++
++#include <algorithm>
++#include <cctype>
++#include <cerrno>
++#include <chrono>
++#include <cstring>
++#include <fcntl.h>
++#include <map>
++#include <memory>
++#include <mutex>
++#include <optional>
++#include <netdb.h>
++#include <poll.h>
++#include <signal.h>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include <nfsc/libnfs.h>
++#include <nfsc/libnfs-raw.h>
++#include <nfsc/libnfs-raw-nfs.h>
++#include <smb2/smb2.h>
++#include <smb2/libsmb2.h>
++
++extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
++
++namespace Common::NetFS
++{
++namespace
++{
++using Clock = std::chrono::steady_clock;
++
++// DirectIOFile handles from here up: far above any real file descriptor.
++constexpr int HANDLE_BASE = 0x40000000;
++// Reads smaller than this go through a per-file read-ahead buffer of this size (disc formats read
++// a header, then blocks of 32 KiB - 2 MiB; one network round trip per MiB instead of per block).
++constexpr size_t READ_AHEAD = 1 << 20;
++constexpr auto STAT_LIFETIME = std::chrono::seconds(10);
++constexpr auto IDLE_LIFETIME = std::chrono::seconds(120);
++constexpr size_t IDLE_PER_SERVER = 2;
++
++enum class Kind
++{
++  NFS,
++  SMB,
++};
++
++// Where a path connects: the connection (server and export, or server and share) and the path
++// inside it ("/dir/file" for NFS, "dir/file" for SMB).
++struct Location
++{
++  Kind kind;
++  std::string key;
++  std::string path;
++};
++
++struct Connection
++{
++  Kind kind = Kind::NFS;
++  std::string key;
++  nfs_context* nfs = nullptr;
++  smb2_context* smb = nullptr;
++  bool busy = false;
++  Clock::time_point idle_since;
++
++  ~Connection()
++  {
++    if (nfs)
++      nfs_destroy_context(nfs);
++    if (smb)
++    {
++      smb2_disconnect_share(smb);
++      smb2_destroy_context(smb);
++    }
++  }
++};
++
++struct StatResult
++{
++  bool exists = false;
++  bool directory = false;
++  u64 size = 0;
++  Clock::time_point when;
++};
++
++struct Stream
++{
++  std::mutex mutex;  // one read at a time (copied DirectIOFiles share it)
++  std::string url;
++  Location location;
++  Connection* connection = nullptr;
++  nfsfh* nfs_file = nullptr;
++  smb2fh* smb_file = nullptr;
++  u64 size = 0;
++  std::vector<u8> cache;
++  u64 cache_at = 0;
++  size_t cache_length = 0;
++};
++
++std::mutex s_mutex;  // everything below
++std::vector<std::string> s_shares;
++std::vector<std::unique_ptr<Connection>> s_pool;
++std::map<std::string, StatResult> s_stats;
++std::map<int, std::shared_ptr<Stream>> s_handles;
++int s_next_handle = HANDLE_BASE;
++std::string s_last_error;
++
++void Log(const std::string& text)
++{
++  ps4_boot_trace(("netfs: " + text).c_str());
++}
++
++void Fail(const std::string& url, const std::string& what)
++{
++  const std::string text = Redact(url) + ": " + what;
++  Log(text);
++  std::lock_guard lock(s_mutex);
++  s_last_error = text;
++}
++
++bool StartsWithNoCase(std::string_view text, std::string_view prefix)
++{
++  if (text.size() < prefix.size())
++    return false;
++  for (size_t i = 0; i < prefix.size(); i++)
++  {
++    if (std::tolower(static_cast<unsigned char>(text[i])) != prefix[i])
++      return false;
++  }
++  return true;
++}
++
++std::string TrimSlashes(std::string url)
++{
++  const size_t scheme = url.find("://");
++  while (url.size() > scheme + 3 && url.back() == '/')
++    url.pop_back();
++  return url;
++}
++
++// %XX escapes (user names and passwords: "me%40home").
++std::string Decode(const std::string& text)
++{
++  std::string out;
++  for (size_t i = 0; i < text.size(); i++)
++  {
++    if (text[i] == '%' && i + 2 < text.size() && std::isxdigit(static_cast<unsigned char>(text[i + 1])) &&
++        std::isxdigit(static_cast<unsigned char>(text[i + 2])))
++    {
++      out += static_cast<char>(std::stoi(text.substr(i + 1, 2), nullptr, 16));
++      i += 2;
++    }
++    else
++    {
++      out += text[i];
++    }
++  }
++  return out;
++}
++
++// folder: the path is a folder to list (an NFS path outside the configured shares connects at it).
++std::optional<Location> Resolve(const std::string& raw, bool folder)
++{
++  const std::string url = TrimSlashes(raw);
++  const size_t host_end = url.find('/', 6);
++  if (StartsWithNoCase(url, "smb://"))
++  {
++    // One connection per share: smb://[user@]server/share; the rest is the path in it.
++    if (host_end == std::string::npos)
++      return std::nullopt;
++    const size_t share_end = url.find('/', host_end + 1);
++    Location location{Kind::SMB, url.substr(0, share_end), ""};
++    if (share_end != std::string::npos)
++      location.path = url.substr(share_end + 1);
++    return location;
++  }
++  if (!StartsWithNoCase(url, "nfs://") || host_end == std::string::npos)
++    return std::nullopt;
++  // NFS: the export can be any number of folders deep, so a path inside a configured share connects
++  // at that share; other paths at their own folder (or the folder they are in).
++  std::string root;
++  {
++    std::lock_guard lock(s_mutex);
++    for (const std::string& configured : s_shares)
++    {
++      const std::string share = TrimSlashes(configured);
++      if (share.size() > root.size() && url.compare(0, share.size(), share) == 0 &&
++          (url.size() == share.size() || url[share.size()] == '/'))
++      {
++        root = share;
++      }
++    }
++  }
++  if (root.empty())
++  {
++    const size_t slash = url.rfind('/');
++    root = folder ? url : url.substr(0, slash);
++    if (root.size() <= host_end)
++      return std::nullopt;
++  }
++  Location location{Kind::NFS, root, url.substr(root.size())};
++  if (location.path.empty())
++    location.path = "/";
++  return location;
++}
++
++// Whether something answers on one of the ports within the time: a switched-off PC fails in
++// moments instead of the 6-9 seconds the clients wait (the menu reads the shares when it opens).
++bool Reachable(const std::string& host, const std::vector<int>& ports, int milliseconds)
++{
++  std::vector<pollfd> sockets;
++  for (const int port : ports)
++  {
++    addrinfo hints{};
++    hints.ai_family = AF_INET;
++    hints.ai_socktype = SOCK_STREAM;
++    addrinfo* found = nullptr;
++    if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &found) != 0 || !found)
++      return false;
++    const int fd = socket(found->ai_family, SOCK_STREAM, 0);
++    if (fd >= 0)
++    {
++      fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
++      if (connect(fd, found->ai_addr, found->ai_addrlen) == 0 || errno == EINPROGRESS)
++        sockets.push_back({fd, POLLOUT, 0});
++      else
++        close(fd);
++    }
++    freeaddrinfo(found);
++  }
++  bool reached = false;
++  const auto deadline = Clock::now() + std::chrono::milliseconds(milliseconds);
++  while (!reached && !sockets.empty() && Clock::now() < deadline)
++  {
++    const int left = static_cast<int>(
++        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count());
++    if (poll(sockets.data(), sockets.size(), std::max(left, 1)) <= 0)
++      break;
++    for (auto it = sockets.begin(); it != sockets.end();)
++    {
++      if (!it->revents)
++      {
++        ++it;
++        continue;
++      }
++      int failure = 0;
++      socklen_t length = sizeof(failure);
++      getsockopt(it->fd, SOL_SOCKET, SO_ERROR, &failure, &length);
++      reached |= failure == 0;
++      close(it->fd);
++      it = sockets.erase(it);
++    }
++  }
++  for (const pollfd& socket : sockets)
++    close(socket.fd);
++  return reached;
++}
++
++// "server:port" -> server, port (or the default).
++std::pair<std::string, int> HostAndPort(const std::string& authority, int default_port)
++{
++  const size_t colon = authority.rfind(':');
++  if (colon == std::string::npos)
++    return {authority, default_port};
++  return {authority.substr(0, colon), std::atoi(authority.c_str() + colon + 1)};
++}
++
++std::unique_ptr<Connection> Connect(const Location& location, std::string* error)
++{
++  // Writing to a connection the server closed raises SIGPIPE, which ends the whole program by
++  // default (a PC or NAS restarting mid-game). Ignored, the write fails and the read reconnects.
++  static std::once_flag s_sigpipe;
++  std::call_once(s_sigpipe, [] { signal(SIGPIPE, SIG_IGN); });
++  auto connection = std::make_unique<Connection>();
++  connection->kind = location.kind;
++  connection->key = location.key;
++  if (location.kind == Kind::NFS)
++  {
++    nfs_context* nfs = nfs_init_context();
++    if (!nfs)
++    {
++      *error = "out of memory";
++      return nullptr;
++    }
++    connection->nfs = nfs;
++    nfs_set_timeout(nfs, 8000);
++    nfs_url* url = nfs_parse_url_dir(nfs, location.key.c_str());
++    if (!url)
++    {
++      *error = std::string("bad address: ") + nfs_get_error(nfs);
++      return nullptr;
++    }
++    // NFS answers on 2049 (v4, and v3 on most servers) or its port mapper on 111.
++    if (!Reachable(url->server, url->port ? std::vector<int>{url->port} : std::vector<int>{2049, 111},
++                   2000))
++    {
++      *error = std::string("no answer from ") + url->server + " (is it on, and NFS running?)";
++      nfs_destroy_url(url);
++      return nullptr;
++    }
++    const int result = nfs_mount(nfs, url->server, url->path);
++    nfs_destroy_url(url);
++    if (result != 0)
++    {
++      *error = std::string("can't connect: ") + nfs_get_error(nfs);
++      return nullptr;
++    }
++    return connection;
++  }
++
++  // smb://[[domain;]user[:password]@]server[:port]/share
++  const std::string rest = location.key.substr(6);
++  const size_t slash = rest.find('/');
++  const std::string authority = rest.substr(0, slash);
++  const std::string share = slash == std::string::npos ? "" : rest.substr(slash + 1);
++  const size_t at = authority.rfind('@');
++  const std::string server = at == std::string::npos ? authority : authority.substr(at + 1);
++  std::string user, password, domain;
++  if (at != std::string::npos)
++  {
++    const std::string info = authority.substr(0, at);
++    const size_t colon = info.find(':');
++    user = Decode(info.substr(0, colon));
++    if (colon != std::string::npos)
++      password = Decode(info.substr(colon + 1));
++    if (const size_t semicolon = user.find(';'); semicolon != std::string::npos)
++    {
++      domain = user.substr(0, semicolon);
++      user = user.substr(semicolon + 1);
++    }
++  }
++  if (user.empty())
++    user = "Guest";
++  if (share.empty())
++  {
++    *error = "no share name (smb://server/share)";
++    return nullptr;
++  }
++  const auto [host, port] = HostAndPort(server, 445);
++  if (!Reachable(host, {port}, 2000))
++  {
++    *error = "no answer from " + host + " (is it on, and the folder shared?)";
++    return nullptr;
++  }
++  smb2_context* smb = smb2_init_context();
++  if (!smb)
++  {
++    *error = "out of memory";
++    return nullptr;
++  }
++  connection->smb = smb;
++  smb2_set_security_mode(smb, SMB2_NEGOTIATE_SIGNING_ENABLED);
++  smb2_set_timeout(smb, 10);
++  smb2_set_user(smb, user.c_str());
++  smb2_set_password(smb, password.c_str());
++  if (!domain.empty())
++    smb2_set_domain(smb, domain.c_str());
++  if (smb2_connect_share(smb, server.c_str(), share.c_str(), user.c_str()) < 0)
++  {
++    *error = std::string("can't connect: ") + smb2_get_error(smb);
++    smb2_destroy_context(smb);
++    connection->smb = nullptr;
++    return nullptr;
++  }
++  return connection;
++}
++
++// A connection for this location, only for the caller until Release.
++Connection* Acquire(const Location& location, const std::string& url)
++{
++  {
++    std::lock_guard lock(s_mutex);
++    for (const auto& connection : s_pool)
++    {
++      if (!connection->busy && connection->key == location.key)
++      {
++        connection->busy = true;
++        return connection.get();
++      }
++    }
++  }
++  std::string error;
++  std::unique_ptr<Connection> connection = Connect(location, &error);
++  if (!connection)
++  {
++    Fail(url, error);
++    return nullptr;
++  }
++  Log("connected to " + Redact(location.key));
++  std::lock_guard lock(s_mutex);
++  connection->busy = true;
++  s_pool.push_back(std::move(connection));
++  return s_pool.back().get();
++}
++
++// Back to the pool; broken: closed instead (the server went away: the next use reconnects).
++void Release(Connection* connection, bool broken)
++{
++  std::vector<std::unique_ptr<Connection>> closing;
++  {
++    std::lock_guard lock(s_mutex);
++    const auto now = Clock::now();
++    connection->busy = false;
++    connection->idle_since = now;
++    std::map<std::string, size_t> idle;
++    for (auto it = s_pool.rbegin(); it != s_pool.rend(); ++it)
++    {
++      Connection& c = **it;
++      if (c.busy)
++        continue;
++      if ((&c == connection && broken) || now - c.idle_since > IDLE_LIFETIME ||
++          ++idle[c.key] > IDLE_PER_SERVER)
++      {
++        closing.push_back(std::move(*it));
++      }
++    }
++    std::erase_if(s_pool, [](const std::unique_ptr<Connection>& c) { return !c; });
++  }
++}
++
++void RememberStat(const std::string& url, bool exists, bool directory, u64 size)
++{
++  std::lock_guard lock(s_mutex);
++  if (s_stats.size() > 20000)
++    s_stats.clear();
++  s_stats[TrimSlashes(url)] = {exists, directory, size, Clock::now()};
++}
++
++bool OpenFile(Stream& stream)
++{
++  stream.connection = Acquire(stream.location, stream.url);
++  if (!stream.connection)
++    return false;
++  Connection& c = *stream.connection;
++  const char* path = stream.location.path.c_str();
++  if (c.kind == Kind::NFS)
++  {
++    if (nfs_open(c.nfs, path, O_RDONLY, &stream.nfs_file) != 0)
++    {
++      Fail(stream.url, std::string("can't open: ") + nfs_get_error(c.nfs));
++      Release(stream.connection, false);
++      stream.connection = nullptr;
++      return false;
++    }
++    nfs_stat_64 st{};
++    if (nfs_fstat64(c.nfs, stream.nfs_file, &st) == 0 || nfs_stat64(c.nfs, path, &st) == 0)
++      stream.size = st.nfs_size;
++  }
++  else
++  {
++    stream.smb_file = smb2_open(c.smb, path, O_RDONLY);
++    if (!stream.smb_file)
++    {
++      Fail(stream.url, std::string("can't open: ") + smb2_get_error(c.smb));
++      Release(stream.connection, false);
++      stream.connection = nullptr;
++      return false;
++    }
++    // Some servers don't answer a handle's size (impacket): then the path's.
++    smb2_stat_64 st{};
++    const int by_handle = smb2_fstat(c.smb, stream.smb_file, &st);
++    if (by_handle < 0 || st.smb2_size == 0)
++    {
++      Log("size by handle failed (" + std::to_string(by_handle) + "): by path");
++      st = {};
++      smb2_stat(c.smb, path, &st);
++    }
++    stream.size = st.smb2_size;
++  }
++  return true;
++}
++
++void CloseFile(Stream& stream, bool broken)
++{
++  if (!stream.connection)
++    return;
++  Connection& c = *stream.connection;
++  if (!broken)
++  {
++    if (stream.nfs_file)
++      nfs_close(c.nfs, stream.nfs_file);
++    if (stream.smb_file)
++      smb2_close(c.smb, stream.smb_file);
++  }
++  stream.nfs_file = nullptr;
++  stream.smb_file = nullptr;
++  Release(stream.connection, broken);
++  stream.connection = nullptr;
++}
++
++bool RawRead(Stream& stream, u64 offset, u8* out, u64 size)
++{
++  if (!stream.connection)
++    return false;
++  Connection& c = *stream.connection;
++  while (size > 0)
++  {
++    int result;
++    if (c.kind == Kind::NFS)
++    {
++      const u64 chunk = std::min<u64>(size, std::max<size_t>(nfs_get_readmax(c.nfs), 32768));
++      result = nfs_pread(c.nfs, stream.nfs_file, out, chunk, offset);
++      if (result < 0)
++        Fail(stream.url, std::string("read failed: ") + nfs_get_error(c.nfs));
++    }
++    else
++    {
++      const u64 chunk = std::min<u64>(size, std::max<u32>(smb2_get_max_read_size(c.smb), 65536));
++      result = smb2_pread(c.smb, stream.smb_file, out, static_cast<u32>(chunk), offset);
++      if (result < 0)
++        Fail(stream.url, std::string("read failed: ") + smb2_get_error(c.smb));
++    }
++    if (result <= 0)
++      return false;
++    out += result;
++    offset += result;
++    size -= result;
++  }
++  return true;
++}
++
++// A read; when it fails, the connection is dropped and the file opened again once (a server that
++// restarted, a dropped Wi-Fi link).
++bool Fetch(Stream& stream, u64 offset, u8* out, u64 size)
++{
++  if (RawRead(stream, offset, out, size))
++    return true;
++  CloseFile(stream, true);
++  if (!OpenFile(stream))
++    return false;
++  Log("reconnected for " + Redact(stream.url));
++  return RawRead(stream, offset, out, size);
++}
++
++bool Read(Stream& stream, u64 offset, u8* out, u64 size)
++{
++  if (offset > stream.size || size > stream.size - offset)
++    return false;
++  while (size > 0)
++  {
++    if (offset >= stream.cache_at && offset < stream.cache_at + stream.cache_length)
++    {
++      const u64 n = std::min<u64>(size, stream.cache_at + stream.cache_length - offset);
++      std::memcpy(out, stream.cache.data() + (offset - stream.cache_at), n);
++      out += n;
++      offset += n;
++      size -= n;
++      continue;
++    }
++    if (size >= READ_AHEAD)
++      return Fetch(stream, offset, out, size);
++    const u64 n = std::min<u64>(READ_AHEAD, stream.size - offset);
++    stream.cache.resize(READ_AHEAD);
++    stream.cache_length = 0;
++    if (!Fetch(stream, offset, stream.cache.data(), n))
++      return false;
++    stream.cache_at = offset;
++    stream.cache_length = n;
++  }
++  return true;
++}
++
++std::shared_ptr<Stream> FindHandle(int handle)
++{
++  std::lock_guard lock(s_mutex);
++  const auto it = s_handles.find(handle);
++  return it == s_handles.end() ? nullptr : it->second;
++}
++
++// The FILE* for File::IOFile.
++struct Cookie
++{
++  int handle;
++  u64 position = 0;
++};
++
++ssize_t CookieRead(void* cookie, char* out, size_t size)
++{
++  Cookie& c = *static_cast<Cookie*>(cookie);
++  const u64 total = HandleSize(c.handle);
++  if (c.position >= total)
++    return 0;
++  const u64 n = std::min<u64>(size, total - c.position);
++  if (!ReadAt(c.handle, c.position, reinterpret_cast<u8*>(out), n))
++  {
++    errno = EIO;
++    return -1;
++  }
++  c.position += n;
++  return static_cast<ssize_t>(n);
++}
++
++int CookieSeek(void* cookie, off_t* offset, int whence)
++{
++  Cookie& c = *static_cast<Cookie*>(cookie);
++  const s64 base = whence == SEEK_SET ? 0 :
++                   whence == SEEK_CUR ? static_cast<s64>(c.position) :
++                                        static_cast<s64>(HandleSize(c.handle));
++  const s64 position = base + *offset;
++  if (position < 0)
++  {
++    errno = EINVAL;
++    return -1;
++  }
++  c.position = static_cast<u64>(position);
++  *offset = position;
++  return 0;
++}
++
++int CookieClose(void* cookie)
++{
++  Cookie* c = static_cast<Cookie*>(cookie);
++  CloseHandle(c->handle);
++  delete c;
++  return 0;
++}
++}  // namespace
++
++bool IsNetPath(std::string_view path)
++{
++  return StartsWithNoCase(path, "nfs://") || StartsWithNoCase(path, "smb://");
++}
++
++void SetShares(std::vector<std::string> roots)
++{
++  std::lock_guard lock(s_mutex);
++  s_shares = std::move(roots);
++  s_stats.clear();
++}
++
++std::string Redact(const std::string& url)
++{
++  const size_t scheme = url.find("://");
++  if (scheme == std::string::npos)
++    return url;
++  const size_t host_end = url.find('/', scheme + 3);
++  const size_t at = url.rfind('@', host_end);
++  if (at == std::string::npos || at < scheme)
++    return url;
++  const size_t colon = url.find(':', scheme + 3);
++  if (colon == std::string::npos || colon > at)
++    return url;
++  return url.substr(0, colon + 1) + "***" + url.substr(at);
++}
++
++std::string LastError()
++{
++  std::lock_guard lock(s_mutex);
++  return s_last_error;
++}
++
++bool List(const std::string& url, std::vector<Entry>* entries)
++{
++  entries->clear();
++  const std::optional<Location> location = Resolve(url, true);
++  if (!location)
++  {
++    Fail(url, "not a network address (nfs://server/export or smb://server/share)");
++    return false;
++  }
++  Connection* c = Acquire(*location, url);
++  if (!c)
++    return false;
++  bool ok = true;
++  if (c->kind == Kind::NFS)
++  {
++    nfsdir* dir = nullptr;
++    if (nfs_opendir(c->nfs, location->path.c_str(), &dir) != 0)
++    {
++      Fail(url, std::string("can't list: ") + nfs_get_error(c->nfs));
++      ok = false;
++    }
++    else
++    {
++      while (nfsdirent* entry = nfs_readdir(c->nfs, dir))
++      {
++        const bool directory = entry->type == NF3DIR || S_ISDIR(entry->mode);
++        entries->push_back({entry->name, directory, entry->size});
++      }
++      nfs_closedir(c->nfs, dir);
++    }
++  }
++  else
++  {
++    smb2dir* dir = smb2_opendir(c->smb, location->path.c_str());
++    if (!dir)
++    {
++      Fail(url, std::string("can't list: ") + smb2_get_error(c->smb));
++      ok = false;
++    }
++    else
++    {
++      while (smb2dirent* entry = smb2_readdir(c->smb, dir))
++      {
++        entries->push_back(
++            {entry->name, entry->st.smb2_type == SMB2_TYPE_DIRECTORY, entry->st.smb2_size});
++      }
++      smb2_closedir(c->smb, dir);
++    }
++  }
++  Release(c, false);
++  std::erase_if(*entries, [](const Entry& e) { return e.name == "." || e.name == ".."; });
++  // What the listing says about each entry saves a request per file while the library is read.
++  const std::string base = TrimSlashes(url);
++  for (const Entry& entry : *entries)
++    RememberStat(base + "/" + entry.name, true, entry.directory, entry.size);
++  return ok;
++}
++
++bool Stat(const std::string& url, u64* size, bool* directory)
++{
++  const std::string key = TrimSlashes(url);
++  {
++    std::lock_guard lock(s_mutex);
++    const auto it = s_stats.find(key);
++    if (it != s_stats.end() && Clock::now() - it->second.when < STAT_LIFETIME)
++    {
++      *size = it->second.size;
++      *directory = it->second.directory;
++      return it->second.exists;
++    }
++  }
++  const std::optional<Location> location = Resolve(url, false);
++  if (!location)
++    return false;
++  Connection* c = Acquire(*location, url);
++  if (!c)
++    return false;
++  int result;
++  if (c->kind == Kind::NFS)
++  {
++    nfs_stat_64 st{};
++    result = nfs_stat64(c->nfs, location->path.c_str(), &st);
++    *size = st.nfs_size;
++    *directory = S_ISDIR(st.nfs_mode);
++  }
++  else
++  {
++    smb2_stat_64 st{};
++    result = smb2_stat(c->smb, location->path.c_str(), &st);
++    *size = st.smb2_size;
++    *directory = st.smb2_type == SMB2_TYPE_DIRECTORY;
++  }
++  // Missing: a normal answer. Anything else: the connection may be gone.
++  Release(c, result < 0 && result != -ENOENT && result != -ENOTDIR);
++  const bool exists = result == 0;
++  if (!exists)
++  {
++    *size = 0;
++    *directory = false;
++  }
++  RememberStat(url, exists, *directory, *size);
++  return exists;
++}
++
++bool IsHandle(int handle)
++{
++  return handle >= HANDLE_BASE;
++}
++
++int OpenHandle(const std::string& url)
++{
++  const std::optional<Location> location = Resolve(url, false);
++  if (!location)
++  {
++    Fail(url, "not a network address");
++    return -1;
++  }
++  auto stream = std::make_shared<Stream>();
++  stream->url = url;
++  stream->location = *location;
++  if (!OpenFile(*stream))
++    return -1;
++  RememberStat(url, true, false, stream->size);
++  std::lock_guard lock(s_mutex);
++  const int handle = s_next_handle++;
++  s_handles[handle] = std::move(stream);
++  return handle;
++}
++
++bool ReadAt(int handle, u64 offset, u8* out, u64 size)
++{
++  const std::shared_ptr<Stream> stream = FindHandle(handle);
++  if (!stream)
++    return false;
++  std::lock_guard lock(stream->mutex);
++  return Read(*stream, offset, out, size);
++}
++
++u64 HandleSize(int handle)
++{
++  const std::shared_ptr<Stream> stream = FindHandle(handle);
++  return stream ? stream->size : 0;
++}
++
++int DuplicateHandle(int handle)
++{
++  std::lock_guard lock(s_mutex);
++  const auto it = s_handles.find(handle);
++  if (it == s_handles.end())
++    return -1;
++  const int copy = s_next_handle++;
++  s_handles[copy] = it->second;
++  return copy;
++}
++
++void CloseHandle(int handle)
++{
++  std::shared_ptr<Stream> stream;
++  {
++    std::lock_guard lock(s_mutex);
++    const auto it = s_handles.find(handle);
++    if (it == s_handles.end())
++      return;
++    stream = std::move(it->second);
++    s_handles.erase(it);
++  }
++  // The last handle of the file closes it.
++  if (stream.use_count() == 1)
++  {
++    std::lock_guard lock(stream->mutex);
++    CloseFile(*stream, false);
++  }
++}
++
++std::FILE* OpenStream(const std::string& url)
++{
++  const int handle = OpenHandle(url);
++  if (handle < 0)
++    return nullptr;
++  Cookie* cookie = new Cookie{handle};
++  std::FILE* file =
++      fopencookie(cookie, "rb", cookie_io_functions_t{CookieRead, nullptr, CookieSeek, CookieClose});
++  if (!file)
++  {
++    CloseHandle(handle);
++    delete cookie;
++  }
++  return file;
++}
++}  // namespace Common::NetFS
+diff --git a/Source/Core/Common/PS4NetFS.h b/Source/Core/Common/PS4NetFS.h
+new file mode 100755
+index 0000000..e234d2b
+--- /dev/null
++++ b/Source/Core/Common/PS4NetFS.h
+@@ -0,0 +1,61 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++// Network shares on the PS4: games read straight from an NFS export or an SMB (Windows) share, so
++// the library isn't limited by the console's own storage. libnfs and libsmb2 are user-space
++// clients (no kernel support needed); scripts/build-netlibs.sh builds them.
++//
++// A share is a URL:
++//   nfs://<server>/<export>[/<folder>]            (NFS v3; add ?version=4 for NFS v4)
++//   smb://[<user>[:<password>]@]<server>/<share>[/<folder>]   (SMB 2/3; no user: Guest)
++// and a file in it is that URL plus its path ("nfs://192.168.0.10/games/Melee.rvz"). Such paths
++// work wherever Dolphin opens a file to read (File::IOFile, File::DirectIOFile, File::Exists /
++// GetSize / IsDirectory): disc images in every format read from the network as they would from
++// the disk. Read-only.
++
++#pragma once
++
++#include <cstdio>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "Common/CommonTypes.h"
++
++namespace Common::NetFS
++{
++bool IsNetPath(std::string_view path);
++
++// The configured shares (each one connection root: its server, export or share, and folder).
++// A path inside one of them connects at that root; any other network path at its own folder.
++void SetShares(std::vector<std::string> roots);
++
++// The URL with its password hidden ("smb://me:***@pc/games"), for logs and the menus.
++std::string Redact(const std::string& url);
++
++// The last error (connection, open, read), for the menus and logs.
++std::string LastError();
++
++struct Entry
++{
++  std::string name;
++  bool directory = false;
++  u64 size = 0;
++};
++// The files and folders in a network folder (without "." and ".."). False: unreachable.
++bool List(const std::string& url, std::vector<Entry>* entries);
++
++// Whether the path exists, its size and whether it is a folder (cached for a few seconds).
++bool Stat(const std::string& url, u64* size, bool* directory);
++
++// Handles for File::DirectIOFile: numbers no real file descriptor reaches.
++bool IsHandle(int handle);
++int OpenHandle(const std::string& url);  // -1: can't be opened
++bool ReadAt(int handle, u64 offset, u8* out, u64 size);  // thread safe
++u64 HandleSize(int handle);
++int DuplicateHandle(int handle);
++void CloseHandle(int handle);
++
++// A read-only stdio stream for File::IOFile (nullptr: can't be opened).
++std::FILE* OpenStream(const std::string& url);
++}  // namespace Common::NetFS

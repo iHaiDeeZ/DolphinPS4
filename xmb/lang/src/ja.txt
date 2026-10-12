@@ -529,3 +529,20 @@ GPU同期
 # --- Recompiler Check
 リコンパイラ検査
 PS4 JITのみ：プレイ中にゲームのコンパイル済みコードをDolphinのインタプリタと比較し、違いを記録します（boot-trace.log）。遅くなります。新しいリコンパイラの検証用です。
+# --- Network Shares
+ネットワーク共有
+PC・NASのゲーム（NFS、SMB）
+共有
+共有はまだありません
+追加
+NFS共有を追加
+SMB共有を追加
+再スキャン
+もう一度押すと削除
+完了
+接続しました
+nfs:// または smb:// のアドレスではありません
+ゲームはネットワークから読み込まれます（PC、NAS）。PS4には何もコピーされません。
+NFS：nfs://192.168.0.10/export/games（NFS 4：?version=4 を追加）
+SMB：smb://user:password@192.168.0.10/share/games（ユーザーなし：Guest）
+共有の上で×を2回押すと削除します。有線接続がおすすめです。
