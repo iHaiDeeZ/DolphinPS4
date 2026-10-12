@@ -579,6 +579,14 @@ int ps4_replace_malloc_stats(void* out) {
     return 0;
 }
 int ps4_replace_malloc_stats_fast(void* out) { return ps4_replace_malloc_stats(out); }
+// The heap's size now (main heap plus the overflow heap), for the monitor line (PlatformPS4.cpp):
+// it shows a game's memory growing long before it runs out.
+size_t ps4_heap_footprint() {
+    size_t total = g_heap ? mspace_footprint(g_heap) : 0;
+    if (mspace msp = __atomic_load_n(&g_overflow, __ATOMIC_ACQUIRE))
+        total += mspace_footprint(msp);
+    return total;
+}
 size_t ps4_replace_malloc_usable_size(void* ptr) { return ptr ? mspace_usable_size(ptr) : 0; }
 
 // Large anonymous mmaps (--wrap=mmap): Dolphin's JIT code buffers, DSP ARAM, FIFO, ... would

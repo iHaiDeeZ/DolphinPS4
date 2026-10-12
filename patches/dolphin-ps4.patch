@@ -9764,10 +9764,10 @@ index 0000000..482d3bc
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
 new file mode 100644
-index 0000000..89e021b
+index 0000000..95677d8
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
-@@ -0,0 +1,2255 @@
+@@ -0,0 +1,2473 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -9786,6 +9786,10 @@ index 0000000..89e021b
 +
 +#include "Common/CommonTypes.h"
 +#include "Common/GekkoDisassembler.h"
++
++#include <memory>
++#include <mutex>
++#include <unordered_set>
 +#ifdef DOLPHIN_PS4_HOST
 +#include <atomic>
 +extern std::atomic<unsigned> ps4_bench_xfb_copies;  // VideoCommon/BPStructs.cpp
@@ -9798,6 +9802,8 @@ index 0000000..89e021b
 +#include <sys/syscall.h>
 +#include <sys/time.h>
 +#include <ucontext.h>
++#include <map>
++#include <unordered_set>
 +#include <linux/perf_event.h>
 +#include <sys/ioctl.h>
 +#include <sys/mman.h>
@@ -10277,6 +10283,80 @@ index 0000000..89e021b
 +}
 +}  // namespace
 +
++#endif
++
++// jit_trace (Dolphin Lab, PPCAnalyst OPTION_PS4_TRACE) learns in two phases, like IA-32 EL's hot code
++// translation: a newly compiled block counts its runs and where its exits go; after PS4_TRACE_RUNS
++// runs it asks to be compiled again (JitPS4::PS4Retrace), following the conditional branches that
++// left to their target in at least 70% of its runs - the hot path then stays in one block, and the
++// recompiled block counts nothing. (PC test bench: PS4JIT_COUNT=1 counts every block for
++// /tmp/ps4jit-ana/blocks.txt: "B address instructions runs", "E destination count source".)
++constexpr u64 PS4_TRACE_RUNS = 1000;
++struct CountExit
++{
++  u32 destination;
++  u32 source;
++  u64 count = 0, base = 0;
++};
++struct CountBlock
++{
++  u32 address = 0, instructions = 0;
++  u64 runs = 0, base = 0;
++  std::vector<std::unique_ptr<CountExit>> exits;
++};
++std::mutex s_count_mutex;
++std::vector<std::unique_ptr<CountBlock>> s_count_blocks;
++bool s_count_on = false;    // PC test bench: count every block, never retrace
++bool s_trace_learn = false;  // jit_trace: new blocks count, then retrace
++extern "C" int ps4_jit_trace;
++extern "C" bool (*ps4_trace_taken)(u32 src, u32 dest);
++std::unordered_set<u64> s_trace_taken;    // src << 32 | dest: usually taken
++std::unordered_set<u32> s_traced_blocks;  // retraced: compiled without counting
++bool TraceTaken(u32 src, u32 dest)
++{
++  return s_trace_taken.contains((u64(src) << 32) | dest);
++}
++
++#ifdef DOLPHIN_PS4_HOST
++
++void CountSnapshot()
++{
++  std::lock_guard lock(s_count_mutex);
++  for (auto& b : s_count_blocks)
++  {
++    b->base = b->runs;
++    for (auto& e : b->exits)
++      e->base = e->count;
++  }
++}
++
++void CountDump()
++{
++  std::lock_guard lock(s_count_mutex);
++  mkdir("/tmp/ps4jit-ana", 0755);
++  FILE* out = fopen("/tmp/ps4jit-ana/blocks.txt", "w");
++  if (!out)
++    return;
++  for (auto& b : s_count_blocks)
++  {
++    const u64 runs = b->runs - b->base;
++    if (runs == 0)
++      continue;
++    fprintf(out, "B %08x %u %llu\n", b->address, b->instructions,
++            static_cast<unsigned long long>(runs));
++    for (auto& e : b->exits)
++    {
++      if (e->count != e->base)
++      {
++        fprintf(out, "E %08x %llu %08x\n", e->destination,
++                static_cast<unsigned long long>(e->count - e->base), e->source);
++      }
++    }
++  }
++  fclose(out);
++  fprintf(stderr, "[bench] block counts in /tmp/ps4jit-ana/blocks.txt\n");
++}
++
 +// The PS4 JIT's switches, with the PS4's defaults (defined in PS4-only files there).
 +extern "C" {
 +int ps4_fifo_batch = 0, ps4_fifo_defer = 0, ps4_gp_fuse = 1, ps4_jit_accurate_singles = 1,
@@ -10285,6 +10365,53 @@ index 0000000..89e021b
 +    ps4_jit_round_results = 1, ps4_jit_tlb_inline = 1, ps4_lazy_lfs = 1, ps4_lfs_forward = 1;
 +int ps4_jit_pin[4] = {-1, -1, -1, -1};
 +}
++// PS4JIT_TRACE=<blocks.txt of an earlier PS4JIT_COUNT run>: jit_trace from that profile. A branch
++// counts as usually taken when it left to its target in at least PS4JIT_TRACE_P (0.7) of the runs
++// of the blocks holding it.
++void LoadTraceProfile(const char* path)
++{
++  struct Block
++  {
++    u32 start, length;
++    u64 runs;
++  };
++  std::vector<Block> blocks;
++  std::map<u64, u64> taken;
++  FILE* f = fopen(path, "r");
++  if (!f)
++    return;
++  char kind;
++  unsigned a, b, c;
++  unsigned long long n;
++  char line[128];
++  while (fgets(line, sizeof(line), f))
++  {
++    if (sscanf(line, "B %x %u %llu", &a, &b, &n) == 3)
++      blocks.push_back({a, b, n});
++    else if (sscanf(line, "E %x %llu %x", &a, &n, &c) == 3 && a != 0xFFFFFFFF)
++      taken[(u64(c) << 32) | a] += n;
++  }
++  fclose(f);
++  (void)kind;
++  const double threshold = getenv("PS4JIT_TRACE_P") ? atof(getenv("PS4JIT_TRACE_P")) : 0.7;
++  for (const auto& [key, count] : taken)
++  {
++    const u32 src = static_cast<u32>(key >> 32);
++    u64 reach = 0;
++    for (const Block& block : blocks)
++    {
++      if (src >= block.start && src < block.start + 4 * block.length)
++        reach += block.runs;
++    }
++    if (reach && count >= threshold * reach)
++      s_trace_taken.insert(key);
++  }
++  ps4_jit_trace = 1;
++  ps4_trace_taken = TraceTaken;
++  fprintf(stderr, "[bench] jit_trace: %zu usually-taken branches from %s\n", s_trace_taken.size(),
++          path);
++}
++
 +extern "C" const char* ps4_boot_disc_path()
 +{
 +  const char* disc = getenv("PS4JIT_DISC");
@@ -10299,6 +10426,19 @@ index 0000000..89e021b
 +  // cache (off by default here: it lives in /data/DolphinPS4).
 +  m_ps4_bench_start = std::chrono::steady_clock::now();
 +  m_ps4_bench_thread = pthread_self();
++  s_count_on = getenv("PS4JIT_COUNT") != nullptr;
++  // PS4JIT_TRACE=auto: jit_trace as on the PS4; PS4JIT_TRACE=<blocks.txt>: from that profile.
++  if (const char* profile = getenv("PS4JIT_TRACE"))
++  {
++    if (strcmp(profile, "auto") == 0)
++      ps4_jit_trace = 1;
++    else
++      LoadTraceProfile(profile);
++  }
++  else
++  {
++    ps4_jit_trace = 0;
++  }
 +  // Every 10 s: the CPU thread's CPU time and the emulated cycles so far (the run is stopped from
 +  // outside, and some games don't shut down cleanly here).
 +  if (getenv("PS4JIT_BENCH"))
@@ -10315,6 +10455,10 @@ index 0000000..89e021b
 +          PerfStart();
 +        if (profile && n == 5)
 +          PerfStop(*this);
++        if (s_count_on && n == 2)
++          CountSnapshot();
++        if (s_count_on && n == 5)
++          CountDump();
 +        timespec cpu{};
 +        clock_gettime(clock, &cpu);
 +        fprintf(stderr, "[bench] %d s: %u frames (%u XFB copies), CPU thread %.3f s, %.0f M cycles\n", n * 10,
@@ -10351,6 +10495,10 @@ index 0000000..89e021b
 +  ps4_jit_cache = getenv("PS4JIT_CACHE") ? atoi(getenv("PS4JIT_CACHE")) : 0;
 +#endif
 +  s_ps4_active = this;
++  // jit_trace: the analyzer asks which branches are usually taken; new blocks learn it.
++  s_trace_learn = ps4_jit_trace && !s_count_on && s_trace_taken.empty();
++  if (ps4_jit_trace)
++    ps4_trace_taken = TraceTaken;
 +  m_code_cache.Start();
 +  InitFastmemArena();
 +
@@ -11130,8 +11278,44 @@ index 0000000..89e021b
 +  }
 +}
 +
++// jit_trace: a learning block ran PS4_TRACE_RUNS times. Its usually-taken branches are noted, and
++// the block is invalidated - it is still running, but its code stays until the next compile, which
++// only happens after it has left. The next time it's reached it is compiled again as a trace, and
++// counts nothing.
++void JitPS4::PS4Retrace(JitPS4* jit, void* counted)
++{
++  const auto* block = static_cast<const CountBlock*>(counted);
++  for (const auto& exit : block->exits)
++  {
++    if (exit->destination != 0xFFFFFFFF && exit->count * 10 >= block->runs * 7)
++      s_trace_taken.insert((u64(exit->source) << 32) | exit->destination);
++  }
++  s_traced_blocks.insert(block->address);
++  // The old code is never reused: the BLR optimization may still return into it (a recursive
++  // function's outer call), so its memory stays as it is - once per retraced block.
++  jit->FreeRanges();  // what other blocks gave back until now is still freed
++  jit->m_system.GetJitInterface().InvalidateICache(block->address, 4, true);
++  jit->blocks.ClearRangesToFree();
++}
++
 +void JitPS4::PS4VerifyExit(std::optional<u32> destination)
 +{
++  // jit_trace (learning) / PS4JIT_COUNT: count where this exit goes.
++  if (m_ps4_count_block && (destination || s_count_on))
++  {
++    auto exit = std::make_unique<CountExit>();
++    exit->destination = destination ? *destination : 0xFFFFFFFF;
++    exit->source = js.skipInstructions ? js.op[1].address : js.compilerPC;
++    const u64* counter = &exit->count;
++    {
++      std::lock_guard lock(s_count_mutex);
++      static_cast<CountBlock*>(m_ps4_count_block)->exits.push_back(std::move(exit));
++    }
++    PUSH(RSCRATCH2);
++    MOV(64, R(RSCRATCH2), ImmPtr(counter));
++    ADD(64, MatR(RSCRATCH2), Imm8(1));
++    POP(RSCRATCH2);
++  }
 +  // Recompiler check: every register is in ppcState here (the exits flush first; pinned registers
 +  // are written there for the check).
 +  if (!ps4_jit_verify)
@@ -11589,6 +11773,38 @@ index 0000000..89e021b
 +  // TODO: Test if this or AlignCode16 make a difference from GetCodePtr
 +  b->normalEntry = AlignCode4();
 +
++  // jit_trace (learning) / PS4JIT_COUNT: count this block's runs.
++  m_ps4_count_block = nullptr;
++  const bool learn = s_trace_learn && !s_traced_blocks.contains(em_address);
++  if (s_count_on || learn)
++  {
++    auto block = std::make_unique<CountBlock>();
++    block->address = em_address;
++    block->instructions = code_block.m_num_instructions;
++    m_ps4_count_block = block.get();
++    CountBlock* counted = block.get();
++    (void)counted;
++    {
++      std::lock_guard lock(s_count_mutex);
++      s_count_blocks.push_back(std::move(block));
++    }
++    MOV(64, R(RSCRATCH), ImmPtr(&static_cast<CountBlock*>(m_ps4_count_block)->runs));
++    ADD(64, MatR(RSCRATCH), Imm8(1));
++    if (learn)
++    {
++      CMP(64, MatR(RSCRATCH), Imm32(static_cast<u32>(PS4_TRACE_RUNS)));
++      FixupBranch retrace = J_CC(CC_E, Jump::Near);
++      const u8* resume = GetCodePtr();
++      SwitchToFarCode();
++      SetJumpTarget(retrace);
++      ABI_PushRegistersAndAdjustStack({}, 0);
++      ABI_CallFunctionPP(PS4Retrace, this, m_ps4_count_block);
++      ABI_PopRegistersAndAdjustStack({}, 0);
++      JMP(resume, true);
++      SwitchToNearCode();
++    }
++  }
++
 +  // Recompiler check (Verify.cpp): the block is replayed in the interpreter first.
 +  if (ps4_jit_verify)
 +  {
@@ -11660,7 +11876,8 @@ index 0000000..89e021b
 +      const PPCAnalyst::CodeOp& o = m_code_buffer[k];
 +      fprintf(stderr, "[join] %3u %08x %s%s join_to=%u%s\n", k, o.address,
 +              Common::GekkoDisassembler::Disassemble(o.inst.hex, o.address).c_str(),
-+              o.skip ? " SKIP" : "", o.ps4_join_to, o.ps4_join ? " JOIN" : "");
++              o.skip ? " SKIP" : o.ps4_unroll ? " TRACED" : "", o.ps4_join_to,
++              o.ps4_join ? " JOIN" : "");
 +    }
 +  }
 +#endif
@@ -11966,6 +12183,7 @@ index 0000000..89e021b
 +  analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_BRANCH_FOLLOW);
 +  analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_PS4_UNROLL);
 +  analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_PS4_JOIN);
++  analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_PS4_TRACE);
 +}
 +
 +void JitPS4::IntializeSpeculativeConstants()
@@ -12025,10 +12243,10 @@ index 0000000..89e021b
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.h b/Source/Core/Core/PowerPC/JitPS4/Jit.h
 new file mode 100644
-index 0000000..5847727
+index 0000000..0132a73
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.h
-@@ -0,0 +1,366 @@
+@@ -0,0 +1,368 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -12188,6 +12406,8 @@ index 0000000..5847727
 +  std::vector<PS4PendingJoin> m_ps4_joins;
 +  std::chrono::steady_clock::time_point m_ps4_bench_start;  // the PC test bench (Shutdown)
 +  const u8* PS4FarRegionStart() const { return m_far_code.GetRegionStart(); }
++  void* m_ps4_count_block = nullptr;  // jit_trace learning / PS4JIT_COUNT: this block's counters
++  static void PS4Retrace(JitPS4* jit, void* counted);
 +  size_t PS4FarRegionSize() const { return m_far_code.GetRegionSize(); }
 +#ifdef DOLPHIN_PS4_HOST
 +  pthread_t m_ps4_bench_thread{};
@@ -21510,7 +21730,7 @@ index 8c12ead..5f87b87 100644
    {
      BAT_TRANSLATED,
 diff --git a/Source/Core/Core/PowerPC/PPCAnalyst.cpp b/Source/Core/Core/PowerPC/PPCAnalyst.cpp
-index 386e349..720c629 100644
+index 386e349..438a3b9 100644
 --- a/Source/Core/Core/PowerPC/PPCAnalyst.cpp
 +++ b/Source/Core/Core/PowerPC/PPCAnalyst.cpp
 @@ -4,6 +4,7 @@
@@ -21521,7 +21741,7 @@ index 386e349..720c629 100644
  #include <map>
  #include <string>
  #include <vector>
-@@ -36,10 +37,35 @@
+@@ -36,10 +37,42 @@
  // library functions.
  // We don't do this much currently. Only for the special case Super Monkey Ball.
  
@@ -21541,6 +21761,13 @@ index 386e349..720c629 100644
 +extern "C" int ps4_jit_join;
 +int ps4_jit_join = 0;
 +
++// jit_trace (Dolphin Lab): a conditional branch the profile says is usually taken continues in the
++// block at its target (OPTION_PS4_TRACE). ps4_trace_taken answers "is src -> dest usually taken?".
++extern "C" int ps4_jit_trace;
++int ps4_jit_trace = 0;
++extern "C" bool (*ps4_trace_taken)(u32 src, u32 dest);
++bool (*ps4_trace_taken)(u32 src, u32 dest) = nullptr;
++
  namespace PPCAnalyst
  {
  // 0 does not perform block merging
@@ -21557,16 +21784,17 @@ index 386e349..720c629 100644
  
  constexpr u32 INVALID_BRANCH_TARGET = 0xFFFFFFFF;
  
-@@ -832,6 +858,8 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
+@@ -832,6 +865,9 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
    u32 num_inst = 0;
  
    const bool enable_follow = m_enable_branch_following;
 +  u32 unrolls = 0;          // copies of a loop body added (jit_unroll)
++  u32 traces = 0;           // usually-taken branches followed (jit_trace)
 +  std::size_t body_len = 0;  // the loop body's length in instructions
  
    auto& system = Core::System::GetInstance();
    auto& mmu = system.GetMMU();
-@@ -949,6 +977,26 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
+@@ -949,6 +985,43 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
      code[i].branchIsIdleLoop =
          code[i].branchTo == block->m_address && IsBusyWaitLoop(block, code, i);
  
@@ -21590,10 +21818,27 @@ index 386e349..720c629 100644
 +    }
 +#endif
 +
++    // jit_trace: a usually-taken conditional branch is followed; compiled inverted (the
++    // ps4_unroll path), the block leaves only when it isn't taken.
++    if (ps4_jit_trace && ps4_trace_taken && HasOption(OPTION_PS4_TRACE) && conditional_continue &&
++        inst.OPCD == 16 && !inst.LK && !code[i].branchIsIdleLoop && !code[i].ps4_unroll &&
++        traces < 8 && ps4_trace_taken(code[i].address, code[i].branchTo) &&
++        std::none_of(code, code + i + 1,
++                     [&](const CodeOp& op) { return op.address == code[i].branchTo; }))
++    {
++      // (Not back into code already in the block: a loop's body would be copied once per
++      // trace - short loops are jit_unroll's.)
++      code[i].ps4_unroll = true;
++      traces++;
++      found_call = false;
++      address = code[i].branchTo;
++      continue;
++    }
++
      if (follow && numFollows < BRANCH_FOLLOWING_THRESHOLD)
      {
        // Follow the unconditional branch.
-@@ -984,6 +1032,35 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
+@@ -984,6 +1057,35 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
      block->m_broken = true;
    }
  
@@ -21629,7 +21874,7 @@ index 386e349..720c629 100644
    auto& power_pc = system.GetPowerPC();
    auto& ppc_symbol_db = power_pc.GetSymbolDB();
    // Scan for flag dependencies; assume the next block (or any branch that can leave the block)
-@@ -1075,10 +1152,33 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
+@@ -1075,10 +1177,33 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
    // Forward scan, for flags that need the other direction for calculation.
    BitSet32 fprIsSingle, fprIsDuplicated, fprIsStoreSafe;
    BitSet8 gqrUsed, gqrModified;
@@ -21664,7 +21909,7 @@ index 386e349..720c629 100644
      op.fprIsDuplicated = fprIsDuplicated;
      op.fprIsStoreSafeBeforeInst = fprIsStoreSafe;
 diff --git a/Source/Core/Core/PowerPC/PPCAnalyst.h b/Source/Core/Core/PowerPC/PPCAnalyst.h
-index f9081ba..e7efb21 100644
+index f9081ba..89f1d4f 100644
 --- a/Source/Core/Core/PowerPC/PPCAnalyst.h
 +++ b/Source/Core/Core/PowerPC/PPCAnalyst.h
 @@ -51,6 +51,14 @@ struct CodeOp  // 16B
@@ -21682,7 +21927,7 @@ index f9081ba..e7efb21 100644
    BitSet8 crWillBeRead;
    BitSet8 crWillBeWritten;
    BitSet8 crDiscardable;
-@@ -174,6 +182,14 @@ public:
+@@ -174,6 +182,19 @@ public:
  
      // Reorder cror instructions next to their associated fcmp.
      OPTION_CROR_MERGE = (1 << 6),
@@ -21694,6 +21939,11 @@ index f9081ba..e7efb21 100644
 +    // Dolphin Lab (PS4): conditional forward branches inside a block stay inside it (ps4_join_to,
 +    // ps4_join). Only for the PS4 JIT (JitPS4::PS4BindJoins).
 +    OPTION_PS4_JOIN = (1 << 8),
++
++    // Dolphin Lab (PS4): profile-guided traces - a conditional branch that is usually taken is
++    // followed (compiled inverted, like OPTION_PS4_UNROLL's loops), so the hot path stays in one
++    // block. Only for the PS4 JIT.
++    OPTION_PS4_TRACE = (1 << 9),
    };
  
    // Option setting/getting
@@ -22482,7 +22732,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..bf9f6e3 100644
+index 3bf40ea..1899ed0 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -22533,7 +22783,7 @@ index 3bf40ea..bf9f6e3 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,69 @@
+@@ -31,6 +53,70 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -22558,6 +22808,7 @@ index 3bf40ea..bf9f6e3 100644
 +extern "C" int ps4_jit_lazy_pc;          // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_unroll;           // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_join;             // Core/PowerPC/PPCAnalyst.cpp
++extern "C" int ps4_jit_trace;            // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_gp_dynamic;       // Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 +extern "C" int ps4_jit_accurate_singles;  // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_round_results, ps4_jit_round_operands;  // Jit64/Jit_FloatingPoint.cpp
@@ -22603,7 +22854,7 @@ index 3bf40ea..bf9f6e3 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +258,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +259,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -22614,7 +22865,7 @@ index 3bf40ea..bf9f6e3 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +273,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +274,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -22633,7 +22884,7 @@ index 3bf40ea..bf9f6e3 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +305,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +306,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -22644,7 +22895,7 @@ index 3bf40ea..bf9f6e3 100644
  #endif
        });
  
-@@ -270,7 +372,437 @@ int main(const int argc, char* argv[])
+@@ -270,7 +373,440 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -22841,6 +23092,9 @@ index 3bf40ea..bf9f6e3 100644
 +    // jit_join=on (Dolphin Lab): an "if" inside a block jumps further down the block when taken
 +    // instead of leaving it (PPCAnalyst.cpp; off by default: no faster).
 +    ps4_jit_join = Platform::GetPS4Option("jit_join", "off") == "on";
++    // jit_trace=off (Dolphin Lab, PS4 JIT): no traces - blocks don't learn which branches are
++    // usually taken and don't follow them (JitPS4/Jit.cpp PS4Retrace).
++    ps4_jit_trace = Platform::GetPS4Option("jit_trace", "on") == "on";
 +    // jit_gp_dynamic=off (Dolphin Lab): gather pipe writes through a pointer call MMU::Write again.
 +    ps4_jit_gp_dynamic = Platform::GetPS4Option("jit_gp_dynamic", "on") == "on";
 +    // jit_accurate_singles=off (per game): no rounding to single precision after float ops.
@@ -23082,7 +23336,7 @@ index 3bf40ea..bf9f6e3 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +816,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +820,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -23098,7 +23352,7 @@ index 3bf40ea..bf9f6e3 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +844,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +848,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -38672,10 +38926,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..4c22c1c
+index 0000000..d80c2d5
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,2176 @@
+@@ -0,0 +1,2178 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -38753,6 +39007,7 @@ index 0000000..4c22c1c
 +extern "C" long long ps4_wait_total(int slot);            // port/ps4_sampler.cpp
 +extern "C" unsigned long long ps4_present_counter;        // VideoCommon/Present.cpp
 +extern "C" unsigned long long ps4_clock_reads;            // port/ps4_runtime.cpp
++extern "C" size_t ps4_heap_footprint();                   // port/ps4_runtime.cpp
 +extern "C" unsigned long long ps4_soft_tlb_hits, ps4_soft_tlb_misses;           // MMU.cpp
 +extern "C" unsigned long long ps4_soft_tlb_flushes, ps4_soft_tlb_sr_flushes, ps4_soft_tlb_page_inv,
 +    ps4_soft_tlb_fills;  // MMU.cpp
@@ -39416,14 +39671,15 @@ index 0000000..4c22c1c
 +      snprintf(line, sizeof(line),
 +               "monitor: %lld s, speed %.0f%% (max %.0f%%), %.1f FPS, %.1f VPS, %zu MiB flexible "
 +               "free, CPU core %d, %llu fastmem faults, GL shaders %d programs %d textures %d "
-+               "(created %d, reused %d) fbos created %d, internal memory %llu KiB free, maps %lld "
-+               "unmaps %lld costing %lld KiB, compiles %lld KiB, links %lld KiB",
++               "(created %d, reused %d) fbos created %d, internal memory %llu KiB free, heap %zu "
++               "MiB, maps %lld unmaps %lld costing %lld KiB, compiles %lld KiB, links %lld KiB",
 +               static_cast<long long>(seconds), perf.GetSpeed() * 100.0,
 +               perf.GetMaxSpeed() * 100.0, perf.GetFPS(), perf.GetVPS(),
 +               flexible / (1024 * 1024), static_cast<int>(Config::Get(Config::MAIN_CPU_CORE)),
 +               ps4_fault_count, ps4_gl_shaders, ps4_gl_programs, ps4_gl_textures,
 +               ps4_gl_texture_creations, ps4_gl_texture_reuses, ps4_gl_fbo_creations,
-+               ps4_internal_memory_free() / 1024, ps4_map_count, ps4_unmap_count,
++               ps4_internal_memory_free() / 1024, ps4_heap_footprint() / (1024 * 1024),
++               ps4_map_count, ps4_unmap_count,
 +               ps4_map_internal_bytes / 1024, ps4_compile_internal_bytes / 1024,
 +               ps4_link_internal_bytes / 1024);
 +#ifdef HAS_VULKAN
@@ -43972,7 +44228,7 @@ index 5f5583f..fa7ee2a 100644
  )
  
 diff --git a/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp b/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp
-index c82417e..e72527d 100644
+index c82417e..2918568 100644
 --- a/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp
 +++ b/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp
 @@ -9,6 +9,7 @@
@@ -43983,7 +44239,50 @@ index c82417e..e72527d 100644
  #include "VideoBackends/Vulkan/VulkanContext.h"
  #include "VideoCommon/Constants.h"
  #include "vulkan/vulkan_core.h"
-@@ -420,11 +421,13 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
+@@ -363,6 +364,34 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
+     // Reset the descriptor pools
+     FrameResources& frame_resources = GetCurrentFrameResources();
+ 
++#ifdef __ORBIS__
++    // PS4: every pool (1024-set chunks) is reset and kept, and the pools this frame didn't reach
++    // are freed but one, so the memory follows what the game needs now. Dolphin's own way - one
++    // pool of m_descriptor_set_count, which every overflow of any frame's pools raises by 1024
++    // for good - grew past the PS4's 1 GiB heap in long sessions of busy games (Sonic and the
++    // Black Knight ran out of memory after about 6 minutes, in vkCreateDescriptorPool).
++    {
++      VkDevice device = g_vulkan_context->GetDevice();
++      std::vector<VkDescriptorPool>& pools = frame_resources.descriptor_pools;
++      const size_t keep = std::min(
++          pools.size(), static_cast<size_t>(frame_resources.current_descriptor_pool_index) + 2);
++      for (size_t i = keep; i < pools.size(); i++)
++        vkDestroyDescriptorPool(device, pools[i], nullptr);
++      pools.resize(keep);
++      for (VkDescriptorPool pool : pools)
++      {
++        VkResult res = vkResetDescriptorPool(device, pool, 0);
++        if (res != VK_SUCCESS)
++          LOG_VULKAN_ERROR(res, "vkResetDescriptorPool failed: ");
++      }
++      if (pools.empty())
++      {
++        VkDescriptorPool pool = CreateDescriptorPool(DESCRIPTOR_SETS_PER_POOL);
++        if (pool != VK_NULL_HANDLE)
++          pools.push_back(pool);
++      }
++    }
++#else
+     if (frame_resources.descriptor_pools.size() == 1) [[likely]]
+     {
+       VkResult res = vkResetDescriptorPool(g_vulkan_context->GetDevice(),
+@@ -381,6 +410,7 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
+       if (descriptor_pool != VK_NULL_HANDLE) [[likely]]
+         frame_resources.descriptor_pools.push_back(descriptor_pool);
+     }
++#endif
+ 
+     frame_resources.current_descriptor_pool_index = 0;
+   }
+@@ -420,11 +450,13 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
      submit_info.waitSemaphoreCount = 1;
    }
  
@@ -43997,7 +44296,7 @@ index c82417e..e72527d 100644
  
    VkResult res =
        vkQueueSubmit(g_vulkan_context->GetGraphicsQueue(), 1, &submit_info, resources.fence);
-@@ -435,6 +438,14 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
+@@ -435,6 +467,14 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
                    static_cast<int>(res));
    }
  
@@ -48573,7 +48872,7 @@ index c56f32c..64e5240 100644
  
 diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 new file mode 100755
-index 0000000..4604703
+index 0000000..d099dc5
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 @@ -0,0 +1,1228 @@
@@ -48619,7 +48918,7 @@ index 0000000..4604703
 +    ps4_jit_tlb_inline, ps4_lfs_forward, ps4_jit_accurate_singles, ps4_jit_round_results,
 +    ps4_jit_round_operands, ps4_jit_fcmp_merge, ps4_jit_msr_link, ps4_jit_gp_dynamic,
 +    ps4_fifo_batch, ps4_fifo_defer;
-+extern "C" int ps4_jit_unroll, ps4_jit_join;  // Core/PowerPC/PPCAnalyst.cpp
++extern "C" int ps4_jit_unroll, ps4_jit_join, ps4_jit_trace;  // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_pin[4];
 +extern "C" int ps4_jit_verify;  // JitPS4/Verify.cpp
 +
@@ -48958,7 +49257,7 @@ index 0000000..4604703
 +                ps4_jit_tlb_inline, ps4_lfs_forward, ps4_jit_accurate_singles,
 +                ps4_jit_round_results, ps4_jit_round_operands, ps4_jit_fcmp_merge,
 +                ps4_jit_msr_link, ps4_jit_gp_dynamic, ps4_fifo_batch, ps4_fifo_defer, ps4_jit_verify,
-+                ps4_jit_unroll, ps4_jit_join, ps4_jit_pin[0], ps4_jit_pin[1], ps4_jit_pin[2], ps4_jit_pin[3]})
++                ps4_jit_unroll, ps4_jit_join, ps4_jit_trace, ps4_jit_pin[0], ps4_jit_pin[1], ps4_jit_pin[2], ps4_jit_pin[3]})
 +  {
 +    h = Mix(h, v);
 +  }
@@ -49933,7 +50232,7 @@ index 0000000..a7c64a0
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Verify.cpp b/Source/Core/Core/PowerPC/JitPS4/Verify.cpp
 new file mode 100755
-index 0000000..1a41837
+index 0000000..b38108d
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Verify.cpp
 @@ -0,0 +1,471 @@
@@ -49972,7 +50271,7 @@ index 0000000..1a41837
 +// Each block is checked this many times (the first runs), then left alone.
 +constexpr int CHECKS_PER_BLOCK = 3;
 +// The longest replay (a block is at most a few hundred instructions).
-+constexpr int MAX_STEPS = 2048;
++constexpr int MAX_STEPS = 65536;  // more than any block's instructions
 +
 +// The registers a block can change (what the replay is compared on and what is put back).
 +struct Regs
