@@ -3825,6 +3825,41 @@ index 054596e..939e27c 100644
  }
  
  bool MemoryManager::TryAddLargePageTableMapping(u32 logical_address, u32 translated_address,
+diff --git a/Source/Core/Core/HW/VideoInterface.cpp b/Source/Core/Core/HW/VideoInterface.cpp
+index 42e0f35..ec6be7a 100644
+--- a/Source/Core/Core/HW/VideoInterface.cpp
++++ b/Source/Core/Core/HW/VideoInterface.cpp
+@@ -37,6 +37,11 @@
+ #include "VideoCommon/VideoConfig.h"
+ #include "VideoCommon/VideoEvents.h"
+ 
++#ifdef DOLPHIN_PS4_HOST
++#include <atomic>
++extern std::atomic<unsigned> ps4_bench_frames;  // Core/PowerPC/JitPS4/Jit.cpp (PC test bench)
++#endif
++
+ namespace VideoInterface
+ {
+ VideoInterfaceManager::VideoInterfaceManager(Core::System& system) : m_system(system)
+@@ -896,6 +901,18 @@ void VideoInterfaceManager::EndField(FieldType field, u64 ticks)
+     m_system.GetCoreTiming().Throttle(ticks);
+ 
+   m_system.GetPerfMetrics().CountVBlank();
++#ifdef DOLPHIN_PS4_HOST
++  // The PC test bench's frame count: fields that show a new XFB (what the PS4's FPS counts).
++  {
++    static u32 s_last_xfb = 0;
++    const u32 xfb = GetXFBAddressTop();
++    if (xfb != s_last_xfb)
++    {
++      s_last_xfb = xfb;
++      ps4_bench_frames++;
++    }
++  }
++#endif
+   m_system.GetVideoEvents().vi_end_field_event.Trigger();
+   Core::OnFrameEnd(m_system);
+ }
 diff --git a/Source/Core/Core/HW/WiimoteReal/IOhidapi.cpp b/Source/Core/Core/HW/WiimoteReal/IOhidapi.cpp
 index 36c9a23..70f2a6c 100644
 --- a/Source/Core/Core/HW/WiimoteReal/IOhidapi.cpp
@@ -9729,10 +9764,10 @@ index 0000000..482d3bc
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
 new file mode 100644
-index 0000000..4c3cc63
+index 0000000..89e021b
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
-@@ -0,0 +1,2022 @@
+@@ -0,0 +1,2255 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -9751,6 +9786,24 @@ index 0000000..4c3cc63
 +
 +#include "Common/CommonTypes.h"
 +#include "Common/GekkoDisassembler.h"
++#ifdef DOLPHIN_PS4_HOST
++#include <atomic>
++extern std::atomic<unsigned> ps4_bench_xfb_copies;  // VideoCommon/BPStructs.cpp
++std::atomic<unsigned> ps4_bench_frames{0};          // Core/HW/VideoInterface.cpp
++#endif
++#include "VideoCommon/PerformanceMetrics.h"
++#ifdef DOLPHIN_PS4_HOST
++#include <dirent.h>
++#include <signal.h>
++#include <sys/syscall.h>
++#include <sys/time.h>
++#include <ucontext.h>
++#include <linux/perf_event.h>
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
 +#include "Common/IOFile.h"
 +#include "Common/Logging/Log.h"
 +#include "Common/Swap.h"
@@ -10015,6 +10068,215 @@ index 0000000..4c3cc63
 +{
 +  fprintf(stderr, "[trace] %s\n", line);
 +}
++// PS4JIT_PROF=1: a sampling profile of the bench window (20-50 s): every 0.5 ms of CPU time
++// (ITIMER_PROF), the interrupted thread and instruction address; written to /tmp/ps4jit-prof.txt
++// with /proc/self/maps (scripts: hostprof.py).
++namespace
++{
++struct ProfSample
++{
++  pid_t tid;
++  u64 rip;
++};
++constexpr size_t PROF_MAX = 1 << 20;
++ProfSample* s_prof = nullptr;
++std::atomic<size_t> s_prof_count{0};
++std::atomic<bool> s_prof_on{false};
++
++void ProfHandler(int, siginfo_t*, void* context)
++{
++  if (!s_prof_on.load(std::memory_order_relaxed))
++    return;
++  const size_t i = s_prof_count.fetch_add(1, std::memory_order_relaxed);
++  if (i < PROF_MAX)
++  {
++    s_prof[i].tid = static_cast<pid_t>(syscall(SYS_gettid));
++    s_prof[i].rip = static_cast<ucontext_t*>(context)->uc_mcontext.gregs[REG_RIP];
++  }
++}
++
++// High-resolution sampling of the CPU thread alone (perf_event_open, 20 kHz of its own CPU time,
++// user space only), written for the JIT analysis scripts (jitana: samples.log, jitcode.bin,
++// mem1.bin, the perf map) to /tmp/ps4jit-ana.
++int s_perf_fd = -1;
++void* s_perf_ring = nullptr;
++constexpr size_t PERF_PAGES = 8192;  // 32 MiB: 100 s of samples
++pid_t s_perf_tid = 0;
++
++pid_t FindThread(const char* wanted)
++{
++  pid_t found = 0;
++  if (DIR* dir = opendir("/proc/self/task"))
++  {
++    while (dirent* entry = readdir(dir))
++    {
++      char path[64], name[64] = {};
++      snprintf(path, sizeof(path), "/proc/self/task/%s/comm", entry->d_name);
++      if (FILE* f = fopen(path, "r"))
++      {
++        if (fgets(name, sizeof(name), f) && strncmp(name, wanted, strlen(wanted)) == 0)
++          found = atoi(entry->d_name);
++        fclose(f);
++      }
++    }
++    closedir(dir);
++  }
++  return found;
++}
++
++void PerfStart()
++{
++  s_perf_tid = FindThread("CPU thread");
++  perf_event_attr pe{};
++  pe.type = PERF_TYPE_SOFTWARE;
++  pe.size = sizeof(pe);
++  pe.config = PERF_COUNT_SW_TASK_CLOCK;
++  pe.sample_period = 50000;  // ns
++  pe.sample_type = PERF_SAMPLE_IP;
++  pe.exclude_kernel = 1;
++  pe.exclude_hv = 1;
++  pe.disabled = 1;
++  s_perf_fd = static_cast<int>(syscall(SYS_perf_event_open, &pe, s_perf_tid, -1, -1, 0));
++  if (s_perf_fd < 0)
++  {
++    fprintf(stderr, "[bench] perf_event_open failed\n");
++    return;
++  }
++  s_perf_ring = mmap(nullptr, (1 + PERF_PAGES) * 4096, PROT_READ | PROT_WRITE, MAP_SHARED,
++                     s_perf_fd, 0);
++  ioctl(s_perf_fd, PERF_EVENT_IOC_ENABLE, 0);
++}
++
++void PerfStop(JitPS4& jit)
++{
++  if (s_perf_fd < 0)
++    return;
++  ioctl(s_perf_fd, PERF_EVENT_IOC_DISABLE, 0);
++  auto* meta = static_cast<perf_event_mmap_page*>(s_perf_ring);
++  const u8* data = static_cast<const u8*>(s_perf_ring) + 4096;
++  const u64 size = PERF_PAGES * 4096;
++  const u64 head = meta->data_head;
++  std::map<u64, u64> buckets;  // 128-byte buckets of JIT code
++  std::map<u64, u64> others;
++  u64 total = 0;
++  for (u64 at = meta->data_tail; at < head;)
++  {
++    perf_event_header h;
++    for (size_t k = 0; k < sizeof(h); k++)
++      reinterpret_cast<u8*>(&h)[k] = data[(at + k) % size];
++    if (h.type == PERF_RECORD_SAMPLE)
++    {
++      u64 ip = 0;
++      for (size_t k = 0; k < 8; k++)
++        reinterpret_cast<u8*>(&ip)[k] = data[(at + sizeof(h) + k) % size];
++      total++;
++      buckets[ip & ~u64(127)]++;
++    }
++    at += h.size ? h.size : 8;
++  }
++  mkdir("/tmp/ps4jit-ana", 0755);
++  if (FILE* out = fopen("/tmp/ps4jit-ana/samples.log", "w"))
++  {
++    fprintf(out, "== 20 s, CPU thread: %llu samples, 0 in eboot code (0%%)\n",
++            static_cast<unsigned long long>(total));
++    for (const auto& [bucket, count] : buckets)
++    {
++      fprintf(out, "   %.4f%% jit 0x%llx\n", 100.0 * count / std::max<u64>(total, 1),
++              static_cast<unsigned long long>(bucket));
++    }
++    fclose(out);
++  }
++  // The JIT's code (64 KiB chunks that hold anything), and MEM1.
++  if (FILE* out = fopen("/tmp/ps4jit-ana/jitcode.bin", "wb"))
++  {
++    for (const auto& [start, length] :
++         {std::pair<const u8*, size_t>{jit.GetRegionStart(), jit.GetRegionSize()},
++          std::pair<const u8*, size_t>{jit.PS4FarRegionStart(), jit.PS4FarRegionSize()}})
++    {
++      // Chunks on 64 KiB boundaries (the scripts look code up that way).
++      const u8* first = reinterpret_cast<const u8*>(
++          (reinterpret_cast<uintptr_t>(start) + 0xFFFF) & ~uintptr_t(0xFFFF));
++      for (size_t off = first - start; off + 0x10000 <= length; off += 0x10000)
++      {
++        const u8* chunk = start + off;
++        bool used = false;
++        for (size_t k = 0; k < 0x10000 && !used; k += 64)
++          used = chunk[k] != 0 || chunk[k + 8] != 0;
++        if (!used)
++          continue;
++        const u64 header[2] = {reinterpret_cast<u64>(chunk), 0x10000};
++        fwrite(header, sizeof(header), 1, out);
++        fwrite(chunk, 0x10000, 1, out);
++      }
++    }
++    fclose(out);
++  }
++  if (FILE* out = fopen("/tmp/ps4jit-ana/mem1.bin", "wb"))
++  {
++    auto& memory = jit.m_system.GetMemory();
++    fwrite(memory.GetRAM(), memory.GetRamSizeReal(), 1, out);
++    fclose(out);
++  }
++  fprintf(stderr, "[bench] perf profile: %llu CPU thread samples in /tmp/ps4jit-ana\n",
++          static_cast<unsigned long long>(total));
++}
++
++void ProfStart()
++{
++  s_prof = static_cast<ProfSample*>(calloc(PROF_MAX, sizeof(ProfSample)));
++  struct sigaction action{};
++  action.sa_sigaction = ProfHandler;
++  action.sa_flags = SA_SIGINFO | SA_RESTART;
++  sigaction(SIGPROF, &action, nullptr);
++  itimerval timer{};
++  timer.it_interval.tv_usec = 500;
++  timer.it_value.tv_usec = 500;
++  setitimer(ITIMER_PROF, &timer, nullptr);
++  s_prof_on = true;
++}
++
++void ProfStop()
++{
++  s_prof_on = false;
++  itimerval timer{};
++  setitimer(ITIMER_PROF, &timer, nullptr);
++  FILE* out = fopen("/tmp/ps4jit-prof.txt", "w");
++  if (!out)
++    return;
++  const size_t n = std::min(s_prof_count.load(), PROF_MAX);
++  for (size_t i = 0; i < n; i++)
++    fprintf(out, "%d %llx\n", s_prof[i].tid, static_cast<unsigned long long>(s_prof[i].rip));
++  // Thread names and the memory map, for the analysis.
++  if (DIR* dir = opendir("/proc/self/task"))
++  {
++    while (dirent* entry = readdir(dir))
++    {
++      if (entry->d_name[0] == '.')
++        continue;
++      char path[64], name[64] = {};
++      snprintf(path, sizeof(path), "/proc/self/task/%s/comm", entry->d_name);
++      if (FILE* f = fopen(path, "r"))
++      {
++        if (fgets(name, sizeof(name), f))
++          name[strcspn(name, "\n")] = 0;
++        fclose(f);
++      }
++      fprintf(out, "thread %s %s\n", entry->d_name, name);
++    }
++    closedir(dir);
++  }
++  if (FILE* maps = fopen("/proc/self/maps", "r"))
++  {
++    char line[512];
++    while (fgets(line, sizeof(line), maps))
++      fprintf(out, "map %s", line);
++    fclose(maps);
++  }
++  fclose(out);
++  fprintf(stderr, "[bench] profile: %zu samples in /tmp/ps4jit-prof.txt\n", n);
++}
++}  // namespace
++
 +// The PS4 JIT's switches, with the PS4's defaults (defined in PS4-only files there).
 +extern "C" {
 +int ps4_fifo_batch = 0, ps4_fifo_defer = 0, ps4_gp_fuse = 1, ps4_jit_accurate_singles = 1,
@@ -10045,13 +10307,19 @@ index 0000000..4c3cc63
 +      clockid_t clock;
 +      if (pthread_getcpuclockid(thread, &clock) != 0)
 +        return;
++      const bool profile = getenv("PS4JIT_PROF") != nullptr;
 +      for (int n = 1;; n++)
 +      {
 +        std::this_thread::sleep_for(std::chrono::seconds(10));
++        if (profile && n == 2)
++          PerfStart();
++        if (profile && n == 5)
++          PerfStop(*this);
 +        timespec cpu{};
 +        clock_gettime(clock, &cpu);
-+        fprintf(stderr, "[bench] %d s: CPU thread %.3f s, %.0f M cycles\n", n * 10,
-+                cpu.tv_sec + cpu.tv_nsec / 1e9, m_system.GetCoreTiming().GetTicks() / 1e6);
++        fprintf(stderr, "[bench] %d s: %u frames (%u XFB copies), CPU thread %.3f s, %.0f M cycles\n", n * 10,
++                ps4_bench_frames.load(), ps4_bench_xfb_copies.load(), cpu.tv_sec + cpu.tv_nsec / 1e9,
++                m_system.GetCoreTiming().GetTicks() / 1e6);
 +      }
 +    }).detach();
 +  }
@@ -11757,10 +12025,10 @@ index 0000000..4c3cc63
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.h b/Source/Core/Core/PowerPC/JitPS4/Jit.h
 new file mode 100644
-index 0000000..fc01b53
+index 0000000..5847727
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.h
-@@ -0,0 +1,364 @@
+@@ -0,0 +1,366 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -11919,6 +12187,8 @@ index 0000000..fc01b53
 +  };
 +  std::vector<PS4PendingJoin> m_ps4_joins;
 +  std::chrono::steady_clock::time_point m_ps4_bench_start;  // the PC test bench (Shutdown)
++  const u8* PS4FarRegionStart() const { return m_far_code.GetRegionStart(); }
++  size_t PS4FarRegionSize() const { return m_far_code.GetRegionSize(); }
 +#ifdef DOLPHIN_PS4_HOST
 +  pthread_t m_ps4_bench_thread{};
 +#endif
@@ -45969,6 +46239,33 @@ index 83eaa2e..a3988e0 100644
  
    // Initialize worker thread with backend-specific method.
    if (!WorkerThreadInitWorkerThread(param))
+diff --git a/Source/Core/VideoCommon/BPStructs.cpp b/Source/Core/VideoCommon/BPStructs.cpp
+index 180bc86..e55ccfc 100644
+--- a/Source/Core/VideoCommon/BPStructs.cpp
++++ b/Source/Core/VideoCommon/BPStructs.cpp
+@@ -43,6 +43,12 @@
+ 
+ using namespace BPFunctions;
+ 
++#ifdef DOLPHIN_PS4_HOST
++#include <atomic>
++// The PC test bench's frame count: XFB copies (no video backend counts frames there).
++std::atomic<unsigned> ps4_bench_xfb_copies{0};
++#endif
++
+ static constexpr Common::EnumMap<float, GammaCorrection::Invalid2_2> s_gammaLUT = {1.0f, 1.7f, 2.2f,
+                                                                                    2.2f};
+ 
+@@ -325,6 +331,9 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager&
+         else
+           yScale = static_cast<float>(bpmem.dispcopyyscale) / 256.0f;
+ 
++#ifdef DOLPHIN_PS4_HOST
++        ps4_bench_xfb_copies++;
++#endif
+         float num_xfb_lines = 1.0f + bpmem.copyTexSrcWH.y * yScale;
+ 
+         u32 height = static_cast<u32>(num_xfb_lines);
 diff --git a/Source/Core/VideoCommon/CommandProcessor.cpp b/Source/Core/VideoCommon/CommandProcessor.cpp
 index 1dbf466..4b1b09a 100644
 --- a/Source/Core/VideoCommon/CommandProcessor.cpp
