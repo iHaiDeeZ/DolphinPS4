@@ -116,6 +116,20 @@ void profHandler(int, siginfo_t*, void* context) {
                         break;
                     fp = frame[0];
                 }
+                // No frame pointers (release builds): a sample right after a system call stub's
+                // syscall instruction (libkernel's stubs are 32 bytes, syscall at +0xa) has its
+                // return address at rsp - exact, as the stub is a leaf. In Dolphin's code: that
+                // caller; in a system module: that module address, so the module function that
+                // made the call can be looked up (MVP Baseball 2005: 36-76% of the CPU thread in
+                // sched_yield from an unknown caller).
+                if (!caller && (sample & 0x1f) == 0xc && sp >= regs[kRspIndex] && top &&
+                    sp + 8 <= top && !(sp & 7)) {
+                    const uint64_t ret = *reinterpret_cast<const uint64_t*>(sp);
+                    if (ret >= text && ret < text + kTextWindow)
+                        caller = ret - text;
+                    else if (ret >= kSystemLibs && ret < 2 * kSystemLibs)
+                        sample = ret;
+                }
                 sample = caller ? (caller | kWaitTag) : (sample | kCallerTag);
                 ring_sample = caller ? (caller | (caller2 << 26) | kWaitTag) : sample;
             }
