@@ -31252,10 +31252,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..3e98df7
+index 0000000..59d90ee
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,7047 @@
+@@ -0,0 +1,7128 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -32105,6 +32105,10 @@ index 0000000..3e98df7
 +  std::string CenterChoiceLabel(const std::string& game_id) const;
 +  void OpenCenterPage();
 +  void BuildCenterRows();
++  // Uses a game's recommended settings again: its answer becomes Yes, and its own saved values
++  // for the settings they cover take the recommended ones. Returns the values changed.
++  int ReapplyCenter(const std::string& game_id);
++  std::string m_center_reapplied;  // "center:reapply..." row: what the last press did
 +  // RetroAchievements: the system keyboard (username, password), the login, and Dolphin's
 +  // RetroAchievements.ini (Enabled, Username, ApiToken, HardcoreEnabled).
 +  void OpenAchievementsPage();
@@ -33097,6 +33101,7 @@ index 0000000..3e98df7
 +  m_panel.category = category;
 +  m_panel.game_id = game_id;
 +  m_panel.title = category.empty() ? "Game Settings" : category;
++  m_center_reapplied.clear();
 +  BuildSettingRows();
 +  m_panel.selected = 0;
 +  MoveSettingRow(0);
@@ -33112,6 +33117,9 @@ index 0000000..3e98df7
 +                   PS4Center::Choice(game) == "no" ? "Not used" : "Used", "center:this"};
 +    row.tag = PS4Center::Choice(game) == "no" ? -1 : 1;
 +    rows.push_back(std::move(row));
++    rows.push_back({"Reapply Recommended",
++                    m_center_reapplied.empty() ? "Press X" : m_center_reapplied,
++                    "center:reapply"});
 +  }
 +  if (!game.empty())
 +  {
@@ -33410,7 +33418,40 @@ index 0000000..3e98df7
 +  if (row.key == "center:this")
 +  {
 +    PS4Center::SetChoice(game, PS4Center::Choice(game) == "no");
++    m_center_reapplied.clear();
 +    BuildSettingRows();
++    return;
++  }
++  if (row.key == "center:reapply")
++  {
++    if (direction > 0)
++    {
++      const int changed = ReapplyCenter(game);
++      m_center_reapplied = changed == 0 ? "Done" :
++                           "Done, " + std::to_string(changed) +
++                               (changed == 1 ? " value changed" : " values changed");
++      Play("confirm");
++    }
++    BuildSettingRows();
++    return;
++  }
++  if (row.key == "center:reapplyall")
++  {
++    if (direction > 0)
++    {
++      int games = 0, changed = 0;
++      for (const Game& entry : m_games)
++      {
++        if (entry.id.empty() || !CenterFor(entry.id))
++          continue;
++        changed += ReapplyCenter(entry.id);
++        games++;
++      }
++      m_center_reapplied = "Done: " + std::to_string(games) + (games == 1 ? " game, " : " games, ") +
++                           std::to_string(changed) + (changed == 1 ? " value" : " values");
++      Play("confirm");
++    }
++    BuildCenterRows();
 +    return;
 +  }
 +  if (row.key == "center:info")
@@ -35506,6 +35547,14 @@ index 0000000..3e98df7
 +            help = CenterSummary(*entry) + ". " + entry->comment;
 +        }
 +      }
++      else if (row.key == "center:reapply")
++        help = "Uses this game's recommended settings again, as they are now in the Game Settings "
++               "Center: its own saved values for those settings are replaced. Other settings stay. "
++               "Takes effect at the game's next start.";
++      else if (row.key == "center:reapplyall")
++        help = "Uses the recommended settings again for every game of yours the Game Settings "
++               "Center covers, as they are now: their own saved values for those settings are "
++               "replaced. Other settings stay. Takes effect at each game's next start.";
 +      else if (row.key == "center:this")
 +      {
 +        if (const CenterEntry* entry = CenterFor(m_panel.game_id))
@@ -36993,6 +37042,34 @@ index 0000000..3e98df7
 +  return found;
 +}
 +
++int Menu::ReapplyCenter(const std::string& game_id)
++{
++  const CenterEntry* entry = CenterFor(game_id);
++  if (!entry)
++    return 0;
++  PS4Center::SetChoice(game_id, true);
++  // Only a game with its own saved values can hide the recommended ones (they come next in the
++  // order: the game's own values, then the recommended settings, then the global ones).
++  const auto own = PS4Settings::GameValues(game_id);
++  int changed = 0;
++  for (const auto& [key, value] : entry->values)
++  {
++    if (!PS4Settings::Find(key))
++      continue;  // not a menu setting: nothing of the game's own can hide it
++    for (const auto& [own_key, own_value] : own)
++    {
++      if (own_key == key && own_value != value)
++      {
++        PS4Settings::Set(key, value, game_id);
++        changed++;
++      }
++    }
++  }
++  Log("game settings center: " + game_id + " recommended settings reapplied (" +
++      std::to_string(changed) + " changed)");
++  return changed;
++}
++
 +// What an entry changes, in words.
 +std::string Menu::CenterSummary(const CenterEntry& entry)
 +{
@@ -37607,6 +37684,7 @@ index 0000000..3e98df7
 +  m_panel.open = true;
 +  m_panel.setting = SET_CENTER;
 +  m_panel.title = "Game Settings Center";
++  m_center_reapplied.clear();
 +  BuildCenterRows();
 +  m_panel.selected = 0;
 +  MoveSettingRow(0);
@@ -37629,6 +37707,9 @@ index 0000000..3e98df7
 +    std::lock_guard lock(m_center_mutex);
 +    rows.push_back({"Update Now", m_settings_busy ? "Updating..." : m_center_status, "center:update"});
 +  }
++  rows.push_back({"Reapply to All My Games",
++                  m_center_reapplied.empty() ? "Press X" : m_center_reapplied,
++                  "center:reapplyall"});
 +  rows.push_back({"Your Games", "", "", true});
 +  size_t mine = 0;
 +  for (size_t i = 0; i < m_games.size(); i++)
