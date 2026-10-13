@@ -46668,7 +46668,7 @@ index 180bc86..e55ccfc 100644
  
          u32 height = static_cast<u32>(num_xfb_lines);
 diff --git a/Source/Core/VideoCommon/CommandProcessor.cpp b/Source/Core/VideoCommon/CommandProcessor.cpp
-index 1dbf466..4b1b09a 100644
+index 1dbf466..281496a 100644
 --- a/Source/Core/VideoCommon/CommandProcessor.cpp
 +++ b/Source/Core/VideoCommon/CommandProcessor.cpp
 @@ -384,6 +384,9 @@ void CommandProcessorManager::GatherPipeBursted()
@@ -46681,16 +46681,18 @@ index 1dbf466..4b1b09a 100644
  
    m_system.GetFifo().RunGpu();
  
-@@ -406,6 +409,49 @@ void CommandProcessorManager::GatherPipeBursted()
+@@ -406,6 +409,51 @@ void CommandProcessorManager::GatherPipeBursted()
               "FIFOs linked but out of sync");
  }
  
 +#ifdef __ORBIS__
-+// The linked FIFO without breakpoints: the common case, where a batch of bursts can be handed
-+// over at once.
++// The linked FIFO: the common case, where a batch of bursts can be handed over at once.
 +bool CommandProcessorManager::CanBatchGatherPipe() const
 +{
-+  return m_cp_ctrl_reg.GPLinkEnable && !m_fifo.bFF_BPEnable.load(std::memory_order_relaxed);
++  // FIFO breakpoints don't change anything here: the bursts are only added to the FIFO, and the
++  // GPU thread stops at the breakpoint (Fifo.cpp RunGpuLoop ends its batches there). One status
++  // check per batch instead of per burst (NBA Street V3 keeps a breakpoint on all the time).
++  return m_cp_ctrl_reg.GPLinkEnable;
 +}
 +
 +// GatherPipeBursted() for `bursts` bursts at once: one status check, one update of the shared
@@ -46731,7 +46733,7 @@ index 1dbf466..4b1b09a 100644
  void CommandProcessorManager::UpdateInterrupts(u64 userdata)
  {
    if (userdata)
-@@ -476,12 +522,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
+@@ -476,12 +524,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
    }
  
    // overflow & underflow check
@@ -46758,7 +46760,7 @@ index 1dbf466..4b1b09a 100644
  
    bool bpInt = m_fifo.bFF_Breakpoint.load(std::memory_order_relaxed) &&
                 m_fifo.bFF_BPInt.load(std::memory_order_relaxed);
-@@ -514,12 +574,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
+@@ -514,12 +576,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
  void CommandProcessorManager::SetCPStatusFromCPU()
  {
    // overflow & underflow check
