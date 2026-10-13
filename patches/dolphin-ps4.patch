@@ -22860,7 +22860,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..d5dc6d9 100644
+index 3bf40ea..ac08b9f 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -23023,7 +23023,7 @@ index 3bf40ea..d5dc6d9 100644
  #endif
        });
  
-@@ -270,7 +373,441 @@ int main(const int argc, char* argv[])
+@@ -270,7 +373,448 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -23373,6 +23373,13 @@ index 3bf40ea..d5dc6d9 100644
 +    // fifo_defer=on (with fifo_batch): JIT blocks leave GPU commands in the gather pipe until
 +    // 128 bytes collect (flushed before any hardware register access and every timing slice).
 +    ps4_fifo_defer = ps4_fifo_batch && Platform::GetPS4Option("fifo_defer", "off") == "on";
++    // gpu_kick_interval=N (draws; Dolphin's default 100, 0 = never): when a game reads the
++    // picture back on the CPU (EFB peeks), Dolphin hands the GPU the next frame in pieces of N
++    // draws so the read comes back sooner. Each piece is a command buffer submit, costly on the
++    // PS4 (Super Mario Galaxy: ~120 peeks a second, 200-400 submits, the video thread waiting
++    // for old command buffers ~10% of its time).
++    Config::SetBase(Config::GFX_COMMAND_BUFFER_EXECUTE_INTERVAL,
++                    std::max(0, std::atoi(Platform::GetPS4Option("gpu_kick_interval", "100").c_str())));
 +    // fast_disc=on: Dolphin's "Speed up disc transfer rate" (shorter loading pauses).
 +    Config::SetBase(Config::MAIN_FAST_DISC_SPEED,
 +                    Platform::GetPS4Option("fast_disc", "off") == "on");
@@ -23465,7 +23472,7 @@ index 3bf40ea..d5dc6d9 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +821,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +828,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -23481,7 +23488,7 @@ index 3bf40ea..d5dc6d9 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +849,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +856,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
