@@ -46747,7 +46747,7 @@ index 976592c..a20137f 100644
    void UpdateInterruptsFromVideoBackend(u64 userdata);
  
 diff --git a/Source/Core/VideoCommon/Fifo.cpp b/Source/Core/VideoCommon/Fifo.cpp
-index f183c93..48b336d 100644
+index f183c93..c260477 100644
 --- a/Source/Core/VideoCommon/Fifo.cpp
 +++ b/Source/Core/VideoCommon/Fifo.cpp
 @@ -3,6 +3,10 @@
@@ -47021,7 +47021,7 @@ index f183c93..48b336d 100644
          }
        },
        100);
-@@ -393,9 +550,58 @@ void FifoManager::FlushGpu()
+@@ -393,9 +550,65 @@ void FifoManager::FlushGpu()
    if (!m_system.IsDualCoreMode() || m_use_deterministic_gpu_thread)
      return;
  
@@ -47029,11 +47029,11 @@ index f183c93..48b336d 100644
 +  // Time the CPU thread waits for the GPU thread (monitor: "waits").
 +  timespec t0, t1;
 +  clock_gettime(CLOCK_MONOTONIC, &t0);
-+  m_gpu_mainloop.Wait();
+   m_gpu_mainloop.Wait();
 +  clock_gettime(CLOCK_MONOTONIC, &t1);
 +  ps4_wait_add(0, (t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
 +#else
-   m_gpu_mainloop.Wait();
++  m_gpu_mainloop.Wait();
 +#endif
  }
  
@@ -47042,7 +47042,8 @@ index f183c93..48b336d 100644
 +{
 +  if (!m_system.IsDualCoreMode() || m_use_deterministic_gpu_thread)
 +    return;
-+  auto& fifo = m_system.GetCommandProcessor().GetFifo();
++  auto& command_processor = m_system.GetCommandProcessor();
++  auto& fifo = command_processor.GetFifo();
 +  // The CPU thread is the only writer: the count doesn't move while it waits here.
 +  const u64 written = m_ps4_written.load(std::memory_order_relaxed);
 +  const u64 target = m_ps4_idle_target;
@@ -47051,7 +47052,13 @@ index f183c93..48b336d 100644
 +    const u64 pending = fifo.CPReadWriteDistance.load(std::memory_order_acquire);
 +    return pending > written ? u64{0} : written - pending;
 +  };
-+  if (consumed() >= target)
++  // The GPU stopped at a FIFO breakpoint, or holds an interrupt for the CPU: it goes on only after
++  // the emulated CPU handles it, so waiting here for its commands would never end (NBA Street V3
++  // froze with One Frame Behind). Dolphin's full sync (Wait) returns in that case too.
++  const auto stopped_for_cpu = [&] {
++    return AtBreakpoint(m_system) || command_processor.IsInterruptWaiting();
++  };
++  if (consumed() >= target || stopped_for_cpu())
 +    return;
 +  timespec t0, t1;
 +  clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -47059,7 +47066,7 @@ index f183c93..48b336d 100644
 +  {
 +    RunGpu();
 +    std::this_thread::sleep_for(std::chrono::microseconds(50));
-+    if (consumed() >= target)
++    if (consumed() >= target || stopped_for_cpu())
 +      break;
 +    clock_gettime(CLOCK_MONOTONIC, &t1);
 +    const long long waited =
@@ -47080,7 +47087,7 @@ index f183c93..48b336d 100644
  void FifoManager::GpuMaySleep()
  {
    m_gpu_mainloop.AllowSleep();
-@@ -551,7 +757,10 @@ int FifoManager::WaitForGpuThread(int ticks)
+@@ -551,7 +764,10 @@ int FifoManager::WaitForGpuThread(int ticks)
  
    // Wait for GPU
    if (now >= m_config_sync_gpu_max_distance)
