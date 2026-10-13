@@ -46707,7 +46707,7 @@ index 180bc86..e55ccfc 100644
  
          u32 height = static_cast<u32>(num_xfb_lines);
 diff --git a/Source/Core/VideoCommon/CommandProcessor.cpp b/Source/Core/VideoCommon/CommandProcessor.cpp
-index 1dbf466..f7d1d17 100644
+index 1dbf466..8468bd7 100644
 --- a/Source/Core/VideoCommon/CommandProcessor.cpp
 +++ b/Source/Core/VideoCommon/CommandProcessor.cpp
 @@ -336,9 +336,22 @@ void CommandProcessorManager::RegisterMMIO(MMIO::Mapping* mmio, u32 base)
@@ -46757,18 +46757,16 @@ index 1dbf466..f7d1d17 100644
  
    m_system.GetFifo().RunGpu();
  
-@@ -406,6 +428,54 @@ void CommandProcessorManager::GatherPipeBursted()
+@@ -406,6 +428,52 @@ void CommandProcessorManager::GatherPipeBursted()
               "FIFOs linked but out of sync");
  }
  
 +#ifdef __ORBIS__
-+// The linked FIFO: the common case, where a batch of bursts can be handed over at once.
++// The linked FIFO without breakpoints: the common case, where a batch of bursts can be handed
++// over at once.
 +bool CommandProcessorManager::CanBatchGatherPipe() const
 +{
-+  // FIFO breakpoints don't change anything here: the bursts are only added to the FIFO, and the
-+  // GPU thread stops at the breakpoint (Fifo.cpp RunGpuLoop ends its batches there). One status
-+  // check per batch instead of per burst (NBA Street V3 keeps a breakpoint on all the time).
-+  return m_cp_ctrl_reg.GPLinkEnable;
++  return m_cp_ctrl_reg.GPLinkEnable && !m_fifo.bFF_BPEnable.load(std::memory_order_relaxed);
 +}
 +
 +// GatherPipeBursted() for `bursts` bursts at once: one status check, one update of the shared
@@ -46812,7 +46810,7 @@ index 1dbf466..f7d1d17 100644
  void CommandProcessorManager::UpdateInterrupts(u64 userdata)
  {
    if (userdata)
-@@ -476,12 +546,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
+@@ -476,12 +544,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
    }
  
    // overflow & underflow check
@@ -46839,7 +46837,7 @@ index 1dbf466..f7d1d17 100644
  
    bool bpInt = m_fifo.bFF_Breakpoint.load(std::memory_order_relaxed) &&
                 m_fifo.bFF_BPInt.load(std::memory_order_relaxed);
-@@ -514,12 +598,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
+@@ -514,12 +596,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
  void CommandProcessorManager::SetCPStatusFromCPU()
  {
    // overflow & underflow check
@@ -46883,10 +46881,10 @@ index 976592c..a20137f 100644
    void UpdateInterruptsFromVideoBackend(u64 userdata);
  
 diff --git a/Source/Core/VideoCommon/Fifo.cpp b/Source/Core/VideoCommon/Fifo.cpp
-index f183c93..7c6de8d 100644
+index f183c93..24ab758 100644
 --- a/Source/Core/VideoCommon/Fifo.cpp
 +++ b/Source/Core/VideoCommon/Fifo.cpp
-@@ -3,8 +3,15 @@
+@@ -3,6 +3,10 @@
  
  #include "VideoCommon/Fifo.h"
  
@@ -46896,13 +46894,8 @@ index f183c93..7c6de8d 100644
 +
  #include <atomic>
  #include <cstring>
-+#ifdef __ORBIS__
-+#include <x86intrin.h>
-+#endif
  
- #include "Common/Assert.h"
- #include "Common/BlockingLoop.h"
-@@ -28,6 +35,7 @@
+@@ -28,6 +32,7 @@
  #include "VideoCommon/DataReader.h"
  #include "VideoCommon/FramebufferManager.h"
  #include "VideoCommon/OpcodeDecoding.h"
@@ -46910,7 +46903,7 @@ index f183c93..7c6de8d 100644
  #include "VideoCommon/VertexLoaderManager.h"
  #include "VideoCommon/VertexManagerBase.h"
  #include "VideoCommon/VideoBackendBase.h"
-@@ -54,9 +62,16 @@ void FifoManager::DoState(PointerWrap& p)
+@@ -54,9 +59,16 @@ void FifoManager::DoState(PointerWrap& p)
  {
    p.DoArray(m_video_buffer, FIFO_SIZE);
    u8* write_ptr = m_video_buffer_write_ptr;
@@ -46929,7 +46922,7 @@ index f183c93..7c6de8d 100644
    if (p.IsReadMode() && m_use_deterministic_gpu_thread)
    {
      // We're good and paused, right?
-@@ -230,8 +245,24 @@ void FifoManager::ReadDataFromFifo(u32 read_ptr)
+@@ -230,8 +242,24 @@ void FifoManager::ReadDataFromFifo(u32 read_ptr)
    }
    // Copy new video instructions to m_video_buffer for future use in rendering the new picture
    auto& memory = m_system.GetMemory();
@@ -46955,7 +46948,7 @@ index f183c93..7c6de8d 100644
  }
  
  // The deterministic_gpu_thread version.
-@@ -283,16 +314,83 @@ void FifoManager::ResetVideoBuffer()
+@@ -283,16 +311,83 @@ void FifoManager::ResetVideoBuffer()
  
  // Description: Main FIFO update loop
  // Purpose: Keep the Core HW updated about the CPU-GPU distance
@@ -47039,7 +47032,7 @@ index f183c93..7c6de8d 100644
  
          if (m_use_deterministic_gpu_thread)
          {
-@@ -302,6 +400,7 @@ void FifoManager::RunGpuLoop()
+@@ -302,6 +397,7 @@ void FifoManager::RunGpuLoop()
            // See comment in SyncGPU
            if (write_ptr > seen_ptr)
            {
@@ -47047,7 +47040,7 @@ index f183c93..7c6de8d 100644
              m_video_buffer_read_ptr =
                  OpcodeDecoder::RunFifo(DataReader(m_video_buffer_read_ptr, write_ptr), nullptr);
              m_video_buffer_seen_ptr = write_ptr;
-@@ -312,6 +411,9 @@ void FifoManager::RunGpuLoop()
+@@ -312,6 +408,9 @@ void FifoManager::RunGpuLoop()
            auto& command_processor = m_system.GetCommandProcessor();
            auto& fifo = command_processor.GetFifo();
            command_processor.SetCPStatusFromGPU();
@@ -47057,36 +47050,12 @@ index f183c93..7c6de8d 100644
  
            // check if we are able to run this buffer
            while (!command_processor.IsInterruptWaiting() &&
-@@ -323,28 +425,95 @@ void FifoManager::RunGpuLoop()
+@@ -323,28 +422,71 @@ void FifoManager::RunGpuLoop()
                break;
  
              u32 cyclesExecuted = 0;
 +#ifdef __ORBIS__
 +            ps4_did_work = true;
-+            // fifo_batch: collect a few bursts before running them - the CPU thread hands them
-+            // over 32 bytes at a time (NBA Street V3: ~280,000 a second, each pass of this loop
-+            // ~0.7 us of status updates and shared atomics). Up to ~0.1 ms, and not at all when
-+            // the CPU thread waits for this thread (FlushGpu) or the data reaches a breakpoint.
-+            if (ps4_fifo_batch && !m_config_sync_gpu)
-+            {
-+              const u64 since = __rdtsc();
-+              for (;;)
-+              {
-+                const u32 pending = fifo.CPReadWriteDistance.load(std::memory_order_acquire);
-+                if (pending >= 8 * GPFifo::GATHER_PIPE_SIZE ||
-+                    m_ps4_drain.load(std::memory_order_acquire) || __rdtsc() - since > 160000 ||
-+                    !m_emu_running_state.IsSet())
-+                  break;
-+                if (fifo.bFF_BPEnable.load(std::memory_order_relaxed))
-+                {
-+                  const u32 at = fifo.CPReadPointer.load(std::memory_order_relaxed);
-+                  const u32 bp = fifo.CPBreakpoint.load(std::memory_order_relaxed);
-+                  if (bp >= at && bp - at <= pending)
-+                    break;
-+                }
-+                __builtin_ia32_pause();
-+              }
-+            }
 +#endif
              u32 readPtr = fifo.CPReadPointer.load(std::memory_order_relaxed);
 -            ReadDataFromFifo(readPtr);
@@ -47162,7 +47131,7 @@ index f183c93..7c6de8d 100644
              if ((write_ptr - m_video_buffer_read_ptr) == 0)
              {
                fifo.SafeCPReadPointer.store(fifo.CPReadPointer.load(std::memory_order_relaxed),
-@@ -381,20 +550,169 @@ void FifoManager::RunGpuLoop()
+@@ -381,21 +523,168 @@ void FifoManager::RunGpuLoop()
  
            // The fifo is empty and it's unlikely we will get any more work in the near future.
            // Make sure VertexManager finishes drawing any primitives it has stored in it's buffer.
@@ -47269,9 +47238,7 @@ index f183c93..7c6de8d 100644
 +  // Time the CPU thread waits for the GPU thread (monitor: "waits").
 +  timespec t0, t1;
 +  clock_gettime(CLOCK_MONOTONIC, &t0);
-+  m_ps4_drain.store(true, std::memory_order_release);
 +  m_gpu_mainloop.Wait();
-+  m_ps4_drain.store(false, std::memory_order_relaxed);
 +  clock_gettime(CLOCK_MONOTONIC, &t1);
 +  const long long waited = (t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec);
 +  ps4_wait_add(0, waited);
@@ -47281,8 +47248,8 @@ index f183c93..7c6de8d 100644
 +#else
    m_gpu_mainloop.Wait();
 +#endif
-+}
-+
+ }
+ 
 +#ifdef __ORBIS__
 +void FifoManager::PS4FlushGpuToPreviousIdle()
 +{
@@ -47327,12 +47294,13 @@ index f183c93..7c6de8d 100644
 +  }
 +  clock_gettime(CLOCK_MONOTONIC, &t1);
 +  ps4_wait_add(0, (t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
- }
++}
 +#endif
- 
++
  void FifoManager::GpuMaySleep()
  {
-@@ -551,7 +869,10 @@ int FifoManager::WaitForGpuThread(int ticks)
+   m_gpu_mainloop.AllowSleep();
+@@ -551,7 +840,10 @@ int FifoManager::WaitForGpuThread(int ticks)
  
    // Wait for GPU
    if (now >= m_config_sync_gpu_max_distance)
@@ -47344,7 +47312,7 @@ index f183c93..7c6de8d 100644
    return GPU_TIME_SLOT_SIZE;
  }
 diff --git a/Source/Core/VideoCommon/Fifo.h b/Source/Core/VideoCommon/Fifo.h
-index 2afa110..e1588d4 100644
+index 2afa110..1a54903 100644
 --- a/Source/Core/VideoCommon/Fifo.h
 +++ b/Source/Core/VideoCommon/Fifo.h
 @@ -64,11 +64,24 @@ public:
@@ -47372,15 +47340,13 @@ index 2afa110..e1588d4 100644
    void RunGpu();
    void GpuMaySleep();
    void RunGpuLoop();
-@@ -98,6 +111,12 @@ private:
+@@ -98,6 +111,10 @@ private:
    // This could be in SConfig, but it depends on multiple settings
    // and can change at runtime.
    bool m_use_deterministic_gpu_thread = false;
 +#ifdef __ORBIS__
 +  std::atomic<u64> m_ps4_written{0};
 +  u64 m_ps4_idle_target = 0;  // m_ps4_written at the previous idle skip (CPU thread)
-+  // The CPU thread waits for the GPU thread (FlushGpu): run every command now (RunGpuLoop).
-+  std::atomic<bool> m_ps4_drain{false};
 +#endif
  
    CoreTiming::EventType* m_event_sync_gpu = nullptr;
