@@ -2372,7 +2372,7 @@ index fc614fd..75657a7 100644
    {
      system.GetPowerPC().SetMode(PowerPC::CoreMode::JIT);
 diff --git a/Source/Core/Core/CoreTiming.cpp b/Source/Core/Core/CoreTiming.cpp
-index 1fa39d7..26268d4 100644
+index 1fa39d7..dcf14c1 100644
 --- a/Source/Core/Core/CoreTiming.cpp
 +++ b/Source/Core/Core/CoreTiming.cpp
 @@ -21,6 +21,7 @@
@@ -2436,7 +2436,7 @@ index 1fa39d7..26268d4 100644
 +    if (ps4_sync_idle_frame)
 +      m_system.GetFifo().PS4FlushGpuToPreviousIdle();
 +    else
-+      m_system.GetFifo().FlushGpu();
++      m_system.GetFifo().PS4FlushGpuOnIdle();
 +    ps4_flush_site = 0;
 +#else
 +      m_system.GetFifo().FlushGpu();
@@ -46849,7 +46849,7 @@ index 976592c..a20137f 100644
    void UpdateInterruptsFromVideoBackend(u64 userdata);
  
 diff --git a/Source/Core/VideoCommon/Fifo.cpp b/Source/Core/VideoCommon/Fifo.cpp
-index f183c93..0059ca7 100644
+index f183c93..24ab758 100644
 --- a/Source/Core/VideoCommon/Fifo.cpp
 +++ b/Source/Core/VideoCommon/Fifo.cpp
 @@ -3,6 +3,10 @@
@@ -47099,7 +47099,7 @@ index f183c93..0059ca7 100644
              if ((write_ptr - m_video_buffer_read_ptr) == 0)
              {
                fifo.SafeCPReadPointer.store(fifo.CPReadPointer.load(std::memory_order_relaxed),
-@@ -381,21 +523,143 @@ void FifoManager::RunGpuLoop()
+@@ -381,21 +523,168 @@ void FifoManager::RunGpuLoop()
  
            // The fifo is empty and it's unlikely we will get any more work in the near future.
            // Make sure VertexManager finishes drawing any primitives it has stored in it's buffer.
@@ -47143,7 +47143,7 @@ index f183c93..0059ca7 100644
 +extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
 +extern "C" {
 +int ps4_flush_site = 0;
-+unsigned long long ps4_flush_calls[3], ps4_flush_ns[3];
++unsigned long long ps4_flush_calls[3], ps4_flush_ns[3], ps4_idle_skips;
 +unsigned long long ps4_fifo_bursts[4];
 +}  // linked one by one, linked in batches, not linked, BP on
 +extern "C" void PS4FifoSyncStats()
@@ -47158,17 +47158,42 @@ index f183c93..0059ca7 100644
 +  s_last = now;
 +  char line[320];
 +  snprintf(line, sizeof(line),
-+           "fifo sync (5 s): idle %llu waits %llu ms, unlinked bursts %llu waits %llu ms, other "
++           "fifo sync (5 s): idle %llu waits %llu ms (%llu not needed), unlinked bursts %llu waits %llu ms, other "
 +           "%llu waits %llu ms; bursts linked %llu, batched %llu, unlinked %llu, with a breakpoint "
 +           "on %llu",
-+           ps4_flush_calls[1], ps4_flush_ns[1] / 1000000, ps4_flush_calls[2],
++           ps4_flush_calls[1], ps4_flush_ns[1] / 1000000, ps4_idle_skips, ps4_flush_calls[2],
 +           ps4_flush_ns[2] / 1000000, ps4_flush_calls[0], ps4_flush_ns[0] / 1000000,
 +           ps4_fifo_bursts[0], ps4_fifo_bursts[1], ps4_fifo_bursts[2], ps4_fifo_bursts[3]);
 +  ps4_boot_trace(line);
 +  for (int i = 0; i < 3; i++)
 +    ps4_flush_calls[i] = ps4_flush_ns[i] = 0;
++  ps4_idle_skips = 0;
 +  for (auto& b : ps4_fifo_bursts)
 +    b = 0;
++}
++#endif
++
++#ifdef __ORBIS__
++// CoreTiming::Idle's sync (GPU Sync = Wait): the CPU thread waits for the GPU thread only when
++// the GPU thread has commands it can still run. NBA Street V3 polls for the GPU in a loop the JIT
++// sees as idle ~2000 times a second; each wait cost ~0.2 ms of the two threads handing over even
++// when the GPU had nothing left to do (0.4 s of every second). Not needed when every command
++// written is processed (the distance drops only after RunFifo), or when the GPU stopped at a
++// breakpoint / holds an interrupt for the CPU, or doesn't read the FIFO.
++void FifoManager::PS4FlushGpuOnIdle()
++{
++  if (!m_system.IsDualCoreMode() || m_use_deterministic_gpu_thread)
++    return;
++  auto& command_processor = m_system.GetCommandProcessor();
++  auto& fifo = command_processor.GetFifo();
++  if (fifo.CPReadWriteDistance.load(std::memory_order_acquire) == 0 ||
++      !fifo.bFF_GPReadEnable.load(std::memory_order_relaxed) || AtBreakpoint(m_system) ||
++      command_processor.IsInterruptWaiting())
++  {
++    ps4_idle_skips++;
++    return;
++  }
++  FlushGpu();
 +}
 +#endif
 +
@@ -47243,7 +47268,7 @@ index f183c93..0059ca7 100644
  void FifoManager::GpuMaySleep()
  {
    m_gpu_mainloop.AllowSleep();
-@@ -551,7 +815,10 @@ int FifoManager::WaitForGpuThread(int ticks)
+@@ -551,7 +840,10 @@ int FifoManager::WaitForGpuThread(int ticks)
  
    // Wait for GPU
    if (now >= m_config_sync_gpu_max_distance)
@@ -47255,10 +47280,10 @@ index f183c93..0059ca7 100644
    return GPU_TIME_SLOT_SIZE;
  }
 diff --git a/Source/Core/VideoCommon/Fifo.h b/Source/Core/VideoCommon/Fifo.h
-index 2afa110..18cac7a 100644
+index 2afa110..1a54903 100644
 --- a/Source/Core/VideoCommon/Fifo.h
 +++ b/Source/Core/VideoCommon/Fifo.h
-@@ -64,11 +64,23 @@ public:
+@@ -64,11 +64,24 @@ public:
    // In single core mode, this runs the GPU for a single slice.
    // In dual core mode, this synchronizes with the GPU thread.
    void SyncGPUForRegisterAccess();
@@ -47276,13 +47301,14 @@ index 2afa110..18cac7a 100644
 +  // what the CPU thread had sent by the previous idle skip - the GPU thread may run one step
 +  // behind while the CPU thread goes on (sync_on_idle=on waits for everything, off for nothing).
 +  void PS4FlushGpuToPreviousIdle();
++  void PS4FlushGpuOnIdle();
 +  // Bytes the CPU thread has handed to the GPU thread (CommandProcessor's bursts).
 +  void PS4AddWritten(u32 bytes) { m_ps4_written.fetch_add(bytes, std::memory_order_relaxed); }
 +#endif
    void RunGpu();
    void GpuMaySleep();
    void RunGpuLoop();
-@@ -98,6 +110,10 @@ private:
+@@ -98,6 +111,10 @@ private:
    // This could be in SConfig, but it depends on multiple settings
    // and can change at runtime.
    bool m_use_deterministic_gpu_thread = false;
