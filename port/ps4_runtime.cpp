@@ -381,6 +381,18 @@ void ps4_heap_error(void* msp, void* chunk, int corruption) {
         abort();
 }
 
+// Bytes the program has allocated and not freed (usable sizes), for the monitor line: what
+// ps4_heap_footprint reports. Relaxed atomics: a statistic.
+std::atomic<size_t> g_heapInUse{0};
+inline void countAlloc(void* p) {
+    if (p)
+        g_heapInUse.fetch_add(mspace_usable_size(p), std::memory_order_relaxed);
+}
+inline void countFree(void* p) {
+    if (p)
+        g_heapInUse.fetch_sub(mspace_usable_size(p), std::memory_order_relaxed);
+}
+
 void* __wrap_malloc(size_t size) {
     t_op = "malloc";
     t_caller = __builtin_return_address(0);
@@ -393,6 +405,7 @@ void* __wrap_malloc(size_t size) {
             p = mspace_malloc(overflow, size);
     if (!p)
         reportFailure("malloc", size);
+    countAlloc(p);
     return p;
 }
 
@@ -410,6 +423,7 @@ void __wrap_free(void* ptr) {
         }
         return;
     }
+    countFree(ptr);
     mspace_free(getHeap(), ptr);
 }
 
@@ -425,6 +439,7 @@ void* __wrap_calloc(size_t nelem, size_t size) {
             p = mspace_calloc(overflow, nelem, size);
     if (!p)
         reportFailure("calloc", nelem * size);
+    countAlloc(p);
     return p;
 }
 
@@ -439,12 +454,18 @@ void* __wrap_realloc(void* ptr, size_t size) {
         return nullptr;
     }
     if (ptr && size == 0) {
+        countFree(ptr);
         mspace_free(getHeap(), ptr);
         return nullptr;
     }
+    const size_t old_usable = ptr ? mspace_usable_size(ptr) : 0;
     // With FOOTERS this grows the chunk inside the arena it came from (the mspace argument is
     // only used for new allocations); when that arena is full, move it to this thread's.
     void* p = ptr ? mspace_realloc(getHeap(), ptr, size) : nullptr;
+    if (p) {
+        g_heapInUse.fetch_add(mspace_usable_size(p), std::memory_order_relaxed);
+        g_heapInUse.fetch_sub(old_usable, std::memory_order_relaxed);
+    }
     if (!p) {
         p = t_arena ? mspace_malloc(t_arena, size) : nullptr;
         if (!p)
@@ -452,9 +473,11 @@ void* __wrap_realloc(void* ptr, size_t size) {
         if (!p)
             if (mspace overflow = overflowHeap())
                 p = mspace_malloc(overflow, size);
+        countAlloc(p);
         if (p && ptr) {
             const size_t old_size = mspace_usable_size(ptr);
             memcpy(p, ptr, old_size < size ? old_size : size);
+            countFree(ptr);
             mspace_free(getHeap(), ptr);
         }
     }
@@ -475,6 +498,7 @@ void* __wrap_memalign(size_t alignment, size_t size) {
             p = mspace_memalign(overflow, alignment, size);
     if (!p)
         reportFailure("memalign", size);
+    countAlloc(p);
     return p;
 }
 
@@ -579,13 +603,10 @@ int ps4_replace_malloc_stats(void* out) {
     return 0;
 }
 int ps4_replace_malloc_stats_fast(void* out) { return ps4_replace_malloc_stats(out); }
-// The heap's size now (main heap plus the overflow heap), for the monitor line (PlatformPS4.cpp):
-// it shows a game's memory growing long before it runs out.
+// The heap memory in use now (main and overflow heap: allocated, not freed), for the monitor line
+// (PlatformPS4.cpp): it shows a game's memory growing long before it runs out.
 size_t ps4_heap_footprint() {
-    size_t total = g_heap ? mspace_footprint(g_heap) : 0;
-    if (mspace msp = __atomic_load_n(&g_overflow, __ATOMIC_ACQUIRE))
-        total += mspace_footprint(msp);
-    return total;
+    return g_heapInUse.load(std::memory_order_relaxed);
 }
 size_t ps4_replace_malloc_usable_size(void* ptr) { return ptr ? mspace_usable_size(ptr) : 0; }
 

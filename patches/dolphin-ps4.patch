@@ -38964,10 +38964,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..d80c2d5
+index 0000000..38896a1
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,2178 @@
+@@ -0,0 +1,2179 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -39759,12 +39759,12 @@ index 0000000..d80c2d5
 +      {
 +        // How busy the CPU and video threads really are (their own CPU time per wall time):
 +        // under ~95% at full speed means room for a higher cpu_clock.
-+        static double s_last_wall = 0, s_last_cpu[2] = {};
++        static double s_last_wall = 0, s_last_cpu[3] = {};
 +        const double wall = std::chrono::duration<double>(
 +                                std::chrono::steady_clock::now().time_since_epoch())
 +                                .count();
-+        double busy[2] = {-1, -1};
-+        for (int i = 0; i < 2; i++)
++        double busy[3] = {-1, -1, -1};
++        for (int i = 0; i < 3; i++)
 +        {
 +          const double cpu = ps4_thread_cpu_seconds(i);
 +          if (s_last_wall > 0 && cpu > 0 && s_last_cpu[i] > 0)
@@ -39774,7 +39774,8 @@ index 0000000..d80c2d5
 +        s_last_wall = wall;
 +        const size_t used = strlen(line);
 +        snprintf(line + used, sizeof(line) - used,
-+                 ", thread busy: cpu %.0f%% video %.0f%%, cpu clock %d%%", busy[0], busy[1],
++                 ", thread busy: cpu %.0f%% video %.0f%% vk %.0f%%, cpu clock %d%%", busy[0],
++                 busy[1], busy[2],
 +                 ps4_auto_clock > 0 ?
 +                     ps4_auto_clock :
 +                     static_cast<int>(Config::Get(Config::MAIN_OVERCLOCK_ENABLE) ?
@@ -44351,10 +44352,10 @@ index c82417e..2918568 100644
    {
 diff --git a/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp
 new file mode 100755
-index 0000000..dcfb8ca
+index 0000000..f25d711
 --- /dev/null
 +++ b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp
-@@ -0,0 +1,1222 @@
+@@ -0,0 +1,1230 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -44963,9 +44964,14 @@ index 0000000..dcfb8ca
 +  s_read.store(read, std::memory_order_release);
 +}
 +
++extern "C" void ps4_sampler_register_thread(const char* name);  // DolphinPS4 port/ps4_sampler.cpp
++extern "C" void ps4_thread_cpu_sample(int slot);                  // port/ps4_sampler.cpp
++
 +void WorkerLoop()
 +{
 +  Common::SetCurrentThreadName("VK record thread");
++  // Profiled and its CPU time measured like the CPU and video threads (monitor "vk" busy share).
++  ps4_sampler_register_thread("VK record thread");
 +  {
 +    const auto [affinity, priority] = Common::PS4SetCurrentThreadCoreAndPriority(
 +        ps4_vk_thread_core, 0);
@@ -44975,8 +44981,11 @@ index 0000000..dcfb8ca
 +    ps4_boot_trace(line);
 +  }
 +  u64 read = s_read.load(std::memory_order_relaxed);
++  u32 passes = 0;
 +  for (;;)
 +  {
++    if ((++passes & 255) == 0)
++      ps4_thread_cpu_sample(2);
 +    u64 write = s_write.load(std::memory_order_acquire);
 +    if (read == write)
 +    {
@@ -48524,7 +48533,7 @@ index 4a58c6f..1493495 100644
    clear_scissors = true;
    if (scissors.size() > 1)
 diff --git a/Source/Core/VideoCommon/TextureCacheBase.cpp b/Source/Core/VideoCommon/TextureCacheBase.cpp
-index 4e4567d..9a3c585 100644
+index 4e4567d..70be536 100644
 --- a/Source/Core/VideoCommon/TextureCacheBase.cpp
 +++ b/Source/Core/VideoCommon/TextureCacheBase.cpp
 @@ -2,6 +2,7 @@
@@ -48535,7 +48544,24 @@ index 4e4567d..9a3c585 100644
  
  #include <algorithm>
  #include <chrono>
-@@ -1241,6 +1242,7 @@ private:
+@@ -782,7 +783,16 @@ void TextureCacheBase::OnFrameEnd()
+   // copies.
+   FlushEFBCopies();
+ 
++#ifdef __ORBIS__
++  // PS4: unused textures age by the frames the game finishes (each XFB copy), not by the frames
++  // shown on screen. On a pause screen that keeps rendering but shows nothing new (Sonic and the
++  // Black Knight, "Wii Remote disconnected"), the shown-frame count stopped, nothing aged out,
++  // and its ~700 EFB copies a second filled GPU memory (out of memory after ~2 minutes there).
++  m_ps4_copies_without_frame = 0;
++  Cleanup(++m_ps4_frames_finished);
++#else
+   Cleanup(g_presenter->FrameCount());
++#endif
+ }
+ 
+ void TCacheEntry::DoState(PointerWrap& p)
+@@ -1241,6 +1251,7 @@ private:
  
  TCacheEntry* TextureCacheBase::Load(u32 stage)
  {
@@ -48543,7 +48569,7 @@ index 4e4567d..9a3c585 100644
    if (auto entry = LoadImpl(stage, false))
    {
      if (!DidLinkedAssetsChange(*entry))
-@@ -1311,6 +1313,102 @@ TCacheEntry* TextureCacheBase::LoadImpl(u32 stage, bool force_reload)
+@@ -1311,6 +1322,102 @@ TCacheEntry* TextureCacheBase::LoadImpl(u32 stage, bool force_reload)
    return entry.get();
  }
  
@@ -48646,7 +48672,7 @@ index 4e4567d..9a3c585 100644
  RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSampleSize,
                                             const TextureInfo& texture_info)
  {
-@@ -1347,8 +1445,16 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
+@@ -1347,8 +1454,16 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
  
    // TODO: This doesn't hash GB tiles for preloaded RGBA8 textures (instead, it's hashing more data
    // from the low tmem bank than it should)
@@ -48665,7 +48691,7 @@ index 4e4567d..9a3c585 100644
    u32 palette_size = 0;
    if (texture_info.GetPaletteSize())
    {
-@@ -2145,12 +2251,23 @@ bool TextureCacheBase::CopyFilterCanOverflow(const std::array<u32, 3>& coefficie
+@@ -2145,12 +2260,30 @@ bool TextureCacheBase::CopyFilterCanOverflow(const std::array<u32, 3>& coefficie
    return coefficients[0] + coefficients[1] + coefficients[2] >= 128;
  }
  
@@ -48681,6 +48707,13 @@ index 4e4567d..9a3c585 100644
  {
 +#ifdef __ORBIS__
 +  ps4_scene_stats[6]++;
++  // Rendering that never finishes a frame (no XFB copy, see OnFrameEnd) still ages textures, one
++  // step per 2048 EFB copies - far more than a frame has (busy scenes: ~190).
++  if (++m_ps4_copies_without_frame >= 2048)
++  {
++    m_ps4_copies_without_frame = 0;
++    Cleanup(++m_ps4_frames_finished);
++  }
 +  // The copy may write into texture memory: the memoized hashes there are dropped (the copy's rows
 +  // are dstStride bytes apart; height rows is more than the copy's block rows - on the safe side).
 +  PS4ForgetTextureHashes(dstAddr, dstStride * std::max(height, 1u));
@@ -48689,7 +48722,7 @@ index 4e4567d..9a3c585 100644
    // Emulation methods:
    //
    // - EFB to RAM:
-@@ -3257,7 +3374,11 @@ u64 TCacheEntry::CalculateHash() const
+@@ -3257,7 +3390,11 @@ u64 TCacheEntry::CalculateHash() const
    u8* ptr = memory.GetPointerForRange(addr, size_in_bytes);
    if (memory_stride == bytes_per_row)
    {
@@ -48701,6 +48734,21 @@ index 4e4567d..9a3c585 100644
    }
    else
    {
+diff --git a/Source/Core/VideoCommon/TextureCacheBase.h b/Source/Core/VideoCommon/TextureCacheBase.h
+index 7e9d061..25a1be2 100644
+--- a/Source/Core/VideoCommon/TextureCacheBase.h
++++ b/Source/Core/VideoCommon/TextureCacheBase.h
+@@ -274,6 +274,10 @@ public:
+   // Removes textures which aren't used for more than TEXTURE_KILL_THRESHOLD frames,
+   // frameCount is the current frame number.
+   void Cleanup(int _frameCount);
++  // PS4: the frame count Cleanup ages textures by (frames the game finished), and EFB copies
++  // since the last one (TextureCacheBase.cpp OnFrameEnd).
++  int m_ps4_frames_finished = 0;
++  u32 m_ps4_copies_without_frame = 0;
+ 
+   void Invalidate();
+   void ReleaseToPool(TCacheEntry* entry);
 diff --git a/Source/Core/VideoCommon/VertexManagerBase.cpp b/Source/Core/VideoCommon/VertexManagerBase.cpp
 index 2bc6d58..06b5c3c 100644
 --- a/Source/Core/VideoCommon/VertexManagerBase.cpp

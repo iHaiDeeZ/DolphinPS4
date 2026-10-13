@@ -657,12 +657,12 @@ extern "C" void ps4_dump_thread_stacks(const char* path, const char* reason) {
 // is to its limit and whether something else shares its core (the sampler can't see that).
 namespace {
 constexpr clockid_t kThreadCpuClock = 14;  // FreeBSD CLOCK_THREAD_CPUTIME_ID
-std::atomic<uint64_t> g_thread_cpu_ns[2];
+std::atomic<uint64_t> g_thread_cpu_ns[3];  // CPU thread 0, video thread 1, VK record thread 2
 }  // namespace
 
 extern "C" void ps4_thread_cpu_sample(int slot) {
     timespec ts;
-    if (slot < 0 || slot > 1 || clock_gettime(kThreadCpuClock, &ts) != 0)
+    if (slot < 0 || slot > 2 || clock_gettime(kThreadCpuClock, &ts) != 0)
         return;
     g_thread_cpu_ns[slot].store(static_cast<uint64_t>(ts.tv_sec) * 1000000000ull +
                                     static_cast<uint64_t>(ts.tv_nsec),
@@ -686,7 +686,7 @@ extern "C" long long ps4_wait_total(int slot) {
 }
 
 extern "C" double ps4_thread_cpu_seconds(int slot) {
-    if (slot < 0 || slot > 1)
+    if (slot < 0 || slot > 2)
         return 0;
     return g_thread_cpu_ns[slot].load(std::memory_order_relaxed) / 1e9;
 }
