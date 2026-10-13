@@ -45881,6 +45881,80 @@ index da0e4d8..c5eb5f7 100644
    std::array<VkDescriptorSet, NUM_UTILITY_DESCRIPTOR_SETS> m_utility_descriptor_sets = {};
    VkDescriptorSet m_compute_descriptor_set = VK_NULL_HANDLE;
  
+diff --git a/Source/Core/VideoBackends/Vulkan/VKGfx.cpp b/Source/Core/VideoBackends/Vulkan/VKGfx.cpp
+index c88e422..9da213c 100644
+--- a/Source/Core/VideoBackends/Vulkan/VKGfx.cpp
++++ b/Source/Core/VideoBackends/Vulkan/VKGfx.cpp
+@@ -4,7 +4,9 @@
+ #include "VideoBackends/Vulkan/VKGfx.h"
+ 
+ #include <cstddef>
++#include <cstdint>
+ #include <cstdio>
++#include <ctime>
+ #include <utility>
+ 
+ #include "Common/CommonTypes.h"
+@@ -347,8 +349,59 @@ bool VKGfx::IsFullscreen() const
+   return m_swap_chain && m_swap_chain->GetCurrentFullscreenState();
+ }
+ 
++#ifdef __ORBIS__
++extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
++// Where command buffers are submitted from, written to boot-trace every 5 s ("vk submits:"): the
++// callers (program addresses, 0-based like crash logs) with their counts and how many waited for
++// the GPU. Many submits a frame make the video thread wait for older ones (Super Mario Galaxy:
++// 200-400 a second). Video thread only.
++static void PS4CountSubmit(const void* caller, bool waited)
++{
++  struct Site
++  {
++    const void* caller;
++    unsigned count, waits;
++  };
++  static Site s_sites[16];
++  static timespec s_last{};
++  for (Site& site : s_sites)
++  {
++    if (site.caller == caller || !site.caller)
++    {
++      site.caller = caller;
++      site.count++;
++      site.waits += waited;
++      break;
++    }
++  }
++  timespec now;
++  clock_gettime(CLOCK_MONOTONIC, &now);
++  if (s_last.tv_sec == 0)
++    s_last = now;
++  if (now.tv_sec - s_last.tv_sec < 5)
++    return;
++  s_last = now;
++  char line[640];
++  int used = snprintf(line, sizeof(line), "vk submits (5 s):");
++  for (Site& site : s_sites)
++  {
++    if (!site.caller || used >= static_cast<int>(sizeof(line)) - 40)
++      continue;
++    used += snprintf(line + used, sizeof(line) - used, " elf 0x%llx %u (%u waited)",
++                     static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(site.caller) -
++                                                     0x400000),
++                     site.count, site.waits);
++    site = {};
++  }
++  ps4_boot_trace(line);
++}
++#endif
++
+ void VKGfx::ExecuteCommandBuffer(bool submit_off_thread, bool wait_for_completion)
+ {
++#ifdef __ORBIS__
++  PS4CountSubmit(__builtin_return_address(0), wait_for_completion);
++#endif
+   StateTracker::GetInstance()->EndRenderPass();
+ 
+   g_command_buffer_mgr->SubmitCommandBuffer(submit_off_thread, wait_for_completion);
 diff --git a/Source/Core/VideoBackends/Vulkan/VKMain.cpp b/Source/Core/VideoBackends/Vulkan/VKMain.cpp
 index 6338e52..6383b77 100644
 --- a/Source/Core/VideoBackends/Vulkan/VKMain.cpp
