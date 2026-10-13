@@ -22766,7 +22766,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..1899ed0 100644
+index 3bf40ea..d5dc6d9 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -22929,7 +22929,7 @@ index 3bf40ea..1899ed0 100644
  #endif
        });
  
-@@ -270,7 +373,440 @@ int main(const int argc, char* argv[])
+@@ -270,7 +373,441 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -23126,9 +23126,10 @@ index 3bf40ea..1899ed0 100644
 +    // jit_join=on (Dolphin Lab): an "if" inside a block jumps further down the block when taken
 +    // instead of leaving it (PPCAnalyst.cpp; off by default: no faster).
 +    ps4_jit_join = Platform::GetPS4Option("jit_join", "off") == "on";
-+    // jit_trace=off (Dolphin Lab, PS4 JIT): no traces - blocks don't learn which branches are
-+    // usually taken and don't follow them (JitPS4/Jit.cpp PS4Retrace).
-+    ps4_jit_trace = Platform::GetPS4Option("jit_trace", "on") == "on";
++    // jit_trace=on (Dolphin JIT Lab, PS4 JIT): blocks learn which branches are usually taken and
++    // follow them (JitPS4/Jit.cpp PS4Retrace). Off by default: +20% JIT speed on the PC test
++    // bench, but slower on the PS4 (Bully, 2026-10-13) - bigger code for the Jaguar's caches.
++    ps4_jit_trace = Platform::GetPS4Option("jit_trace", "off") == "on";
 +    // jit_gp_dynamic=off (Dolphin Lab): gather pipe writes through a pointer call MMU::Write again.
 +    ps4_jit_gp_dynamic = Platform::GetPS4Option("jit_gp_dynamic", "on") == "on";
 +    // jit_accurate_singles=off (per game): no rounding to single precision after float ops.
@@ -23370,7 +23371,7 @@ index 3bf40ea..1899ed0 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +820,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +821,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -23386,7 +23387,7 @@ index 3bf40ea..1899ed0 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +848,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +849,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -29515,7 +29516,7 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..cf928ca
+index 0000000..65d63b0
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 @@ -0,0 +1,1036 @@
@@ -29750,9 +29751,9 @@ index 0000000..cf928ca
 +     true, "Where the emulator was stuck when a game freezes, stalls or starts slowly."},
 +    {"emu_log", "Emulator Log", "Diagnostics", {{"on", "On"}, {"off", "Off"}}, "on", true,
 +     "Dolphin's own messages (dolphin.log)."},
-+    {"jit_trace", "Branch Traces", "Performance", {{"on", "On"}, {"off", "Off"}}, "on", true,
-+     "PS4 JIT only: blocks learn which branches are usually taken and are compiled again to "
-+     "follow them (the first seconds of a new area compile more). Off: as before."},
++    {"jit_trace", "Branch Traces", "Performance", {{"off", "Off"}, {"on", "On"}}, "off", true,
++     "PS4 JIT only, experimental: blocks learn which branches are usually taken and are "
++     "compiled again to follow them. Faster on a PC, slower on the PS4 in Bully - off."},
 +    {"jit_verify", "Recompiler Check", "Diagnostics", {{"off", "Off"}, {"on", "On"}}, "off", false,
 +     "PS4 JIT only: while you play, the game's compiled code is checked against Dolphin's "
 +     "interpreter and any difference is logged (boot-trace.log). Slower; for testing new "
