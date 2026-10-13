@@ -86,12 +86,6 @@ index 0000000..76b3ce0
 +// once. Without them curl makes sockets non-blocking with fcntl(O_NONBLOCK).
 +#undef SOCK_NONBLOCK
 +#undef SOCK_CLOEXEC
-diff --git a/Externals/imgui/imgui b/Externals/imgui/imgui
---- a/Externals/imgui/imgui
-+++ b/Externals/imgui/imgui
-@@ -1 +1 @@
--Subproject commit 45acd5e0e82f4c954432533ae9985ff0e1aad6d5
-+Subproject commit 45acd5e0e82f4c954432533ae9985ff0e1aad6d5-dirty
 diff --git a/Externals/zstd/CMakeLists.txt b/Externals/zstd/CMakeLists.txt
 index d83ce4c..07b3a67 100644
 --- a/Externals/zstd/CMakeLists.txt
@@ -9764,10 +9758,10 @@ index 0000000..482d3bc
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
 new file mode 100644
-index 0000000..0f50600
+index 0000000..673f74c
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
-@@ -0,0 +1,2485 @@
+@@ -0,0 +1,2506 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10292,6 +10286,7 @@ index 0000000..0f50600
 +// recompiled block counts nothing. (PC test bench: PS4JIT_COUNT=1 counts every block for
 +// /tmp/ps4jit-ana/blocks.txt: "B address instructions runs", "E destination count source".)
 +constexpr u64 PS4_TRACE_RUNS = 1000;
++u64 s_trace_learning_compiles = 0, s_trace_retraces = 0;  // counts (the PC bench prints them)
 +struct CountExit
 +{
 +  u32 destination;
@@ -10463,6 +10458,14 @@ index 0000000..0f50600
 +          CountDump();
 +        timespec cpu{};
 +        clock_gettime(clock, &cpu);
++        fprintf(stderr, "[bench] %d s: learning compiles %llu, retraces %llu, cache restored %llu "
++                "compiled %llu unsaved %llu (%s)\n", n * 10,
++                static_cast<unsigned long long>(s_trace_learning_compiles),
++                static_cast<unsigned long long>(s_trace_retraces),
++                static_cast<unsigned long long>(m_code_cache.PS4Stats().restored),
++                static_cast<unsigned long long>(m_code_cache.PS4Stats().compiled),
++                static_cast<unsigned long long>(m_code_cache.PS4Stats().unsaved),
++                m_code_cache.PS4Stats().last_unsaved ? m_code_cache.PS4Stats().last_unsaved : "");
 +        fprintf(stderr, "[bench] %d s: %u frames (%u XFB copies), CPU thread %.3f s, %.0f M cycles\n", n * 10,
 +                ps4_bench_frames.load(), ps4_bench_xfb_copies.load(), cpu.tv_sec + cpu.tv_nsec / 1e9,
 +                m_system.GetCoreTiming().GetTicks() / 1e6);
@@ -11303,6 +11306,16 @@ index 0000000..0f50600
 +      s_trace_taken.insert((u64(exit->source) << 32) | exit->destination);
 +  }
 +  s_traced_blocks.insert(block->address);
++  s_trace_retraces++;
++  if (s_trace_retraces % 100 == 0)
++  {
++    char line[128];
++    snprintf(line, sizeof(line), "jit trace: %llu blocks retraced (%llu compiled learning)",
++             static_cast<unsigned long long>(s_trace_retraces),
++             static_cast<unsigned long long>(s_trace_learning_compiles));
++    ps4_boot_trace(line);
++  }
++  jit->m_code_cache.Forget(block->address);
 +  // The old code is never reused: the BLR optimization may still return into it (a recursive
 +  // function's outer call), so its memory stays as it is - once per retraced block.
 +  jit->FreeRanges();  // what other blocks gave back until now is still freed
@@ -11788,6 +11801,8 @@ index 0000000..0f50600
 +  // jit_trace (learning) / PS4JIT_COUNT: count this block's runs.
 +  m_ps4_count_block = nullptr;
 +  const bool learn = s_trace_learn && !s_traced_blocks.contains(em_address);
++  if (learn)
++    s_trace_learning_compiles++;
 +  if (s_count_on || learn)
 +  {
 +    auto block = std::make_unique<CountBlock>();
@@ -48884,10 +48899,10 @@ index c56f32c..64e5240 100644
  
 diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 new file mode 100755
-index 0000000..d099dc5
+index 0000000..9e95324
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
-@@ -0,0 +1,1228 @@
+@@ -0,0 +1,1257 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -49413,11 +49428,14 @@ index 0000000..d099dc5
 +  const std::string temp = m_path + ".new";
 +  {
 +    File::IOFile file(temp, "wb");
-+    const FileHeader header{FILE_MAGIC, FORMAT_VERSION, m_config,
-+                            static_cast<u32>(m_blobs.size()), 0};
++    const u32 count = static_cast<u32>(std::count_if(
++        m_blobs.begin(), m_blobs.end(), [](const std::vector<u8>& b) { return !b.empty(); }));
++    const FileHeader header{FILE_MAGIC, FORMAT_VERSION, m_config, count, 0};
 +    bool written = file.IsOpen() && file.WriteBytes(&header, sizeof(header));
 +    for (const auto& blob : m_blobs)
 +    {
++      if (blob.empty())
++        continue;
 +      const u32 blob_size = static_cast<u32>(blob.size());
 +      written = written && file.WriteBytes(&blob_size, sizeof(blob_size)) &&
 +                file.WriteBytes(blob.data(), blob.size());
@@ -49865,12 +49883,38 @@ index 0000000..d099dc5
 +  return true;
 +}
 +
++void CodeCache::Forget(u32 em_address)
++{
++  for (auto it = m_index.begin(); it != m_index.end();)
++  {
++    BlobHeader h;
++    std::vector<u8>& blob = m_blobs[it->second];
++    if (blob.size() >= sizeof(h))
++      std::memcpy(&h, blob.data(), sizeof(h));
++    if (blob.size() >= sizeof(h) && h.em_address == em_address)
++    {
++      m_bytes -= blob.size();
++      blob.clear();  // an empty slot: not written by Save
++      it = m_index.erase(it);
++      m_dirty = true;
++    }
++    else
++    {
++      ++it;
++    }
++  }
++}
++
 +void CodeCache::Add(JitBlock& block, const PPCAnalyst::CodeBlock& code_block)
 +{
 +  if (!m_ready)
 +    return;
 +  m_stats.compiled++;
 +  const auto unsaveable = [&](const char* why) { m_stats.unsaved++, m_stats.last_unsaved = why; };
++  // jit_trace: a block still learning its branches holds pointers to this run's counters (the
++  // relocations below would keep them as plain numbers) and is replaced by its trace soon.
++  if (m_jit.m_ps4_count_block)
++    return unsaveable("learning its branches (jit_trace)");
 +
 +  u8* const ns = block.near_begin;
 +  u8* const ne = block.near_end;
@@ -50118,10 +50162,10 @@ index 0000000..d099dc5
 +}
 diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.h b/Source/Core/Core/PowerPC/JitPS4/CodeCache.h
 new file mode 100755
-index 0000000..a7c64a0
+index 0000000..63d7a7a
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.h
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,126 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -50177,6 +50221,9 @@ index 0000000..a7c64a0
 +  // A block just compiled (before it is linked): kept for the file; in check mode compared with
 +  // the copy saved in an earlier run first.
 +  void Add(JitBlock& block, const PPCAnalyst::CodeBlock& code_block);
++  // jit_trace: the block at this address was compiled again as a trace - its saved copy goes, so
++  // the trace is saved instead.
++  void Forget(u32 em_address);
 +
 +  void Rel32(u8* disp, int extra, const void* target) override;
 +  void Imm64(u8* at, u64 value) override;
@@ -50240,6 +50287,9 @@ index 0000000..a7c64a0
 +        mismatched = 0, no_space = 0;
 +    const char* last_unsaved = "";
 +  } m_stats;
++
++public:
++  const Stats& PS4Stats() const { return m_stats; }  // the PC test bench
 +};
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Verify.cpp b/Source/Core/Core/PowerPC/JitPS4/Verify.cpp

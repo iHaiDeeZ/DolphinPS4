@@ -10,5 +10,5 @@ cd ~/dolphinps4-build
 SECS="$1"; LOG="$2"; GAME="$3"; STATE="${4:-}"
 ARGS=(-p headless -u "$PWD/jit-user" -e "$GAME")
 [ -n "$STATE" ] && ARGS+=(-s "$STATE")
-/usr/bin/time -f "wall %e s, user %U s" timeout -k 10 "$SECS" build/dolphin-host/Binaries/dolphin-emu-nogui "${ARGS[@]}" > "$LOG" 2>&1
+/usr/bin/time -f "wall %e s, user %U s" timeout -k 10 "$SECS" ${DOLPHIN_HOST_BUILD:-build/dolphin-jit-host}/Binaries/dolphin-emu-nogui "${ARGS[@]}" > "$LOG" 2>&1
 echo "exit $?"
