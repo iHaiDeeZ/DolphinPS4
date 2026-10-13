@@ -615,7 +615,7 @@ index 67dbd1e..3f5baed 100644
  
    template <class Rep, class Period>
 diff --git a/Source/Core/Common/FileUtil.cpp b/Source/Core/Common/FileUtil.cpp
-index 053614f..3373476 100644
+index 053614f..07f24a2 100644
 --- a/Source/Core/Common/FileUtil.cpp
 +++ b/Source/Core/Common/FileUtil.cpp
 @@ -8,6 +8,9 @@
@@ -670,7 +670,41 @@ index 053614f..3373476 100644
  #endif
    {
      const auto fs_path = StringToPath(path);
-@@ -516,10 +540,49 @@ FSTEntry ScanDirectoryTree(const std::string& directory, bool recursive)
+@@ -443,9 +467,21 @@ FSTEntry ScanDirectoryTree(const std::string& directory, bool recursive)
+   };
+ 
+   auto dirent_to_fstent = [&](const fs::directory_entry& entry) {
++    // The error_code overloads: a file whose type or size can't be read (seen on the PS4, a Wii
++    // game's NAND usage query) counts as an empty file instead of an uncaught exception that
++    // ends the program.
++    std::error_code ec;
++    const bool is_directory = entry.is_directory(ec);
++    u64 size = 0;
++    if (!is_directory && !entry.is_fifo(ec))
++    {
++      size = entry.file_size(ec);
++      if (ec)
++        size = 0;
++    }
+     return FSTEntry{
+-        .isDirectory = entry.is_directory(),
+-        .size = entry.is_directory() || entry.is_fifo() ? 0 : entry.file_size(),
++        .isDirectory = is_directory,
++        .size = size,
+         .physicalName = path_to_physical_name(entry.path()),
+         .virtualName = PathToString(entry.path().filename()),
+     };
+@@ -462,7 +498,8 @@ FSTEntry ScanDirectoryTree(const std::string& directory, bool recursive)
+ 
+   FSTEntry parent_entry;
+   parent_entry.physicalName = path_to_physical_name(directory_path);
+-  parent_entry.isDirectory = fs::is_directory(directory_path);
++  std::error_code parent_error;
++  parent_entry.isDirectory = fs::is_directory(directory_path, parent_error);
+   parent_entry.size = 0;
+ 
+   std::error_code error;
+@@ -516,10 +553,49 @@ FSTEntry ScanDirectoryTree(const std::string& directory, bool recursive)
  }
  
  // Deletes the given directory and anything under it. Returns true on success.
@@ -720,7 +754,7 @@ index 053614f..3373476 100644
    std::error_code error;
    const std::uintmax_t num_removed = std::filesystem::remove_all(StringToPath(directory), error);
    const bool success = num_removed != static_cast<std::uintmax_t>(-1) && !error;
-@@ -731,6 +794,10 @@ std::string GetExePath()
+@@ -731,6 +807,10 @@ std::string GetExePath()
    return PathToString(exe_path_absolute);
  #elif defined(__APPLE__)
    return GetBundleDirectory();
