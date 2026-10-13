@@ -288,7 +288,7 @@ index 0000000..c4a90ff
 +#endif
 +};
 diff --git a/Source/Core/Common/BlockingLoop.h b/Source/Core/Common/BlockingLoop.h
-index 472a84b..1450cd3 100644
+index 472a84b..d666627 100644
 --- a/Source/Core/Common/BlockingLoop.h
 +++ b/Source/Core/Common/BlockingLoop.h
 @@ -10,6 +10,11 @@
@@ -303,7 +303,23 @@ index 472a84b..1450cd3 100644
  namespace Common
  {
  // This class provides a synchronized loop.
-@@ -177,6 +182,14 @@ public:
+@@ -55,6 +60,15 @@ public:
+     // already done
+     if (IsDone())
+       return;
++#ifdef __ORBIS__
++    // PS4: some games make the CPU thread wait for the GPU thread many times a frame (NBA Street
++    // V3: ~0.4 s of every second, most of it the two threads putting each other to sleep and
++    // waking up again - far slower on the PS4 than the work waited for). Spin first, up to
++    // 0.5 ms: each thread has a core of its own. Done that way, the worker isn't told to sleep
++    // either (the 1 kHz AllowSleep from SystemTimers still lets it when the game idles).
++    if (PS4SpinUntil([this] { return IsDone(); }, 500'000))
++      return;
++#endif
+ 
+     // notifying this event will only wake up one thread, so use a mutex here to
+     // allow only one waiting thread. And in this way, we get an event free wakeup
+@@ -177,6 +191,27 @@ public:
  
        case STATE_SLEEPING:
          // Just relax
@@ -314,11 +330,24 @@ index 472a84b..1450cd3 100644
 +        // Time the worker sleeps for lack of work (monitor: "waits", the GPU loop).
 +        timespec t0, t1;
 +        clock_gettime(CLOCK_MONOTONIC, &t0);
++        // New work usually comes right back (see Wait): spin up to 0.2 ms before sleeping. A
++        // Wakeup in that time may also have set the event - the next sleep then returns at once
++        // for one more pass of the payload, which is harmless.
++        if (PS4SpinUntil(
++                [this] {
++                  return m_running_state.load() != STATE_SLEEPING || m_shutdown.IsSet();
++                },
++                200'000))
++        {
++          clock_gettime(CLOCK_MONOTONIC, &t1);
++          ps4_wait_add(1, (t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
++          break;
++        }
 +#endif
          if (timeout > 0)
          {
            m_new_work_event.WaitFor(std::chrono::milliseconds(timeout));
-@@ -185,6 +198,11 @@ public:
+@@ -185,6 +220,11 @@ public:
          {
            m_new_work_event.Wait();
          }
@@ -330,7 +359,33 @@ index 472a84b..1450cd3 100644
          break;
        }
      }
-@@ -232,6 +250,12 @@ public:
+@@ -228,10 +268,38 @@ public:
+ 
+   bool IsRunning() const { return !m_stopped.IsSet() && !m_shutdown.IsSet(); }
+   bool IsDone() const { return m_stopped.IsSet() || m_running_state.load() <= STATE_DONE; }
++
++#ifdef __ORBIS__
++  // Spins (with PAUSE) until done() or max_ns have passed; true if done() became true.
++  template <typename Done>
++  static bool PS4SpinUntil(Done done, long long max_ns)
++  {
++    timespec t0, t;
++    clock_gettime(CLOCK_MONOTONIC, &t0);
++    for (unsigned i = 1;; i++)
++    {
++      if (done())
++        return true;
++      __builtin_ia32_pause();
++      if ((i & 255) == 0)
++      {
++        clock_gettime(CLOCK_MONOTONIC, &t);
++        if ((t.tv_sec - t0.tv_sec) * 1000000000ll + (t.tv_nsec - t0.tv_nsec) > max_ns)
++          return done();
++      }
++    }
++  }
++#endif
+   // This function should be triggered regularly over time so
    // that we will fall back from the busy loop to sleeping.
    void AllowSleep() { m_may_sleep.Set(); }
  
