@@ -9938,10 +9938,10 @@ index 0000000..482d3bc
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
 new file mode 100644
-index 0000000..181f92c
+index 0000000..78ab0cb
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
-@@ -0,0 +1,2518 @@
+@@ -0,0 +1,2527 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10020,6 +10020,13 @@ index 0000000..181f92c
 +extern "C" int ps4_fifo_batch;  // VideoCommon/Fifo.cpp (ps4.ini fifo_batch)
 +extern "C" int ps4_jit_lazy_fprf;  // jit_lazy_fprf (DolphinNoGUI/MainNoGUI.cpp)
 +int ps4_jit_lazy_fprf = 1;
++// The game's FPRF setting (its INIs, and ps4.ini fprf=off), known before anything is compiled
++// (DolphinNoGUI/MainNoGUI.cpp); -1: unknown, the config decides. Dolphin applies a game INI only
++// when the game starts after the BIOS, so the code compiled from the disc before the BIOS (and
++// the BIOS) was compiled - and saved in the code cache - without FPRF, the game's with it: the two
++// cache keys replaced each other's file at every start (F-Zero GX recompiled during races).
++extern "C" int ps4_game_fprf;
++int ps4_game_fprf = -1;
 +extern "C" int ps4_fifo_defer;  // VideoCommon/Fifo.cpp (ps4.ini fifo_defer)
 +extern "C" void ps4_boot_trace(const char* line);  // DolphinPS4 port/ps4_crashlog.cpp
 +extern "C" int ps4_gp_fuse;     // ps4.ini jit_gp_fuse (DolphinNoGUI)
@@ -11978,6 +11985,8 @@ index 0000000..181f92c
 +
 +bool JitPS4::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
 +{
++  if (ps4_game_fprf >= 0)
++    m_fprf = ps4_game_fprf != 0;  // the same FPRF for all of this game's code (see ps4_game_fprf)
 +  js.firstFPInstructionFound = false;
 +  js.isLastInstruction = false;
 +  js.blockStart = em_address;
@@ -23047,7 +23056,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..6143c45 100644
+index 3bf40ea..1273495 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -23068,7 +23077,7 @@ index 3bf40ea..6143c45 100644
  #include <string>
  #include <vector>
  
-@@ -15,14 +22,29 @@
+@@ -15,14 +22,31 @@
  #include <windows.h>
  #endif
  
@@ -23077,6 +23086,8 @@ index 3bf40ea..6143c45 100644
 +#include "Common/Logging/LogManager.h"
  #include "Common/ScopeGuard.h"
 +#include "Core/Config/GraphicsSettings.h"
++#include "Core/ConfigManager.h"
++#include "Common/IniFile.h"
 +#include "Core/Config/SYSCONFSettings.h"
 +#include "DolphinNoGUI/PS4Lang.h"
 +#include "Core/Config/MainSettings.h"
@@ -23098,7 +23109,7 @@ index 3bf40ea..6143c45 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,72 @@
+@@ -31,6 +55,74 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -23156,6 +23167,8 @@ index 3bf40ea..6143c45 100644
 +extern "C" int ps4_force_dual_core;                // Core/ConfigManager.cpp
 +extern "C" int ps4_cpu_cull_off;                   // Core/ConfigManager.cpp
 +extern "C" int ps4_fprf_off;                       // Core/ConfigManager.cpp
++extern "C" int ps4_game_fprf;                      // Core/PowerPC/JitPS4/Jit.cpp
++extern "C" char ps4_profile_tag[32];               // port/ps4_sampler.cpp: the game's ID
 +extern "C" int ps4_zoom_letterbox;                 // VideoCommon/Present.cpp
 +extern "C" char ps4_game_hle_only[64];             // Core/HLE/HLE_PS4Games.cpp
 +extern "C" int ps4_auto_clock, ps4_auto_clock_min, ps4_auto_clock_max;  // PlatformPS4.cpp
@@ -23171,7 +23184,7 @@ index 3bf40ea..6143c45 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +261,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +265,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -23182,7 +23195,7 @@ index 3bf40ea..6143c45 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +276,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +280,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -23201,7 +23214,7 @@ index 3bf40ea..6143c45 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +308,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +312,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -23212,7 +23225,7 @@ index 3bf40ea..6143c45 100644
  #endif
        });
  
-@@ -270,7 +375,452 @@ int main(const int argc, char* argv[])
+@@ -270,7 +379,463 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -23293,6 +23306,17 @@ index 3bf40ea..6143c45 100644
 +      ps4_force_dual_core = dual_core == "force";
 +      ps4_cpu_cull_off = Platform::GetPS4Option("cpu_cull", "game") == "off";
 +      ps4_fprf_off = Platform::GetPS4Option("fprf", "game") == "off";
++      // The game's FPRF from its INIs now, before any code is compiled (Dolphin applies them
++      // only when the game starts, after the BIOS): one setting for all of the game's code and
++      // its code cache key (ps4_game_fprf).
++      if (ps4_profile_tag[0])
++      {
++        const std::string id = ps4_profile_tag;
++        bool fprf = Config::Get(Config::MAIN_FPRF);
++        SConfig::LoadDefaultGameIni(id, std::nullopt).GetOrCreateSection("Core")->Get("FPRF", &fprf, fprf);
++        SConfig::LoadLocalGameIni(id, std::nullopt).GetOrCreateSection("Core")->Get("FPRF", &fprf, fprf);
++        ps4_game_fprf = fprf && !ps4_fprf_off ? 1 : 0;
++      }
 +    }
 +    // Keeps the GPU thread from running ahead of the CPU thread in dual core mode; without it
 +    // a game desynced ("GFX FIFO: Unknown Opcode") on loading.
@@ -23665,7 +23689,7 @@ index 3bf40ea..6143c45 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +834,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +849,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -23681,7 +23705,7 @@ index 3bf40ea..6143c45 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +862,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +877,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -50206,10 +50230,10 @@ index c56f32c..64e5240 100644
  
 diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 new file mode 100755
-index 0000000..992bfff
+index 0000000..f1f9f61
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
-@@ -0,0 +1,1257 @@
+@@ -0,0 +1,1258 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -50252,7 +50276,7 @@ index 0000000..992bfff
 +    ps4_jit_tlb_inline, ps4_lfs_forward, ps4_jit_accurate_singles, ps4_jit_round_results,
 +    ps4_jit_round_operands, ps4_jit_fcmp_merge, ps4_jit_msr_link, ps4_jit_gp_dynamic,
 +    ps4_fifo_batch, ps4_fifo_defer;
-+extern "C" int ps4_jit_unroll, ps4_jit_join, ps4_jit_trace, ps4_jit_lazy_fprf;  // Core/PowerPC/PPCAnalyst.cpp
++extern "C" int ps4_jit_unroll, ps4_jit_join, ps4_jit_trace, ps4_jit_lazy_fprf, ps4_game_fprf;  // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_pin[4];
 +extern "C" int ps4_jit_verify;  // JitPS4/Verify.cpp
 +
@@ -50599,7 +50623,8 @@ index 0000000..992bfff
 +  for (bool v : {jo.enableBlocklink, jo.optimizeGatherPipe, jo.accurateSinglePrecision,
 +                 jo.fastmem, jo.fastmem_arena, jo.memcheck, jo.fp_exceptions,
 +                 jo.div_by_zero_exceptions, m_jit.m_low_dcbz_hack, m_jit.m_accurate_nans,
-+                 m_jit.m_accurate_fmadds, m_jit.m_accurate_cpu_cache_enabled, m_jit.m_fprf,
++                 m_jit.m_accurate_fmadds, m_jit.m_accurate_cpu_cache_enabled,
++                 ps4_game_fprf >= 0 ? ps4_game_fprf != 0 : m_jit.m_fprf,
 +                 m_jit.m_system.IsWii()})
 +  {
 +    h = Mix(h, v);
