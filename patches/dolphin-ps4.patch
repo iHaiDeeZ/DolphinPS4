@@ -23548,19 +23548,21 @@ index 3bf40ea..ac08b9f 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PS4Cheats.cpp b/Source/Core/DolphinNoGUI/PS4Cheats.cpp
 new file mode 100755
-index 0000000..588b816
+index 0000000..a431025
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Cheats.cpp
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,225 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
 +#include "DolphinNoGUI/PS4Cheats.h"
 +
 +#include <algorithm>
++#include <cctype>
 +
 +#include "Common/FileUtil.h"
 +#include "Common/IniFile.h"
++#include "Core/ARDecrypt.h"
 +#include "Core/ActionReplay.h"
 +#include "Core/ConfigManager.h"
 +#include "Core/GeckoCode.h"
@@ -23613,6 +23615,105 @@ index 0000000..588b816
 +  if (added)
 +    Save();
 +  return added;
++}
++
++std::string List::AddTyped(const std::string& name, const std::string& text, bool gecko)
++{
++  // The text's words: hex numbers (one 16-digit word is a whole line) and encrypted Action
++  // Replay lines; anything else separates them.
++  std::vector<std::string> words;
++  std::string word;
++  const auto end_word = [&] {
++    if (!word.empty())
++      words.push_back(word);
++    word.clear();
++  };
++  for (const char c : text)
++  {
++    if (std::isxdigit(static_cast<unsigned char>(c)) || c == '-')
++      word += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
++    else
++      end_word();
++  }
++  end_word();
++  std::vector<std::string> lines, encrypted;
++  std::string pending;
++  for (const std::string& w : words)
++  {
++    if (w.find('-') != std::string::npos)
++    {
++      if (w.size() != 15 || w[4] != '-' || w[9] != '-')
++        return "Not a code line: " + w;
++      encrypted.push_back(w);
++      continue;
++    }
++    if (w.size() == 16)
++    {
++      lines.push_back(w.substr(0, 8) + " " + w.substr(8));
++      continue;
++    }
++    if (w.size() != 8)
++      return "Not a code line: " + w + " (8 digits expected)";
++    if (pending.empty())
++    {
++      pending = w;
++    }
++    else
++    {
++      lines.push_back(pending + " " + w);
++      pending.clear();
++    }
++  }
++  if (!pending.empty())
++    return "The last line has one number: " + pending;
++  if (lines.empty() && encrypted.empty())
++    return "No code lines";
++  const std::string code_name =
++      name.empty() ? "My code " + std::to_string(m_codes->ar.size() + m_codes->gecko.size() + 1) :
++                     name;
++  if (gecko)
++  {
++    if (!encrypted.empty())
++      return "Encrypted lines are Action Replay codes";
++    Gecko::GeckoCode code;
++    for (const std::string& line : lines)
++    {
++      const auto parsed = Gecko::DeserializeLine(line);
++      if (!parsed)
++        return "Not a Gecko line: " + line;
++      code.codes.push_back(*parsed);
++    }
++    code.name = code_name;
++    code.creator = "typed on the PS4";
++    code.enabled = true;
++    code.user_defined = true;
++    m_codes->gecko.push_back(std::move(code));
++  }
++  else
++  {
++    if (!encrypted.empty() && !lines.empty())
++      return "Encrypted and plain lines mixed";
++    ActionReplay::ARCode code;
++    for (const std::string& line : lines)
++    {
++      const auto parsed = ActionReplay::DeserializeLine(line);
++      if (!std::holds_alternative<ActionReplay::AREntry>(parsed))
++        return "Not an Action Replay line: " + line;
++      code.ops.push_back(std::get<ActionReplay::AREntry>(parsed));
++    }
++    if (!encrypted.empty())
++    {
++      ActionReplay::DecryptARCode(encrypted, &code.ops);
++      if (code.ops.empty())
++        return "The encrypted code didn't decrypt";
++    }
++    code.name = code_name;
++    code.enabled = true;
++    code.user_defined = true;
++    m_codes->ar.push_back(std::move(code));
++  }
++  Save();
++  return {};
 +}
 +
 +List::~List()
@@ -23678,10 +23779,10 @@ index 0000000..588b816
 +}  // namespace PS4Cheats
 diff --git a/Source/Core/DolphinNoGUI/PS4Cheats.h b/Source/Core/DolphinNoGUI/PS4Cheats.h
 new file mode 100755
-index 0000000..276a9b6
+index 0000000..0ab9db5
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Cheats.h
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,69 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -23735,6 +23836,12 @@ index 0000000..276a9b6
 +  static Download FetchOnline(const std::string& game_id);
 +  // Returns how many were new.
 +  size_t AddDownloaded(const Download& download);
++
++  // A code typed on the console's keyboard: Gecko or Action Replay (encrypted
++  // XXXX-XXXX-XXXXX lines too). Its lines may be separated by new lines, spaces or commas, and
++  // a pair may be typed without the space. Added switched on and saved with the user's own
++  // codes. Returns an empty string, or what was wrong with it.
++  std::string AddTyped(const std::string& name, const std::string& text, bool gecko);
 +
 +private:
 +  void Save() const;
@@ -25308,10 +25415,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..ddf43e8
+index 0000000..967ba6f
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,3216 @@
+@@ -0,0 +1,3377 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -25329,7 +25436,10 @@ index 0000000..ddf43e8
 +#include <vector>
 +
 +#include <imgui.h>
++#include <orbis/ImeDialog.h>
 +#include <orbis/Pad.h>
++#include <orbis/Sysmodule.h>
++#include <orbis/UserService.h>
 +#include <orbis/SystemService.h>
 +#include <orbis/libkernel.h>
 +
@@ -26058,6 +26168,14 @@ index 0000000..ddf43e8
 +std::atomic<bool> s_cheat_dl_busy{false}, s_cheat_dl_done{false};
 +PS4Cheats::List::Download s_cheat_dl;  // written by the download thread before s_cheat_dl_done
 +std::string s_cheat_dl_status;
++// Typed cheats (Add Gecko / Action Replay Code): the system keyboard asks for a name (purpose
++// 10), then the code (11, opened on the next poll). The menu ignores the pad while it is open.
++int s_ime_purpose = 0, s_ime_next = 0;
++bool s_ime_loaded = false;
++char16_t s_ime_text[2050] = {};
++char16_t s_ime_title[64] = {};
++bool s_cheat_add_gecko = true;
++std::string s_cheat_add_name, s_cheat_add_status;
 +uint32_t s_held = 0;
 +float s_repeat = 0.0f;
 +bool s_quit = false;
@@ -26384,6 +26502,10 @@ index 0000000..ddf43e8
 +    const auto entries = s_cheats.Entries();
 +    rows.push_back({"Download Codes", s_cheat_dl_busy ? "Downloading..." : s_cheat_dl_status});
 +    keys.push_back("cheatdl");
++    rows.push_back({"Add Gecko Code", s_cheat_add_gecko ? s_cheat_add_status : ""});
++    keys.push_back("cheatadd:gecko");
++    rows.push_back({"Add Action Replay Code", s_cheat_add_gecko ? "" : s_cheat_add_status});
++    keys.push_back("cheatadd:ar");
 +    if (!entries.empty())
 +    {
 +      rows.push_back({"Enable All"});
@@ -26414,6 +26536,9 @@ index 0000000..ddf43e8
 +    subtitle = "CHEATS";
 +    if (selected >= 0 && selected < static_cast<int>(keys.size()) && keys[selected] == "cheatdl")
 +      hints = {{Glyph::Cross, "Download"}, {Glyph::UpDown, "Move"}, {Glyph::Circle, "Back"}};
++    else if (selected >= 0 && selected < static_cast<int>(keys.size()) &&
++             keys[selected].rfind("cheatadd:", 0) == 0)
++      hints = {{Glyph::Cross, "Type a code"}, {Glyph::UpDown, "Move"}, {Glyph::Circle, "Back"}};
 +    else
 +      hints = {{Glyph::Cross, "On/Off"}, {Glyph::UpDown, "Move"}, {Glyph::Circle, "Back"}};
 +  }
@@ -26708,6 +26833,133 @@ index 0000000..ddf43e8
 +  BuildRows();
 +}
 +
++// The system keyboard (ImeDialog) for typed cheats; UTF-16 text in s_ime_text.
++void StartIme(int purpose, const char* title, int max_length, bool multiline)
++{
++  if (!s_ime_loaded)
++  {
++    sceSysmoduleLoadModule(ORBIS_SYSMODULE_IME_DIALOG);
++    s_ime_loaded = true;
++  }
++  std::fill(std::begin(s_ime_text), std::end(s_ime_text), u'\0');
++  std::fill(std::begin(s_ime_title), std::end(s_ime_title), u'\0');
++  for (size_t i = 0; title[i] && i < 63; i++)
++    s_ime_title[i] = static_cast<unsigned char>(title[i]);
++  int user = 0;
++  sceUserServiceGetInitialUser(&user);
++  OrbisImeDialogSetting setting{};
++  setting.userId = static_cast<uint32_t>(user);
++  setting.type = ORBIS_TYPE_BASIC_LATIN;
++  setting.enterLabel = ORBIS_BUTTON_LABEL_DEFAULT;
++  setting.inputMethod = ORBIS__DEFAULT;
++  setting.option = 0x2 | (multiline ? 0x1 : 0x0);  // no auto-capitalization; several lines
++  setting.maxTextLength = static_cast<uint32_t>(std::clamp(max_length, 1, 2048));
++  setting.inputTextBuffer = reinterpret_cast<wchar_t*>(s_ime_text);
++  setting.posx = 1920.0f / 2;
++  setting.posy = 1080.0f / 2;
++  setting.horizontalAlignment = ORBIS_H_CENTER;
++  setting.verticalAlignment = ORBIS_V_CENTER;
++  setting.title = reinterpret_cast<const wchar_t*>(s_ime_title);
++  const int result = sceImeDialogInit(&setting, nullptr);
++  if (result < 0)
++  {
++    Log("cheats: keyboard did not open (" + std::to_string(result) + ")");
++    Toast("The keyboard did not open");
++    return;
++  }
++  s_ime_purpose = purpose;
++}
++
++std::string ImeText()
++{
++  std::string out;
++  for (const char16_t* t = s_ime_text; *t; t++)
++  {
++    uint32_t c = *t;
++    if (c >= 0xD800 && c < 0xDC00 && t[1] >= 0xDC00 && t[1] < 0xE000)
++    {
++      c = 0x10000 + ((c - 0xD800) << 10) + (t[1] - 0xDC00);
++      t++;
++    }
++    if (c < 0x80)
++    {
++      out += static_cast<char>(c);
++    }
++    else if (c < 0x800)
++    {
++      out += static_cast<char>(0xC0 | (c >> 6));
++      out += static_cast<char>(0x80 | (c & 0x3F));
++    }
++    else if (c < 0x10000)
++    {
++      out += static_cast<char>(0xE0 | (c >> 12));
++      out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
++      out += static_cast<char>(0x80 | (c & 0x3F));
++    }
++    else
++    {
++      out += static_cast<char>(0xF0 | (c >> 18));
++      out += static_cast<char>(0x80 | ((c >> 12) & 0x3F));
++      out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
++      out += static_cast<char>(0x80 | (c & 0x3F));
++    }
++  }
++  return out;
++}
++
++void BuildRows();
++
++// Each poll: a finished keyboard hands its text over; the code's keyboard follows the name's.
++void UpdateIme()
++{
++  if (!s_ime_purpose && s_ime_next == 11)
++  {
++    s_ime_next = 0;
++    StartIme(11,
++             s_cheat_add_gecko ? "Gecko code (8 + 8 digits per line)" :
++                                 "Action Replay code (8 + 8 digits, or XXXX-XXXX-XXXXX)",
++             2048, true);
++    return;
++  }
++  if (!s_ime_purpose)
++    return;
++  // Only finished (2) or gone (0) ends it; other states come while typing.
++  const int status = static_cast<int>(sceImeDialogGetStatus());
++  if (status != ORBIS_DIALOG_STATUS_STOPPED && status != ORBIS_DIALOG_STATUS_NONE)
++    return;
++  OrbisDialogResult result{};
++  const int got = sceImeDialogGetResult(&result);
++  if (status == ORBIS_DIALOG_STATUS_STOPPED)
++    sceImeDialogTerm();
++  const int purpose = s_ime_purpose;
++  s_ime_purpose = 0;
++  if (got >= 0 && result.endstatus == ORBIS_DIALOG_OK)
++  {
++    const std::string text = ImeText();
++    if (purpose == 10)
++    {
++      s_cheat_add_name = text;
++      s_ime_next = 11;
++    }
++    else if (purpose == 11)
++    {
++      const std::string error = s_cheats.AddTyped(s_cheat_add_name, text, s_cheat_add_gecko);
++      if (error.empty())
++        s_cheats.ApplyToRunningGame();
++      s_cheat_add_status = error.empty() ? "Added, switched on" : error;
++      Toast(error.empty() ? "Cheat added and switched on" : "Cheat not added: " + error, 4000);
++      Log("cheats: typed " + std::string(s_cheat_add_gecko ? "Gecko" : "Action Replay") +
++          " code \"" + s_cheat_add_name + "\": " + (error.empty() ? "added" : error));
++    }
++  }
++  else
++  {
++    s_cheat_add_status.clear();  // cancelled
++  }
++  if (s_open && s_page == Page::Cheats)
++    BuildRows();
++}
++
 +// Changes the setting on a settings row (direction -1/+1) and saves it.
 +void ChangeSetting(int row, int direction)
 +{
@@ -26722,6 +26974,16 @@ index 0000000..ddf43e8
 +  if (s_page == Page::Cheats)
 +  {
 +    const std::string& key = s_row_keys[row];
++    if (key.rfind("cheatadd:", 0) == 0)
++    {
++      if (direction <= 0 || s_ime_purpose)
++        return;
++      s_cheat_add_gecko = key == "cheatadd:gecko";
++      s_cheat_add_status.clear();
++      s_cheat_add_name.clear();
++      StartIme(10, "Cheat name", 64, false);
++      return;
++    }
 +    if (key == "cheatdl")
 +    {
 +      if (direction <= 0 || s_cheat_dl_busy)
@@ -28202,6 +28464,7 @@ index 0000000..ddf43e8
 +    s_jit_notice = true;
 +    Toast("This console doesn't allow Dolphin's fast CPU mode (JIT): games run slowly.", 9000);
 +  }
++  UpdateIme();
 +  if (s_cheat_dl_done.exchange(false))
 +  {
 +    s_cheat_dl_busy = false;
@@ -28306,6 +28569,11 @@ index 0000000..ddf43e8
 +  if (scePadReadState(ps4_pad_handle, &data) != 0 || !data.connected)
 +    return;
 +  const uint32_t held = data.buttons;
++  if (s_ime_purpose || s_ime_next)
++  {
++    s_held = held;  // the keyboard's own presses don't reach the menu
++    return;
++  }
 +  const uint32_t pressed = held & ~s_held;
 +  s_held = held;
 +  bool open;
@@ -31259,10 +31527,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..59d90ee
+index 0000000..cb7df8b
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,7128 @@
+@@ -0,0 +1,7183 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -32125,8 +32393,14 @@ index 0000000..59d90ee
 +  void AddShare(std::string address);
 +  int m_share_remove = -1;    // the share a first Cross asked to remove
 +  std::string m_share_status;  // the last add or rescan
-+  void StartKeyboard(int purpose, const char* title, const std::string& initial, bool password);
++  void StartKeyboard(int purpose, const char* title, const std::string& initial, bool password,
++                     int max_length = 128, bool multiline = false);
 +  void UpdateKeyboard();
++  // Typed cheats: Add Gecko / Action Replay Code asks for a name (purpose 10), then the code
++  // (purpose 11); the second keyboard opens on the next frame (m_ime_next).
++  bool m_cheat_add_gecko = true;
++  std::string m_cheat_add_name, m_cheat_add_status;
++  int m_ime_next = 0;
 +  void StartAchievementLogin(const std::string& user, const std::string& password);
 +  void UpdateAchievementLogin();
 +  std::string RaGet(const std::string& key) const;
@@ -32135,7 +32409,7 @@ index 0000000..59d90ee
 +  int m_ime_purpose = 0;  // 1: username, 2: password (the keyboard is open)
 +  int m_ime_last_status = -1;  // the keyboard's last status (logged when it changes)
 +  bool m_ime_loaded = false;
-+  char16_t m_ime_text[130] = {};
++  char16_t m_ime_text[2050] = {};  // up to 2048 characters (a typed cheat code)
 +  char16_t m_ime_title[64] = {};
 +  std::thread m_ra_thread;
 +  std::mutex m_ra_mutex;
@@ -33566,6 +33840,16 @@ index 0000000..59d90ee
 +    BuildCheatRows();
 +    return;
 +  }
++  if (row.key.rfind("cheatadd:", 0) == 0)
++  {
++    if (direction <= 0 || m_ime_purpose)
++      return;
++    m_cheat_add_gecko = row.key == "cheatadd:gecko";
++    m_cheat_add_status.clear();
++    m_cheat_add_name.clear();
++    StartKeyboard(10, "Cheat name", "", false, 64);
++    return;
++  }
 +  if (row.key == "cheatdl")
 +  {
 +    if (m_cheat_dl_busy || direction <= 0)
@@ -34062,6 +34346,9 @@ index 0000000..59d90ee
 +  const auto entries = m_cheats.Entries();
 +  rows.push_back({"Download Codes", m_cheat_dl_busy ? "Downloading..." : m_cheat_dl_status,
 +                  "cheatdl"});
++  rows.push_back({"Add Gecko Code", m_cheat_add_gecko ? m_cheat_add_status : "", "cheatadd:gecko"});
++  rows.push_back({"Add Action Replay Code", m_cheat_add_gecko ? "" : m_cheat_add_status,
++                  "cheatadd:ar"});
 +  if (!entries.empty())
 +  {
 +    rows.push_back({"Enable All", "", "cheatall:on"});
@@ -35569,6 +35856,12 @@ index 0000000..59d90ee
 +      }
 +      else if (row.key == "cheatdl")
 +        help = "Gets this game's Gecko codes from the internet (codes.rc24.xyz). New ones are added switched off.";
++      else if (row.key == "cheatadd:gecko")
++        help = "Type a Gecko code: a name, then its lines - two 8-digit numbers each, separated by "
++               "spaces or new lines. It is added switched on.";
++      else if (row.key == "cheatadd:ar")
++        help = "Type an Action Replay code: a name, then its lines - two 8-digit numbers each, or "
++               "encrypted XXXX-XXXX-XXXXX lines. It is added switched on.";
 +      else if (row.key.rfind("cheat:", 0) == 0 || row.key.rfind("cheatall:", 0) == 0)
 +        help = "Applies the next time the game starts, or now from the in-game menu (L3+R3).";
 +      else if (row.key.rfind("riiv:", 0) == 0)
@@ -37346,7 +37639,8 @@ index 0000000..59d90ee
 +}  // namespace
 +
 +// The system keyboard over the menu (the PS4 draws it; the menu keeps running underneath).
-+void Menu::StartKeyboard(int purpose, const char* title, const std::string& initial, bool password)
++void Menu::StartKeyboard(int purpose, const char* title, const std::string& initial, bool password,
++                         int max_length, bool multiline)
 +{
 +  if (!m_ime_loaded)
 +  {
@@ -37356,7 +37650,8 @@ index 0000000..59d90ee
 +  }
 +  std::fill(std::begin(m_ime_text), std::end(m_ime_text), u'\0');
 +  std::fill(std::begin(m_ime_title), std::end(m_ime_title), u'\0');
-+  for (size_t i = 0; i < initial.size() && i < 128; i++)
++  max_length = std::clamp(max_length, 1, 2048);
++  for (size_t i = 0; i < initial.size() && i < static_cast<size_t>(max_length); i++)
 +    m_ime_text[i] = static_cast<unsigned char>(initial[i]);
 +  for (size_t i = 0; title[i] && i < 63; i++)
 +    m_ime_title[i] = static_cast<unsigned char>(title[i]);
@@ -37365,9 +37660,9 @@ index 0000000..59d90ee
 +  setting.type = ORBIS_TYPE_BASIC_LATIN;
 +  setting.enterLabel = ORBIS_BUTTON_LABEL_DEFAULT;
 +  setting.inputMethod = ORBIS__DEFAULT;
-+  // 2: no auto-capitalization, 4: password (dots). The keyboard uses UTF-16 text.
-+  setting.option = password ? 0x6 : 0x2;
-+  setting.maxTextLength = 128;
++  // 1: several lines, 2: no auto-capitalization, 4: password (dots). The keyboard uses UTF-16.
++  setting.option = (password ? 0x6 : 0x2) | (multiline ? 0x1 : 0x0);
++  setting.maxTextLength = static_cast<uint32_t>(max_length);
 +  setting.inputTextBuffer = reinterpret_cast<wchar_t*>(m_ime_text);
 +  setting.posx = 1920.0f / 2;
 +  setting.posy = 1080.0f / 2;
@@ -37388,6 +37683,15 @@ index 0000000..59d90ee
 +
 +void Menu::UpdateKeyboard()
 +{
++  if (!m_ime_purpose && m_ime_next == 11)
++  {
++    m_ime_next = 0;
++    StartKeyboard(11,
++                  m_cheat_add_gecko ? "Gecko code (8 + 8 digits per line)" :
++                                      "Action Replay code (8 + 8 digits, or XXXX-XXXX-XXXXX)",
++                  "", false, 2048, true);
++    return;
++  }
 +  if (!m_ime_purpose)
 +    return;
 +  // Only a finished keyboard (2) or a gone one (0) ends it: anything else (it reports other
@@ -37426,7 +37730,26 @@ index 0000000..59d90ee
 +    {
 +      AddShare(text);
 +    }
++    else if (purpose == 10)
++    {
++      m_cheat_add_name = text;
++      m_ime_next = 11;
++    }
++    else if (purpose == 11)
++    {
++      const std::string error = m_cheats.AddTyped(m_cheat_add_name, text, m_cheat_add_gecko);
++      m_cheat_add_status = error.empty() ? "Added, switched on" : error;
++      Log("cheats: typed " + std::string(m_cheat_add_gecko ? "Gecko" : "Action Replay") +
++          " code \"" + m_cheat_add_name + "\": " + (error.empty() ? "added" : error));
++      Play(error.empty() ? "confirm" : "back");
++    }
 +  }
++  else if (purpose == 10 || purpose == 11)
++  {
++    m_cheat_add_status.clear();  // cancelled
++  }
++  if (m_panel.open && (purpose == 10 || purpose == 11) && m_panel.title == "Cheats")
++    BuildCheatRows();
 +  if (m_panel.open && m_panel.setting == SET_ACHIEVEMENTS)
 +    BuildAchievementRows();
 +  if (m_panel.open && m_panel.setting == SET_SHARES)
