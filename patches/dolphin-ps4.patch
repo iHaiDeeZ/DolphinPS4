@@ -50101,7 +50101,7 @@ index c56f32c..64e5240 100644
  
 diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 new file mode 100755
-index 0000000..9e95324
+index 0000000..e5edc9b
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 @@ -0,0 +1,1257 @@
@@ -50494,7 +50494,7 @@ index 0000000..9e95324
 +  for (bool v : {jo.enableBlocklink, jo.optimizeGatherPipe, jo.accurateSinglePrecision,
 +                 jo.fastmem, jo.fastmem_arena, jo.memcheck, jo.fp_exceptions,
 +                 jo.div_by_zero_exceptions, m_jit.m_low_dcbz_hack, m_jit.m_accurate_nans,
-+                 m_jit.m_accurate_fmadds, m_jit.m_accurate_cpu_cache_enabled,
++                 m_jit.m_accurate_fmadds, m_jit.m_accurate_cpu_cache_enabled, m_jit.m_fprf,
 +                 m_jit.m_system.IsWii()})
 +  {
 +    h = Mix(h, v);
