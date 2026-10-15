@@ -3364,6 +3364,78 @@ index 0000000..78d77cf
 +// Installs the hooks whose game and code match (from HLE::PatchFixedFunctions).
 +void PatchGame(Core::System& system);
 +}  // namespace HLE_PS4Games
+diff --git a/Source/Core/Core/HW/CPU.cpp b/Source/Core/Core/HW/CPU.cpp
+index abd632d..baa6943 100644
+--- a/Source/Core/Core/HW/CPU.cpp
++++ b/Source/Core/Core/HW/CPU.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "Core/HW/CPU.h"
+ 
++#include <chrono>
+ #include <condition_variable>
+ #include <mutex>
+ #include <queue>
+@@ -21,6 +22,15 @@
+ #include "Core/System.h"
+ #include "Core/TimePlayed.h"
+ #include "VideoCommon/Fifo.h"
++#include "VideoCommon/Present.h"
++
++#ifdef __ORBIS__
++#include <atomic>
++namespace Fifo
++{
++extern std::atomic<int> ps4_overlay_repaint;  // VideoCommon/Fifo.cpp (the in-game menu)
++}
++#endif
+ 
+ namespace CPU
+ {
+@@ -154,8 +164,9 @@ void CPUManager::Run()
+       break;
+ 
+     case State::Stepping:
++    {
+       // Wait for step command.
+-      m_state_cpu_cvar.wait(state_lock, [this, &state_lock, &gdb_step_sync_event] {
++      const auto stepping_done = [this, &state_lock, &gdb_step_sync_event] {
+         ExecutePendingJobs(state_lock);
+         CPUThreadConfigCallback::CheckForConfigChanges();
+         state_lock.unlock();
+@@ -180,7 +191,31 @@ void CPUManager::Run()
+         }
+         state_lock.lock();
+         return m_state_cpu_step_instruction || !IsStepping();
+-      });
++      };
++#ifdef __ORBIS__
++      // PS4, single core: this thread is also the GPU thread, so the in-game menu (drawn when
++      // the picture is presented) is painted from here while the game is paused - there is no
++      // GPU loop to do it (games Dolphin keeps on one core, e.g. F-Zero GX: the menu opened
++      // but never appeared).
++      if (!m_system.IsDualCoreMode())
++      {
++        while (!stepping_done())
++        {
++          m_state_cpu_cvar.wait_for(state_lock, std::chrono::milliseconds(16));
++          if (Fifo::ps4_overlay_repaint.exchange(0) && g_presenter)
++          {
++            state_lock.unlock();
++            g_presenter->Present(nullptr);
++            state_lock.lock();
++          }
++        }
++      }
++      else
++#endif
++      {
++        m_state_cpu_cvar.wait(state_lock, stepping_done);
++      }
++    }
+       if (!IsStepping())
+       {
+         // Signal event if the mode changes.
 diff --git a/Source/Core/Core/HW/DSPHLE/UCodes/AX.cpp b/Source/Core/Core/HW/DSPHLE/UCodes/AX.cpp
 index 7159a5b..08a90da 100644
 --- a/Source/Core/Core/HW/DSPHLE/UCodes/AX.cpp
@@ -25415,10 +25487,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..967ba6f
+index 0000000..e4b8668
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,3377 @@
+@@ -0,0 +1,3653 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -25430,6 +25502,8 @@ index 0000000..967ba6f
 +#include <cmath>
 +#include <cstdio>
 +#include <ctime>
++#include <iterator>
++#include <fstream>
 +#include <mutex>
 +#include <string>
 +#include <thread>
@@ -25506,6 +25580,7 @@ index 0000000..967ba6f
 +extern "C" long long ps4_film_drop_after_ms;
 +extern "C" int ps4_film_frames(long long newer_than_ms, long long up_to_ms, void** textures,
 +                               long long* times, int max);
++extern "C" void ps4_state_picture(const char* path);  // VideoCommon/Present.cpp: a slot's picture
 +extern "C" const char* ps4_self_path();  // PlatformPS4.cpp: the running program
 +extern "C" void ps4_return_to_menu();    // PlatformPS4.cpp: the restart shows the menu
 +extern "C" void ps4_relaunch_game();     // PlatformPS4.cpp: the restart boots this game again
@@ -25552,6 +25627,7 @@ index 0000000..967ba6f
 +  bool header = false;  // category title, not selectable
 +  bool note = false;    // value takes effect at the next start (shown in amber)
 +  int tag = 0;          // cheats: 1 = an ON tag (green), -1 = an OFF tag (red)
++  int icon = 0;         // first page: MainItem + 1, drawn before the label (DrawItemIcon)
 +  std::string badge;    // achievements: the badge picture's key ("U12345" / "L12345")
 +  // Achievements page (a tall row): description, status line, type, trophy tier, rarity.
 +  std::string sub;
@@ -26259,6 +26335,19 @@ index 0000000..967ba6f
 +}
 +
 +// The slot as shown on the Save State and Load State rows.
++// A slot's state file, and its picture (taken when the state is saved, VideoCommon/Present.cpp).
++std::string StatePath(int slot)
++{
++  char name[16];
++  snprintf(name, sizeof(name), ".s%02d", slot);
++  return File::GetUserPath(D_STATESAVES_IDX) + s_game_id + name;
++}
++
++void SaveStatePicture(int slot)
++{
++  ps4_state_picture((StatePath(slot) + ".png").c_str());
++}
++
 +std::string SlotLabel(int slot)
 +{
 +  std::string label = "Slot " + std::to_string(slot);
@@ -26373,6 +26462,8 @@ index 0000000..967ba6f
 +        rows.push_back({"Quit Game"});
 +        break;
 +      }
++      if (!rows.empty())
++        rows.back().icon = item + 1;
 +    }
 +    selected = s_main_selected;
 +    subtitle = "PAUSED";
@@ -27373,6 +27464,7 @@ index 0000000..967ba6f
 +    }
 +    Log("hotkey: saving state " + std::to_string(s_slot));
 +    s_saving_slot = s_slot;
++    SaveStatePicture(s_slot);
 +    State::Save(system, static_cast<u32>(s_slot));
 +    Toast("Saving to slot " + std::to_string(s_slot) + "...");
 +  }
@@ -27561,6 +27653,7 @@ index 0000000..967ba6f
 +    }
 +    Log("saving state " + std::to_string(s_slot));
 +    s_saving_slot = s_slot;
++    SaveStatePicture(s_slot);
 +    State::Save(system, static_cast<u32>(s_slot));
 +    Toast("Saving to slot " + std::to_string(s_slot) + "...");
 +    break;
@@ -27963,6 +28056,165 @@ index 0000000..967ba6f
 +
 +extern "C" int ps4_bezel_area[4];  // VideoCommon/Present.cpp: the game picture beside a bezel
 +
++// Resonance's quick menu look (its launcher/quick_menu.cpp): the game's cover in the header, an
++// icon on each first-page row, the save slot's picture beside the panel, a clock.
++std::unique_ptr<AbstractTexture> TextureFromPng(const std::string& path, float* aspect)
++{
++  std::ifstream file(path, std::ios::binary);
++  if (!file || !g_gfx)
++    return nullptr;
++  const std::vector<u8> png((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
++  Common::UniqueBuffer<u8> rgba;
++  u32 width = 0, height = 0;
++  if (!Common::LoadPNG(png, &rgba, &width, &height) || width == 0 || height == 0)
++    return nullptr;
++  TextureConfig config(width, height, 1, 1, 1, AbstractTextureFormat::RGBA8, 0,
++                       AbstractTextureType::Texture_2DArray);
++  std::unique_ptr<AbstractTexture> texture = g_gfx->CreateTexture(config);
++  if (texture)
++    texture->Load(0, width, height, width, rgba.data(), static_cast<size_t>(width) * height * 4);
++  if (aspect)
++    *aspect = static_cast<float>(width) / static_cast<float>(height);
++  return texture;
++}
++
++std::unique_ptr<AbstractTexture> s_cover;
++std::string s_cover_for = "\x01";
++float s_cover_aspect = 0.72f;
++
++AbstractTexture* CoverTexture()
++{
++  if (s_cover_for != s_game_id)
++  {
++    s_cover_for = s_game_id;
++    s_cover.reset();
++    for (const std::string& id : {s_game_id, s_game_id.substr(0, std::min<size_t>(3, s_game_id.size()))})
++    {
++      if (id.empty())
++        continue;
++      s_cover = TextureFromPng("/data/DolphinPS4/covers/" + id + ".png", &s_cover_aspect);
++      if (s_cover)
++        break;
++    }
++  }
++  return s_cover.get();
++}
++
++struct SlotPicture
++{
++  long long mtime = -2;
++  std::unique_ptr<AbstractTexture> texture;
++};
++SlotPicture s_slot_pictures[9];
++int s_slot_check_frames = 0;
++
++// The slot's picture and the state's date (0: none). Checked again every half second (a picture
++// is written just after its state).
++AbstractTexture* SlotPictureTexture(int slot, long long* state_time)
++{
++  *state_time = 0;
++  if (slot < 1 || slot > 8)
++    return nullptr;
++  struct stat st;
++  if (stat(StatePath(slot).c_str(), &st) == 0)
++    *state_time = static_cast<long long>(st.st_mtime);
++  SlotPicture& picture = s_slot_pictures[slot];
++  if (++s_slot_check_frames >= 30 || picture.mtime == -2)
++  {
++    s_slot_check_frames = 0;
++    const std::string png = StatePath(slot) + ".png";
++    const long long mtime = stat(png.c_str(), &st) == 0 ? static_cast<long long>(st.st_mtime) : -1;
++    if (mtime != picture.mtime)
++    {
++      picture.mtime = mtime;
++      picture.texture = mtime >= 0 ? TextureFromPng(png, nullptr) : nullptr;
++    }
++  }
++  // A picture older than its state belongs to an earlier save.
++  if (picture.mtime >= 0 && *state_time > 0 && picture.mtime + 5 < *state_time)
++    return nullptr;
++  return picture.texture.get();
++}
++
++// The first page's icons, drawn with lines and shapes (centre c, radius r).
++void DrawItemIcon(ImDrawList* dl, int item, ImVec2 c, float r, ImU32 col)
++{
++  const float t = std::max(1.5f, r * 0.16f);
++  switch (item)
++  {
++  case MAIN_RESUME:
++    dl->AddTriangleFilled(ImVec2(c.x - r * 0.55f, c.y - r * 0.75f), ImVec2(c.x + r * 0.8f, c.y),
++                          ImVec2(c.x - r * 0.55f, c.y + r * 0.75f), col);
++    break;
++  case MAIN_SAVE:
++    dl->AddLine(ImVec2(c.x, c.y - r * 0.85f), ImVec2(c.x, c.y + r * 0.2f), col, t);
++    dl->AddTriangleFilled(ImVec2(c.x - r * 0.45f, c.y - r * 0.05f), ImVec2(c.x + r * 0.45f, c.y - r * 0.05f),
++                          ImVec2(c.x, c.y + r * 0.45f), col);
++    dl->AddLine(ImVec2(c.x - r * 0.85f, c.y + r * 0.35f), ImVec2(c.x - r * 0.85f, c.y + r * 0.8f), col, t);
++    dl->AddLine(ImVec2(c.x - r * 0.85f, c.y + r * 0.8f), ImVec2(c.x + r * 0.85f, c.y + r * 0.8f), col, t);
++    dl->AddLine(ImVec2(c.x + r * 0.85f, c.y + r * 0.8f), ImVec2(c.x + r * 0.85f, c.y + r * 0.35f), col, t);
++    break;
++  case MAIN_LOAD:
++  case MAIN_RESTART:
++  {
++    // A circular arrow (Load State also gets clock hands).
++    dl->PathArcTo(c, r * 0.75f, -2.2f, 3.4f, 24);
++    dl->PathStroke(col, 0, t);
++    const ImVec2 tip(c.x + r * 0.75f * std::cos(-2.2f), c.y + r * 0.75f * std::sin(-2.2f));
++    dl->AddTriangleFilled(ImVec2(tip.x - r * 0.42f, tip.y - r * 0.05f), ImVec2(tip.x + r * 0.15f, tip.y - r * 0.4f),
++                          ImVec2(tip.x + r * 0.2f, tip.y + r * 0.25f), col);
++    if (item == MAIN_LOAD)
++    {
++      dl->AddLine(c, ImVec2(c.x, c.y - r * 0.4f), col, t);
++      dl->AddLine(c, ImVec2(c.x + r * 0.3f, c.y + r * 0.15f), col, t);
++    }
++    break;
++  }
++  case MAIN_CONTROLS:
++    dl->AddRect(ImVec2(c.x - r * 0.95f, c.y - r * 0.5f), ImVec2(c.x + r * 0.95f, c.y + r * 0.55f), col,
++                r * 0.45f, 0, t);
++    dl->AddLine(ImVec2(c.x - r * 0.62f, c.y), ImVec2(c.x - r * 0.22f, c.y), col, t);
++    dl->AddLine(ImVec2(c.x - r * 0.42f, c.y - r * 0.2f), ImVec2(c.x - r * 0.42f, c.y + r * 0.2f), col, t);
++    dl->AddCircleFilled(ImVec2(c.x + r * 0.35f, c.y - r * 0.08f), r * 0.11f, col);
++    dl->AddCircleFilled(ImVec2(c.x + r * 0.58f, c.y + r * 0.14f), r * 0.11f, col);
++    break;
++  case MAIN_SETTINGS:
++    for (int i = 0; i < 8; i++)
++    {
++      const float a = i * 0.785398f;
++      dl->AddLine(ImVec2(c.x + std::cos(a) * r * 0.5f, c.y + std::sin(a) * r * 0.5f),
++                  ImVec2(c.x + std::cos(a) * r * 0.88f, c.y + std::sin(a) * r * 0.88f), col, t * 1.6f);
++    }
++    dl->AddCircle(c, r * 0.55f, col, 20, t * 1.2f);
++    dl->AddCircleFilled(c, r * 0.2f, col);
++    break;
++  case MAIN_CHEATS:
++  {
++    // A four-pointed sparkle and a small one.
++    const float k = r * 0.22f;
++    dl->AddQuadFilled(ImVec2(c.x - r * 0.15f, c.y - r * 0.9f), ImVec2(c.x - r * 0.15f + k, c.y - k),
++                      ImVec2(c.x - r * 0.15f, c.y + r * 0.7f), ImVec2(c.x - r * 0.15f - k, c.y - k), col);
++    dl->AddQuadFilled(ImVec2(c.x - r * 0.95f, c.y - r * 0.1f), ImVec2(c.x - r * 0.15f, c.y - r * 0.1f - k),
++                      ImVec2(c.x + r * 0.65f, c.y - r * 0.1f), ImVec2(c.x - r * 0.15f, c.y - r * 0.1f + k), col);
++    dl->AddCircleFilled(ImVec2(c.x + r * 0.62f, c.y + r * 0.55f), r * 0.16f, col);
++    break;
++  }
++  case MAIN_ACHIEVEMENTS:
++    DrawTrophy(dl, c, r * 2.0f, col);
++    break;
++  case MAIN_QUIT:
++    dl->PathArcTo(c, r * 0.72f, -1.1f, 4.24f, 24);
++    dl->PathStroke(col, 0, t);
++    dl->AddLine(ImVec2(c.x, c.y - r * 0.95f), ImVec2(c.x, c.y - r * 0.15f), col, t);
++    break;
++  default:
++    dl->AddCircleFilled(c, r * 0.22f, col);
++    break;
++  }
++}
++
++float s_card = 0.0f;  // the slot card beside the panel (0 hidden .. 1 shown)
++
 +void Draw()
 +{
 +  s_draws++;
@@ -28132,7 +28384,8 @@ index 0000000..967ba6f
 +
 +  if (a > 0.01f)
 +  {
-+    dl->AddRectFilled(ImVec2(0, 0), size, IM_COL32(0, 0, 0, static_cast<int>(150 * a)));
++    // The game stays visible: a light shade, the panel's own gradient on the left.
++    dl->AddRectFilled(ImVec2(0, 0), size, IM_COL32(0, 0, 0, static_cast<int>(70 * a)));
 +    const float panel_w = 860.0f * s;
 +    // Ease-out cubic: the panel arrives quickly and settles softly.
 +    const float eased = 1.0f - (1.0f - a) * (1.0f - a) * (1.0f - a);
@@ -28148,29 +28401,48 @@ index 0000000..967ba6f
 +    s_page_in += (1.0f - s_page_in) * (1.0f - std::exp(-12.0f * dt));
 +    const float page_dx = (1.0f - s_page_in) * 90.0f * s;
 +    const float page_a = 0.25f + 0.75f * s_page_in;
-+    dl->AddRectFilledMultiColor(ImVec2(x0, 0), ImVec2(x0 + panel_w, size.y),
-+                                IM_COL32(8, 20, 46, static_cast<int>(240 * a)),
-+                                IM_COL32(8, 20, 46, static_cast<int>(150 * a)),
-+                                IM_COL32(2, 6, 16, static_cast<int>(150 * a)),
-+                                IM_COL32(2, 6, 16, static_cast<int>(240 * a)));
-+    // A soft shadow beyond the panel and a thin lit edge.
-+    dl->AddRectFilledMultiColor(ImVec2(x0 + panel_w, 0), ImVec2(x0 + panel_w + 70 * s, size.y),
-+                                IM_COL32(0, 0, 0, static_cast<int>(120 * a)), IM_COL32(0, 0, 0, 0),
-+                                IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, static_cast<int>(120 * a)));
-+    dl->AddLine(ImVec2(x0 + panel_w, 0), ImVec2(x0 + panel_w, size.y),
-+                IM_COL32(120, 196, 255, static_cast<int>(150 * a)), 1.5f * s);
++    // Dark on the left, lighter towards the game, then fading out into it; a lit edge.
++    const ImU32 deep = IM_COL32(4, 8, 18, static_cast<int>(235 * a));
++    const ImU32 mid = IM_COL32(4, 8, 18, static_cast<int>(150 * a));
++    const ImU32 clear = IM_COL32(4, 8, 18, 0);
++    dl->AddRectFilledMultiColor(ImVec2(x0, 0), ImVec2(x0 + panel_w, size.y), deep, mid, mid, deep);
++    dl->AddRectFilledMultiColor(ImVec2(x0 + panel_w, 0), ImVec2(x0 + panel_w + size.x * 0.15f, size.y),
++                                mid, clear, clear, mid);
++    dl->AddRectFilled(ImVec2(x0 + panel_w - 2 * s, 0), ImVec2(x0 + panel_w, size.y),
++                      IM_COL32(120, 196, 255, static_cast<int>(150 * a)));
 +    const ImU32 white = IM_COL32(255, 255, 255, static_cast<int>(255 * a));
 +    const ImU32 dim = IM_COL32(255, 255, 255, static_cast<int>(165 * a));
 +    const ImU32 accent = IM_COL32(120, 196, 255, static_cast<int>(255 * a));
-+    dl->AddText(regular, 26 * s, ImVec2(x0 + 70 * s, 90 * s), accent, PS4Lang::T(s_subtitle).c_str());
-+    dl->AddText(bold, 40 * s, ImVec2(x0 + 70 * s, 122 * s), white, s_title.c_str(), nullptr,
-+                panel_w - 120 * s);
++    // The header: the cover, the page's name on a pulsing pill, the game's name.
++    float tx = x0 + 70 * s;
++    if (AbstractTexture* cover = CoverTexture())
++    {
++      const float ch = 150 * s, cw = ch * std::clamp(s_cover_aspect, 0.5f, 1.5f);
++      const ImVec2 ca(x0 + 70 * s, 62 * s), cb(ca.x + cw, ca.y + ch);
++      dl->AddRectFilled(ImVec2(ca.x + 5 * s, ca.y + 6 * s), ImVec2(cb.x + 5 * s, cb.y + 6 * s),
++                        IM_COL32(0, 0, 0, static_cast<int>(110 * a)), 8 * s);
++      dl->AddImageRounded(ImTextureRef(*cover), ca, cb, ImVec2(0, 0), ImVec2(1, 1),
++                          IM_COL32(255, 255, 255, static_cast<int>(255 * a)), 8 * s);
++      tx = cb.x + 28 * s;
++    }
++    {
++      const std::string pill = PS4Lang::T(s_subtitle);
++      const float ps = 22 * s;
++      const float pw = bold->CalcTextSizeA(ps, FLT_MAX, 0, pill.c_str()).x + ps * 1.4f;
++      const float pulse = 0.75f + 0.25f * std::sin(std::chrono::duration<float>(now.time_since_epoch()).count() * 3.0f);
++      dl->AddRectFilled(ImVec2(tx, 72 * s), ImVec2(tx + pw, 72 * s + ps * 1.6f),
++                        IM_COL32(52, 140, 230, static_cast<int>(230 * a * pulse)), ps * 0.8f);
++      dl->AddText(bold, ps, ImVec2(tx + ps * 0.7f, 72 * s + ps * 0.3f), white, pill.c_str());
++      ps4_overlay_repaint = 1;  // the pill breathes while the menu is open
++    }
++    dl->AddText(bold, 40 * s, ImVec2(tx, 116 * s), white, s_title.c_str(), nullptr,
++                x0 + panel_w - 50 * s - tx);
 +    if (s_bar >= 0.0f)
 +    {
 +      // Achievements: how far along, as on the PS3's trophy list.
-+      dl->AddText(regular, 22 * s, ImVec2(x0 + 70 * s, 168 * s),
++      dl->AddText(regular, 22 * s, ImVec2(tx, 168 * s),
 +                  IM_COL32(255, 200, 70, static_cast<int>(255 * a)), s_bar_text.c_str());
-+      const float bx0 = x0 + 70 * s, bx1 = x0 + panel_w - 70 * s, by = 200 * s;
++      const float bx0 = tx, bx1 = x0 + panel_w - 70 * s, by = 200 * s;
 +      dl->AddRectFilled(ImVec2(bx0, by), ImVec2(bx1, by + 10 * s),
 +                        IM_COL32(255, 255, 255, static_cast<int>(40 * a)), 5 * s);
 +      if (s_bar > 0.0f)
@@ -28181,13 +28453,26 @@ index 0000000..967ba6f
 +    }
 +    else if (!s_playtime.empty())
 +    {
-+      dl->AddText(regular, 24 * s, ImVec2(x0 + 70 * s, 172 * s), dim,
-+                  PS4Lang::T(s_playtime).c_str());
++      dl->AddText(regular, 24 * s, ImVec2(tx, 170 * s), dim, PS4Lang::T(s_playtime).c_str());
++    }
++    {
++      // The clock, top right.
++      const std::time_t t = std::time(nullptr);
++      char hm[16] = {}, day[32] = {};
++      if (const std::tm* lt = std::localtime(&t))
++      {
++        std::strftime(hm, sizeof(hm), "%H:%M", lt);
++        std::strftime(day, sizeof(day), "%d/%m/%Y", lt);
++      }
++      const float hw = bold->CalcTextSizeA(40 * s, FLT_MAX, 0, hm).x;
++      const float dw = regular->CalcTextSizeA(22 * s, FLT_MAX, 0, day).x;
++      dl->AddText(bold, 40 * s, ImVec2(size.x - 80 * s - hw, 54 * s), white, hm);
++      dl->AddText(regular, 22 * s, ImVec2(size.x - 80 * s - dw, 100 * s), dim, day);
 +    }
 +
 +    // The list scrolls to keep the selection in view.
 +    const float row_h = (s_tall ? 108.0f : 62.0f) * s;
-+    const float top = (s_tall ? 232.0f : 220.0f) * s,
++    const float top = (s_tall ? 244.0f : 244.0f) * s,
 +                bottom = size.y - (s_detail.empty() ? 160.0f : 280.0f) * s;
 +    const float visible = (bottom - top) / row_h;
 +    const float target = std::clamp(static_cast<float>(s_selected) - visible * 0.5f + 1.0f, 0.0f,
@@ -28206,12 +28491,14 @@ index 0000000..967ba6f
 +      const float hy = top + (s_highlight - s_scroll) * row_h;
 +      const float hx0 = x0 + 40 * s + page_dx, hx1 = x0 + panel_w - 40 * s + page_dx;
 +      const float ha = a * page_a;
-+      dl->AddRectFilled(ImVec2(hx0 - 8 * s, hy - 12 * s), ImVec2(hx1 + 8 * s, hy + 62 * s),
-+                        IM_COL32(91, 184, 255, static_cast<int>(28 * ha)), 18 * s);
-+      BevelBox(dl, ImVec2(hx0, hy - 4 * s), ImVec2(hx1, hy + 54 * s),
-+               IM_COL32(52, 120, 210, static_cast<int>(215 * ha)),
-+               IM_COL32(18, 52, 120, static_cast<int>(215 * ha)),
-+               IM_COL32(130, 200, 255, static_cast<int>(150 * ha)), 14 * s, ha, s, true);
++      // Resonance's highlight: the accent fading to the right, a white bar on the left.
++      dl->AddRectFilledMultiColor(ImVec2(hx0, hy - 4 * s), ImVec2(hx1, hy + 54 * s),
++                                  IM_COL32(52, 140, 230, static_cast<int>(150 * ha)),
++                                  IM_COL32(52, 140, 230, static_cast<int>(30 * ha)),
++                                  IM_COL32(52, 140, 230, static_cast<int>(30 * ha)),
++                                  IM_COL32(52, 140, 230, static_cast<int>(150 * ha)));
++      dl->AddRectFilled(ImVec2(hx0, hy - 4 * s), ImVec2(hx0 + 5 * s, hy + 54 * s),
++                        IM_COL32(255, 255, 255, static_cast<int>(230 * ha)));
 +    }
 +    s_value_in += (1.0f - s_value_in) * (1.0f - std::exp(-14.0f * dt));
 +    const float panel_x0 = x0;
@@ -28261,6 +28548,11 @@ index 0000000..967ba6f
 +      // The label grows as the highlight reaches it (instead of jumping from 32 to 36).
 +      const float focus = std::max(0.0f, 1.0f - std::abs(static_cast<float>(i) - s_highlight));
 +      float label_x = x0 + 70 * s + 8 * s * focus;
++      if (row.icon)
++      {
++        DrawItemIcon(dl, row.icon - 1, ImVec2(label_x + 20 * s, y + 25 * s), 17 * s, sel ? white : dim);
++        label_x += 58 * s;
++      }
 +      if (AbstractTexture* badge = BadgeTexture(row.badge))
 +      {
 +        dl->AddImageRounded(ImTextureRef(*badge), ImVec2(label_x, y + 2 * s),
@@ -28320,6 +28612,62 @@ index 0000000..967ba6f
 +    {
 +      dl->AddText(regular, 26 * s, ImVec2(x0 + 70 * s, bottom + 26 * s), dim, s_detail.c_str(),
 +                  nullptr, panel_w - 140 * s);
++    }
++
++    // Save / Load State: the slot's picture, which slot (dots) and when it was saved.
++    {
++      const int item = s_page == Page::Main && s_main_selected >= 0 &&
++                               s_main_selected < static_cast<int>(s_main_items.size()) ?
++                           s_main_items[s_main_selected] :
++                           -1;
++      const bool want = item == MAIN_SAVE || item == MAIN_LOAD;
++      s_card += ((want ? 1.0f : 0.0f) - s_card) * (1.0f - std::exp(-14.0f * dt));
++      const float card = s_card * a;
++      if (card > 0.01f)
++      {
++        long long when = 0;
++        AbstractTexture* picture = SlotPictureTexture(s_slot, &when);
++        const float cw = size.x * 0.32f, ch = cw * 3.0f / 4.0f;
++        const ImVec2 ca(x0 + panel_w + size.x * 0.06f + (1.0f - s_card) * 40 * s, 262 * s);
++        const ImVec2 cb(ca.x + cw, ca.y + ch);
++        dl->AddRectFilled(ImVec2(ca.x + 6 * s, ca.y + 8 * s), ImVec2(cb.x + 6 * s, cb.y + 8 * s),
++                          IM_COL32(0, 0, 0, static_cast<int>(110 * card)), 8 * s);
++        dl->AddRectFilled(ca, cb, IM_COL32(10, 14, 24, static_cast<int>(220 * card)), 8 * s);
++        if (when != 0 && picture)
++        {
++          dl->AddImageRounded(ImTextureRef(*picture), ca, cb, ImVec2(0, 0), ImVec2(1, 1),
++                              IM_COL32(255, 255, 255, static_cast<int>(255 * card)), 8 * s);
++        }
++        else
++        {
++          const std::string label = PS4Lang::T(when != 0 ? "No picture" : "Empty");
++          const float lw = regular->CalcTextSizeA(32 * s, FLT_MAX, 0, label.c_str()).x;
++          dl->AddText(regular, 32 * s, ImVec2((ca.x + cb.x - lw) * 0.5f, (ca.y + cb.y) * 0.5f - 16 * s),
++                      IM_COL32(255, 255, 255, static_cast<int>(200 * card)), label.c_str());
++        }
++        dl->AddRect(ca, cb, IM_COL32(255, 255, 255, static_cast<int>(80 * card)), 8 * s, 0, 1.5f * s);
++        for (int i = 1; i <= 8; i++)
++        {
++          const ImVec2 c(ca.x + cw * 0.5f + (i - 4.5f) * 24 * s, cb.y + 32 * s);
++          dl->AddCircleFilled(c, i == s_slot ? 6.5f * s : 3.8f * s,
++                              IM_COL32(255, 255, 255, static_cast<int>((i == s_slot ? 255 : 110) * card)), 12);
++        }
++        std::string info = std::string(PS4Lang::T("Slot")) + " " + std::to_string(s_slot) + "   ";
++        if (when != 0)
++        {
++          const std::time_t t = static_cast<std::time_t>(when);
++          char tb[48] = {};
++          if (const std::tm* lt = std::localtime(&t))
++            std::strftime(tb, sizeof(tb), "%d/%m/%Y  %H:%M", lt);
++          info += tb;
++        }
++        else
++        {
++          info += PS4Lang::T("Empty");
++        }
++        dl->AddText(regular, 28 * s, ImVec2(ca.x, cb.y + 60 * s),
++                    IM_COL32(255, 255, 255, static_cast<int>(235 * card)), info.c_str());
++      }
 +    }
 +
 +    // Button hints with icons.
@@ -48358,12 +48706,16 @@ index 92f7c1f..3378a49 100644
      m_default_pixel_shader = g_gfx->CreateShaderFromSource(
          ShaderStage::Pixel, GetHeader(false) + default_pixel_shader_code + GetFooter(), nullptr,
 diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
-index 41d05f3..b613fd1 100644
+index 41d05f3..f43eba8 100644
 --- a/Source/Core/VideoCommon/Present.cpp
 +++ b/Source/Core/VideoCommon/Present.cpp
-@@ -3,6 +3,11 @@
+@@ -2,7 +2,15 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
  
  #include "VideoCommon/Present.h"
++#include "VideoCommon/AbstractStagingTexture.h"
++#include <thread>
++#include <mutex>
  
 +#include "VideoCommon/ShaderCache.h"
 +
@@ -48373,7 +48725,7 @@ index 41d05f3..b613fd1 100644
  #include "Common/ChunkFile.h"
  #include "Core/Config/GraphicsSettings.h"
  #include "Core/Config/MainSettings.h"
-@@ -10,11 +15,26 @@
+@@ -10,11 +18,26 @@
  #include "Core/HW/VideoInterface.h"
  #include "Core/Host.h"
  #include "Core/System.h"
@@ -48400,7 +48752,7 @@ index 41d05f3..b613fd1 100644
  #include "VideoCommon/FrameDumper.h"
  #include "VideoCommon/FramebufferManager.h"
  #include "VideoCommon/OnScreenUI.h"
-@@ -124,9 +144,16 @@ bool Presenter::Initialize()
+@@ -124,9 +147,16 @@ bool Presenter::Initialize()
      if (!m_post_processor->Initialize(m_backbuffer_format))
        return false;
  
@@ -48420,7 +48772,7 @@ index 41d05f3..b613fd1 100644
  
      // Draw a blank frame (and complete OnScreenUI initialization)
      g_gfx->BindBackbuffer({{0.0f, 0.0f, 0.0f, 1.0f}});
-@@ -136,8 +163,17 @@ bool Presenter::Initialize()
+@@ -136,8 +166,17 @@ bool Presenter::Initialize()
    return true;
  }
  
@@ -48438,7 +48790,7 @@ index 41d05f3..b613fd1 100644
    ReleaseXFBContentLock();
    u64 old_xfb_id = m_last_xfb_id;
  
-@@ -165,10 +201,73 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
+@@ -165,10 +204,73 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
    return old_xfb_id == m_last_xfb_id;
  }
  
@@ -48512,7 +48864,7 @@ index 41d05f3..b613fd1 100644
  
    PresentInfo present_info{
        .present_count = m_present_count++,
-@@ -431,8 +530,23 @@ Presenter::ConvertStereoRectangle(const MathUtil::Rectangle<int>& rc) const
+@@ -431,8 +533,23 @@ Presenter::ConvertStereoRectangle(const MathUtil::Rectangle<int>& rc) const
    return std::make_tuple(left_rc, right_rc);
  }
  
@@ -48536,7 +48888,7 @@ index 41d05f3..b613fd1 100644
    if (!g_ActiveConfig.bCropCustom)
      return MathUtil::Rectangle<int>(0, 0, 0, 0);
  
-@@ -464,7 +578,11 @@ MathUtil::Rectangle<int> Presenter::AdjustForCustomCrop(const MathUtil::Rectangl
+@@ -464,7 +581,11 @@ MathUtil::Rectangle<int> Presenter::AdjustForCustomCrop(const MathUtil::Rectangl
  
  float Presenter::AdjustAspectRatioForCustomCrop(float input_aspect_ratio) const
  {
@@ -48548,7 +48900,7 @@ index 41d05f3..b613fd1 100644
      return input_aspect_ratio;
  
    const MathUtil::Rectangle<int> rect = m_xfb_rect;
-@@ -903,9 +1021,289 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
+@@ -903,9 +1024,306 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
    }
  }
  
@@ -48687,6 +49039,7 @@ index 41d05f3..b613fd1 100644
 +{
 +constexpr u32 BEZEL_BLUR_W = 96, BEZEL_BLUR_H = 54;
 +extern "C" {
++void ps4_state_picture(const char* path);
 +// 0 off (the film is freed), 1 recording, 2 held (a rewind is playing it).
 +int ps4_film_record = 0;
 +// Frames newer than this (steady clock, ms) are dropped at the next present (after a rewind).
@@ -48711,6 +49064,22 @@ index 41d05f3..b613fd1 100644
 +constexpr int FILM_EVERY = 4;
 +std::vector<PS4FilmFrame> s_film;
 +size_t s_film_oldest = 0;
++
++// A save state's picture (the in-game menu's slot card): a small copy of the frame on screen when
++// the state was saved, written next to the state as <state>.png. Requested from any thread
++// (ps4_state_picture), taken at the next present (video thread).
++constexpr u32 STATE_PIC_W = 320, STATE_PIC_H = 240;
++std::mutex s_state_pic_mutex;
++std::string s_state_pic_path;
++std::unique_ptr<AbstractTexture> s_state_pic;
++std::unique_ptr<AbstractFramebuffer> s_state_pic_fb;
++std::unique_ptr<AbstractStagingTexture> s_state_pic_readback;
++
++void ps4_state_picture(const char* path)
++{
++  std::lock_guard lock(s_state_pic_mutex);
++  s_state_pic_path = path ? path : "";
++}
 +u64 s_film_xfb = ~0ULL;
 +int s_film_skip = 0;
 +
@@ -48838,7 +49207,7 @@ index 41d05f3..b613fd1 100644
  
    if (g_gfx->IsHeadless() || (!m_onscreen_ui && !m_xfb_entry))
      return;
-@@ -934,7 +1332,130 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -934,7 +1352,177 @@ void Presenter::Present(PresentInfo* present_info)
    UpdateDrawRectangle();
  
    g_gfx->BeginUtilityDrawing();
@@ -48944,6 +49313,53 @@ index 41d05f3..b613fd1 100644
 +  {
 +    s_film_xfb = m_last_xfb_id;
 +  }
++  // A save state's picture (ps4_state_picture): the frame on screen, small, to a PNG file.
++  if (m_xfb_entry)
++  {
++    std::string path;
++    {
++      std::lock_guard lock(s_state_pic_mutex);
++      path.swap(s_state_pic_path);
++    }
++    if (!path.empty())
++    {
++      if (!s_state_pic)
++      {
++        const TextureConfig config(STATE_PIC_W, STATE_PIC_H, 1, 1, 1, m_backbuffer_format,
++                                   AbstractTextureFlag_RenderTarget,
++                                   AbstractTextureType::Texture_2DArray);
++        s_state_pic = g_gfx->CreateTexture(config, "PS4 state picture");
++        if (s_state_pic)
++          s_state_pic_fb = g_gfx->CreateFramebuffer(s_state_pic.get(), nullptr);
++        const TextureConfig staging(STATE_PIC_W, STATE_PIC_H, 1, 1, 1, m_backbuffer_format, 0,
++                                    AbstractTextureType::Texture_2DArray);
++        s_state_pic_readback = g_gfx->CreateStagingTexture(StagingTextureType::Readback, staging);
++      }
++      if (s_state_pic_fb && s_state_pic_readback)
++      {
++        const MathUtil::Rectangle<int> rect(0, 0, STATE_PIC_W, STATE_PIC_H);
++        g_gfx->SetAndClearFramebuffer(s_state_pic_fb.get(), {{0.0f, 0.0f, 0.0f, 1.0f}});
++        m_post_processor->BlitFromTexture(rect, AdjustForCustomCrop(m_xfb_rect),
++                                          m_xfb_entry->texture.get(), 0);
++        s_state_pic->FinishedRendering();
++        s_state_pic_readback->CopyFromTexture(s_state_pic.get(), 0, 0);
++        s_state_pic_readback->Flush();
++        std::vector<u8> rgba(STATE_PIC_W * STATE_PIC_H * 4);
++        s_state_pic_readback->ReadTexels(rect, rgba.data(), STATE_PIC_W * 4);
++        const bool bgra = m_backbuffer_format == AbstractTextureFormat::BGRA8;
++        std::thread([path, bgra, rgba = std::move(rgba)]() mutable {
++          for (size_t i = 0; i < rgba.size(); i += 4)
++          {
++            if (bgra)
++              std::swap(rgba[i], rgba[i + 2]);
++            rgba[i + 3] = 255;
++          }
++          Common::SavePNG(path, rgba.data(), Common::ImageByteFormat::RGBA, STATE_PIC_W,
++                          STATE_PIC_H, STATE_PIC_W * 4);
++        }).detach();
++      }
++    }
++  }
 +  // Port diagnostics are done: black around the game image, as on other platforms.
    const bool backbuffer_bound = g_gfx->BindBackbuffer({{0.0f, 0.0f, 0.0f, 1.0f}});
 +  if (backbuffer_bound && bezel_texture)
@@ -48969,7 +49385,7 @@ index 41d05f3..b613fd1 100644
  
    // Render the XFB to the screen.
    if (backbuffer_bound && m_xfb_entry)
-@@ -945,7 +1466,52 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -945,7 +1533,52 @@ void Presenter::Present(PresentInfo* present_info)
      AdjustRectanglesToFitBounds(&render_target_rc, &render_source_rc, m_backbuffer_width,
                                  m_backbuffer_height);
      RenderXFBToScreen(render_target_rc, m_xfb_entry->texture.get(), render_source_rc);
