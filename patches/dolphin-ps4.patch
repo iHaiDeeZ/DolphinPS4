@@ -14062,10 +14062,10 @@ index 0000000..b11d825
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit_FloatingPoint.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit_FloatingPoint.cpp
 new file mode 100644
-index 0000000..4968fdc
+index 0000000..62a65ba
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit_FloatingPoint.cpp
-@@ -0,0 +1,985 @@
+@@ -0,0 +1,986 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -14792,11 +14792,12 @@ index 0000000..4968fdc
 +
 +  // Dolphin Lab (jit_fcmp_merge, default on): fcmp followed by a bc on its CR field branches on
 +  // the value just computed, like cmp + bc (DoMergedBranchCondition), instead of the bc reloading
-+  // the field from ppcState. The field is still stored (it may be read after the branch). Not with
-+  // FPRF (its OR changes the flags; the test below doesn't need them, but keep it simple), a
-+  // merged cror (the bc is then the instruction after it), or a branch on SO (unordered: the
-+  // integer merge treats SO as never set).
-+  const bool merge_branch = ps4_jit_fcmp_merge && !fprf && js.skipInstructions == 0 &&
++  // the field from ppcState. The field is still stored (it may be read after the branch). Also
++  // with FPRF (F-Zero GX: its float compares are in its busiest loops): the FPCC ORs come before
++  // the TEST below, which sets the flags the branch uses. Not with a merged cror (the bc is then
++  // the instruction after it) or a branch on SO (unordered: the integer merge treats SO as never
++  // set).
++  const bool merge_branch = ps4_jit_fcmp_merge && js.skipInstructions == 0 &&
 +                            CheckMergedBranch(crf) &&
 +                            3 - (js.op[1].inst.BI & 3) != PowerPC::CR_SO_BIT;
 +
