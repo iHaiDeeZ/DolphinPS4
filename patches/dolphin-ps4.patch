@@ -9938,10 +9938,10 @@ index 0000000..482d3bc
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
 new file mode 100644
-index 0000000..09bf4f3
+index 0000000..181f92c
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
-@@ -0,0 +1,2513 @@
+@@ -0,0 +1,2518 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10018,6 +10018,8 @@ index 0000000..09bf4f3
 +using namespace Gen;
 +
 +extern "C" int ps4_fifo_batch;  // VideoCommon/Fifo.cpp (ps4.ini fifo_batch)
++extern "C" int ps4_jit_lazy_fprf;  // jit_lazy_fprf (DolphinNoGUI/MainNoGUI.cpp)
++int ps4_jit_lazy_fprf = 1;
 +extern "C" int ps4_fifo_defer;  // VideoCommon/Fifo.cpp (ps4.ini fifo_defer)
 +extern "C" void ps4_boot_trace(const char* line);  // DolphinPS4 port/ps4_crashlog.cpp
 +extern "C" int ps4_gp_fuse;     // ps4.ini jit_gp_fuse (DolphinNoGUI)
@@ -10604,6 +10606,8 @@ index 0000000..09bf4f3
 +  m_ps4_bench_start = std::chrono::steady_clock::now();
 +  m_ps4_bench_thread = pthread_self();
 +  s_count_on = getenv("PS4JIT_COUNT") != nullptr;
++  if (const char* lazy = getenv("PS4JIT_LAZY_FPRF"))
++    ps4_jit_lazy_fprf = atoi(lazy);
 +  // PS4JIT_TRACE=auto: jit_trace as on the PS4; PS4JIT_TRACE=<blocks.txt>: from that profile.
 +  if (const char* profile = getenv("PS4JIT_TRACE"))
 +  {
@@ -10886,6 +10890,7 @@ index 0000000..09bf4f3
 +  }
 +
 +  Interpreter::Instruction instr = Interpreter::GetInterpreterOp(inst);
++  PS4MaterializeFPRF();  // the interpreter reads and writes fpscr itself
 +  PS4StorePinned();  // the interpreter reads and writes ppcState
 +  ABI_PushRegistersAndAdjustStack({}, 0);
 +  ABI_CallFunctionPC(instr, &m_system.GetInterpreter(), inst.hex);
@@ -12457,10 +12462,10 @@ index 0000000..09bf4f3
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.h b/Source/Core/Core/PowerPC/JitPS4/Jit.h
 new file mode 100644
-index 0000000..0132a73
+index 0000000..39bd049
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.h
-@@ -0,0 +1,368 @@
+@@ -0,0 +1,370 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -12652,6 +12657,8 @@ index 0000000..0132a73
 +  void UpdateFPExceptionSummary(Gen::X64Reg fpscr, Gen::X64Reg tmp1, Gen::X64Reg tmp2);
 +
 +  void SetFPRFIfNeeded(const Gen::OpArg& xmm, bool single);
++  // Lazy FPRF: before code that reads (or partly writes) FPSCR, a pending result's class goes in.
++  void PS4MaterializeFPRF();
 +  void FinalizeSingleResult(Gen::X64Reg output, const Gen::OpArg& input, bool packed = true,
 +                            bool duplicate = false);
 +  void FinalizeDoubleResult(Gen::X64Reg output, const Gen::OpArg& input);
@@ -14046,10 +14053,10 @@ index 0000000..b11d825
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit_FloatingPoint.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit_FloatingPoint.cpp
 new file mode 100644
-index 0000000..e1f3049
+index 0000000..4968fdc
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit_FloatingPoint.cpp
-@@ -0,0 +1,957 @@
+@@ -0,0 +1,985 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -14079,6 +14086,8 @@ index 0000000..e1f3049
 +alignas(16) static const u64 psSignBits2[2] = {0x8000000000000000ULL, 0x8000000000000000ULL};
 +alignas(16) static const u64 psAbsMask[2] = {0x7FFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL};
 +alignas(16) static const u64 psAbsMask2[2] = {0x7FFFFFFFFFFFFFFFULL, 0x7FFFFFFFFFFFFFFFULL};
++extern "C" int ps4_jit_lazy_fprf;  // DolphinNoGUI/MainNoGUI.cpp (jit_lazy_fprf)
++
 +alignas(16) static const u64 psGeneratedQNaN[2] = {0x7FF8000000000000ULL, 0x7FF8000000000000ULL};
 +alignas(16) static const double half_qnan_and_s32_max[2] = {0x7FFFFFFF, -0x80000};
 +
@@ -14099,7 +14108,28 @@ index 0000000..e1f3049
 +  else
 +    MOVSD(xmm, input);
 +
++  if (ps4_jit_lazy_fprf)
++  {
++    // Lazy FPRF: the result and its kind; classified only if FPSCR is read before the next one
++    // (most never are - F-Zero GX: classifying every one cost about a third of its races).
++    MOVSD(PPCSTATE(ps4_fprf_value), xmm);
++    MOV(8, PPCSTATE(ps4_fprf_state), Imm8(single ? 2 : 1));
++    return;
++  }
 +  SetFPRF(xmm, single);
++}
++
++void JitPS4::PS4MaterializeFPRF()
++{
++  if (!m_fprf || !ps4_jit_lazy_fprf)
++    return;
++  TEST(8, PPCSTATE(ps4_fprf_state), Imm8(0xFF));
++  FixupBranch none = J_CC(CC_Z, Jump::Near);
++  const BitSet32 regs = CallerSavedRegistersInUse();
++  ABI_PushRegistersAndAdjustStack(regs, 0);
++  ABI_CallFunctionP(PowerPC::ps4_fprf_materialize, &m_ppc_state);
++  ABI_PopRegistersAndAdjustStack(regs, 0);
++  SetJumpTarget(none);
 +}
 +
 +// ps4.ini jit_accurate_singles: on (both), off (neither), operands (only the multiply operands'
@@ -14766,7 +14796,12 @@ index 0000000..e1f3049
 +  RegCache::Realize(Ra, Rb);
 +
 +  if (fprf)
++  {
 +    AND(32, PPCSTATE(fpscr), Imm32(~FPCC_MASK));
++    // Lazy FPRF: FPCC is written below; a pending result now only gives the C bit.
++    if (ps4_jit_lazy_fprf)
++      OR(8, PPCSTATE(ps4_fprf_state), Imm8(4));
++  }
 +
 +  if (upper)
 +  {
@@ -18814,10 +18849,10 @@ index 0000000..73dc576
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit_SystemRegisters.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit_SystemRegisters.cpp
 new file mode 100644
-index 0000000..294e20d
+index 0000000..1b12735
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit_SystemRegisters.cpp
-@@ -0,0 +1,889 @@
+@@ -0,0 +1,895 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -19496,6 +19531,7 @@ index 0000000..294e20d
 +void JitPS4::mcrfs(UGeckoInstruction inst)
 +{
 +  INSTRUCTION_START
++  PS4MaterializeFPRF();
 +
 +  u8 shift = 4 * (7 - inst.CRFS);
 +  u32 mask = 0xF << shift;
@@ -19535,6 +19571,7 @@ index 0000000..294e20d
 +void JitPS4::mffsx(UGeckoInstruction inst)
 +{
 +  INSTRUCTION_START
++  PS4MaterializeFPRF();
 +  FALLBACK_IF(inst.Rc);
 +
 +  MOV(32, R(RSCRATCH), PPCSTATE(fpscr));
@@ -19564,6 +19601,7 @@ index 0000000..294e20d
 +void JitPS4::mtfsb0x(UGeckoInstruction inst)
 +{
 +  INSTRUCTION_START
++  PS4MaterializeFPRF();
 +  FALLBACK_IF(inst.Rc);
 +
 +  const u32 mask = 0x80000000 >> inst.CRBD;
@@ -19598,6 +19636,7 @@ index 0000000..294e20d
 +void JitPS4::mtfsb1x(UGeckoInstruction inst)
 +{
 +  INSTRUCTION_START
++  PS4MaterializeFPRF();
 +  FALLBACK_IF(inst.Rc);
 +  FALLBACK_IF(jo.fp_exceptions);
 +
@@ -19635,6 +19674,7 @@ index 0000000..294e20d
 +void JitPS4::mtfsfix(UGeckoInstruction inst)
 +{
 +  INSTRUCTION_START
++  PS4MaterializeFPRF();
 +  FALLBACK_IF(inst.Rc);
 +  FALLBACK_IF(jo.fp_exceptions);
 +
@@ -19665,6 +19705,7 @@ index 0000000..294e20d
 +void JitPS4::mtfsfx(UGeckoInstruction inst)
 +{
 +  INSTRUCTION_START
++  PS4MaterializeFPRF();
 +  FALLBACK_IF(inst.Rc);
 +  FALLBACK_IF(jo.fp_exceptions);
 +
@@ -22162,10 +22203,56 @@ index f9081ba..89f1d4f 100644
  
    // Option setting/getting
 diff --git a/Source/Core/Core/PowerPC/PowerPC.cpp b/Source/Core/Core/PowerPC/PowerPC.cpp
-index 564d74d..56197a1 100644
+index 564d74d..f618701 100644
 --- a/Source/Core/Core/PowerPC/PowerPC.cpp
 +++ b/Source/Core/Core/PowerPC/PowerPC.cpp
-@@ -230,6 +230,7 @@ std::span<const CPUCore> AvailableCPUCores()
+@@ -67,6 +67,35 @@ PowerPCManager::PowerPCManager(Core::System& system)
+ 
+ PowerPCManager::~PowerPCManager() = default;
+ 
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
++extern "C" void ps4_fprf_materialize(PowerPCState* ppc)
++{
++  const u8 state = ppc->ps4_fprf_state;
++  if (state == 0)
++    return;
++  ppc->ps4_fprf_state = 0;
++  if ((state & 3) == 0)
++    return;  // only an fcmp since: fpscr is already right
++  u32 fprf;
++  if ((state & 3) == 2)
++  {
++    float value;
++    const u32 bits = static_cast<u32>(ppc->ps4_fprf_value);
++    std::memcpy(&value, &bits, sizeof(value));
++    fprf = Common::ClassifyFloat(value);
++  }
++  else
++  {
++    double value;
++    std::memcpy(&value, &ppc->ps4_fprf_value, sizeof(value));
++    fprf = Common::ClassifyDouble(value);
++  }
++  if (state & 4)
++    fprf = (fprf & 0x10) | (ppc->fpscr.FPRF & 0xF);
++  ppc->fpscr.FPRF = fprf;
++}
++#endif
++
+ void PowerPCManager::DoState(PointerWrap& p)
+ {
+   // some of this code has been disabled, because
+@@ -86,6 +115,9 @@ void PowerPCManager::DoState(PointerWrap& p)
+   p.Do(m_ppc_state.npc);
+   p.DoArray(m_ppc_state.cr.fields);
+   p.Do(m_ppc_state.msr);
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
++  ps4_fprf_materialize(&m_ppc_state);  // a lazy FPRF goes into the state (and a load clears it)
++#endif
+   p.Do(m_ppc_state.fpscr);
+   p.Do(m_ppc_state.Exceptions);
+   p.Do(m_ppc_state.downcount);
+@@ -230,6 +262,7 @@ std::span<const CPUCore> AvailableCPUCores()
    static constexpr auto cpu_cores = {
  #ifdef _M_X86_64
        CPUCore::JIT64,
@@ -22173,7 +22260,7 @@ index 564d74d..56197a1 100644
  #elif defined(_M_ARM_64)
        CPUCore::JITARM64,
  #endif
-@@ -704,9 +705,22 @@ void RoundingModeUpdated(PowerPCState& ppc_state)
+@@ -704,9 +737,22 @@ void RoundingModeUpdated(PowerPCState& ppc_state)
    Common::FPU::SetSIMDMode(ppc_state.fpscr.RN, ppc_state.fpscr.NI);
  }
  
@@ -22197,7 +22284,7 @@ index 564d74d..56197a1 100644
    ppc_state.feature_flags = static_cast<CPUEmuFeatureFlags>(
        (ppc_state.feature_flags & ~FEATURE_FLAG_PERFMON) | (perfmon ? FEATURE_FLAG_PERFMON : 0));
  }
-@@ -718,7 +732,8 @@ void RecalculateAllFeatureFlags(PowerPCState& ppc_state)
+@@ -718,7 +764,8 @@ void RecalculateAllFeatureFlags(PowerPCState& ppc_state)
    static_assert(FEATURE_FLAG_MSR_DR == 1 << 0);
    static_assert(FEATURE_FLAG_MSR_IR == 1 << 1);
  
@@ -22208,7 +22295,7 @@ index 564d74d..56197a1 100644
                                                              (perfmon ? FEATURE_FLAG_PERFMON : 0));
  }
 diff --git a/Source/Core/Core/PowerPC/PowerPC.h b/Source/Core/Core/PowerPC/PowerPC.h
-index 8d84ed1..7b9d933 100644
+index 8d84ed1..e2eacb8 100644
 --- a/Source/Core/Core/PowerPC/PowerPC.h
 +++ b/Source/Core/Core/PowerPC/PowerPC.h
 @@ -38,6 +38,7 @@ enum class CPUCore
@@ -22219,7 +22306,7 @@ index 8d84ed1..7b9d933 100644
  };
  
  enum class CoreMode
-@@ -231,6 +232,12 @@ struct PowerPCState
+@@ -231,8 +232,26 @@ struct PowerPCState
  
    void UpdateFPRFDouble(double dvalue);
    void UpdateFPRFSingle(float fvalue);
@@ -22228,10 +22315,24 @@ index 8d84ed1..7b9d933 100644
 +  // Jit64 on PS4: the raw 32 bits an lfs loaded, for a later stfs of the same, unchanged register
 +  // in the same block (see Jit64::PS4AnalyzeRawSingles). Scratch storage, not guest state.
 +  u32 ps4_raw_single[32] = {};
++  // PS4 JIT lazy FPRF (jit_lazy_fprf): instead of classifying every float result into
++  // FPSCR[FPRF], the JIT stores the last result and its kind; ps4_fprf_materialize classifies it
++  // where FPSCR is read (mffs, mcrfs, the mtfs* family, interpreter fallbacks, save states).
++  u64 ps4_fprf_value = 0;
++  // Bits 0-1: 0 none, 1 a double, 2 a single (the low 32 bits of ps4_fprf_value). Bit 2: an fcmp
++  // wrote FPCC (FPRF's low 4 bits) into fpscr since, so only the class's C bit is taken.
++  u8 ps4_fprf_state = 0;
 +#endif
  };
  
++#if defined(__ORBIS__) || defined(DOLPHIN_PS4_HOST)
++// Puts a pending lazy FPRF (see ps4_fprf_state) into fpscr. Cheap when nothing is pending.
++extern "C" void ps4_fprf_materialize(PowerPCState* ppc);
++#endif
++
  #ifdef _M_X86_64
+ #ifdef __GNUC__
+ #pragma GCC diagnostic push
 diff --git a/Source/Core/Core/State.cpp b/Source/Core/Core/State.cpp
 index 2dcd2ca..0dc7bd8 100644
 --- a/Source/Core/Core/State.cpp
@@ -22946,7 +23047,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..0a5d1e0 100644
+index 3bf40ea..6143c45 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -22997,7 +23098,7 @@ index 3bf40ea..0a5d1e0 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,71 @@
+@@ -31,6 +53,72 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -23023,6 +23124,7 @@ index 3bf40ea..0a5d1e0 100644
 +extern "C" int ps4_jit_unroll;           // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_join;             // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_trace;            // Core/PowerPC/PPCAnalyst.cpp
++extern "C" int ps4_jit_lazy_fprf;        // Core/PowerPC/JitPS4/Jit.cpp
 +extern "C" int ps4_jit_gp_dynamic;       // Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 +extern "C" int ps4_jit_accurate_singles;  // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_round_results, ps4_jit_round_operands;  // Jit64/Jit_FloatingPoint.cpp
@@ -23069,7 +23171,7 @@ index 3bf40ea..0a5d1e0 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +260,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +261,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -23080,7 +23182,7 @@ index 3bf40ea..0a5d1e0 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +275,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +276,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -23099,7 +23201,7 @@ index 3bf40ea..0a5d1e0 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +307,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +308,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -23110,7 +23212,7 @@ index 3bf40ea..0a5d1e0 100644
  #endif
        });
  
-@@ -270,7 +374,449 @@ int main(const int argc, char* argv[])
+@@ -270,7 +375,452 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -23312,6 +23414,9 @@ index 3bf40ea..0a5d1e0 100644
 +    // follow them (JitPS4/Jit.cpp PS4Retrace). Off by default: +20% JIT speed on the PC test
 +    // bench, but slower on the PS4 (Bully, 2026-10-13) - bigger code for the Jaguar's caches.
 +    ps4_jit_trace = Platform::GetPS4Option("jit_trace", "off") == "on";
++    // jit_lazy_fprf=off (PS4 JIT): FPSCR[FPRF] classified after every float instruction again,
++    // instead of only where a game reads FPSCR (JitPS4 SetFPRFIfNeeded, ps4_fprf_materialize).
++    ps4_jit_lazy_fprf = Platform::GetPS4Option("jit_lazy_fprf", "on") == "on";
 +    // jit_gp_dynamic=off (Dolphin Lab): gather pipe writes through a pointer call MMU::Write again.
 +    ps4_jit_gp_dynamic = Platform::GetPS4Option("jit_gp_dynamic", "on") == "on";
 +    // jit_accurate_singles=off (per game): no rounding to single precision after float ops.
@@ -23560,7 +23665,7 @@ index 3bf40ea..0a5d1e0 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +830,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +834,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -23576,7 +23681,7 @@ index 3bf40ea..0a5d1e0 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +858,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +862,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -50101,7 +50206,7 @@ index c56f32c..64e5240 100644
  
 diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 new file mode 100755
-index 0000000..e5edc9b
+index 0000000..992bfff
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 @@ -0,0 +1,1257 @@
@@ -50147,7 +50252,7 @@ index 0000000..e5edc9b
 +    ps4_jit_tlb_inline, ps4_lfs_forward, ps4_jit_accurate_singles, ps4_jit_round_results,
 +    ps4_jit_round_operands, ps4_jit_fcmp_merge, ps4_jit_msr_link, ps4_jit_gp_dynamic,
 +    ps4_fifo_batch, ps4_fifo_defer;
-+extern "C" int ps4_jit_unroll, ps4_jit_join, ps4_jit_trace;  // Core/PowerPC/PPCAnalyst.cpp
++extern "C" int ps4_jit_unroll, ps4_jit_join, ps4_jit_trace, ps4_jit_lazy_fprf;  // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_pin[4];
 +extern "C" int ps4_jit_verify;  // JitPS4/Verify.cpp
 +
@@ -50486,7 +50591,7 @@ index 0000000..e5edc9b
 +                ps4_jit_tlb_inline, ps4_lfs_forward, ps4_jit_accurate_singles,
 +                ps4_jit_round_results, ps4_jit_round_operands, ps4_jit_fcmp_merge,
 +                ps4_jit_msr_link, ps4_jit_gp_dynamic, ps4_fifo_batch, ps4_fifo_defer, ps4_jit_verify,
-+                ps4_jit_unroll, ps4_jit_join, ps4_jit_trace, ps4_jit_pin[0], ps4_jit_pin[1], ps4_jit_pin[2], ps4_jit_pin[3]})
++                ps4_jit_unroll, ps4_jit_join, ps4_jit_trace, ps4_jit_lazy_fprf, ps4_jit_pin[0], ps4_jit_pin[1], ps4_jit_pin[2], ps4_jit_pin[3]})
 +  {
 +    h = Mix(h, v);
 +  }
@@ -51496,10 +51601,10 @@ index 0000000..63d7a7a
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Verify.cpp b/Source/Core/Core/PowerPC/JitPS4/Verify.cpp
 new file mode 100755
-index 0000000..b38108d
+index 0000000..9fa8c37
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Verify.cpp
-@@ -0,0 +1,471 @@
+@@ -0,0 +1,473 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -51740,6 +51845,7 @@ index 0000000..b38108d
 +  s.checkpoints.clear();
 +  s.shadow.bytes.clear();
 +  s.shadow.failed = false;
++  PowerPC::ps4_fprf_materialize(&ppc);  // the interpreter replay reads fpscr's FPRF as it is
 +  s.saved.Save(ppc);
 +
 +  auto& system = jit.m_system;
@@ -51812,6 +51918,7 @@ index 0000000..b38108d
 +  // The compiled code matches one of them - the closest is reported if none matches exactly.
 +  Regs now;
 +  jit.m_ppc_state.pc = destination;
++  PowerPC::ps4_fprf_materialize(&jit.m_ppc_state);  // compared with the replay's FPRF
 +  now.Capture(jit.m_ppc_state);
 +  auto& mmu = jit.m_system.GetMMU();
 +  const auto differences = [&](const Checkpoint& c, std::vector<std::string>* out) {
