@@ -2234,7 +2234,7 @@ index 16cae73..0e59ae9 100644
  
  namespace PowerPC
 diff --git a/Source/Core/Core/ConfigManager.cpp b/Source/Core/Core/ConfigManager.cpp
-index 32f74a0..b2ef45c 100644
+index 32f74a0..4e43610 100644
 --- a/Source/Core/Core/ConfigManager.cpp
 +++ b/Source/Core/Core/ConfigManager.cpp
 @@ -28,6 +28,7 @@
@@ -2245,7 +2245,7 @@ index 32f74a0..b2ef45c 100644
  #include "Core/Config/MainSettings.h"
  #include "Core/Config/SYSCONFSettings.h"
  #include "Core/ConfigLoaders/GameConfigLoader.h"
-@@ -57,6 +58,14 @@
+@@ -57,6 +58,17 @@
  #include "DiscIO/Volume.h"
  #include "DiscIO/VolumeWad.h"
  
@@ -2255,12 +2255,15 @@ index 32f74a0..b2ef45c 100644
 +// ps4.ini cpu_cull=off: ignore a game INI's CPUCull = True (Dolphin Lab).
 +extern "C" int ps4_cpu_cull_off;
 +int ps4_cpu_cull_off = 0;
++// ps4.ini fprf=off: ignore a game INI's FPRF = True (exact floating-point result flags).
++extern "C" int ps4_fprf_off;
++int ps4_fprf_off = 0;
 +#endif
 +
  SConfig* SConfig::m_Instance;
  
  SConfig::SConfig()
-@@ -285,6 +294,28 @@ void SConfig::SetRunningGameMetadata(const std::string& game_id, const std::stri
+@@ -285,6 +297,39 @@ void SConfig::SetRunningGameMetadata(const std::string& game_id, const std::stri
  
    Config::AddLayer(ConfigLoaders::GenerateGlobalGameConfigLoader(game_id, revision));
    Config::AddLayer(ConfigLoaders::GenerateLocalGameConfigLoader(game_id, revision));
@@ -2284,6 +2287,17 @@ index 32f74a0..b2ef45c 100644
 +  {
 +    for (const Config::LayerType type : {Config::LayerType::GlobalGame, Config::LayerType::LocalGame})
 +      Config::GetLayer(type)->DeleteKey(Config::GFX_CPU_CULL.GetLocation());
++  }
++  // ps4.ini fprf=off: the game INI's FPRF = True (24 games, F-Zero GX among them) makes the JIT
++  // work out the floating-point result flags after every float instruction - a lot of the
++  // CPU thread's time in float-heavy games. Off can bring back what Dolphin turned it on for.
++  if (ps4_fprf_off)
++  {
++    for (const Config::LayerType type : {Config::LayerType::GlobalGame, Config::LayerType::LocalGame})
++    {
++      if (Config::GetLayer(type)->DeleteKey(Config::MAIN_FPRF.GetLocation()))
++        NOTICE_LOG_FMT(CORE, "PS4: fprf=off overrides the game INI's FPRF setting");
++    }
 +  }
 +#endif
  
@@ -22932,7 +22946,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..ac08b9f 100644
+index 3bf40ea..0a5d1e0 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -22983,7 +22997,7 @@ index 3bf40ea..ac08b9f 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +53,70 @@
+@@ -31,6 +53,71 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -23039,6 +23053,7 @@ index 3bf40ea..ac08b9f 100644
 +extern "C" int ps4_game_hle;                       // Core/HLE/HLE_PS4Games.cpp
 +extern "C" int ps4_force_dual_core;                // Core/ConfigManager.cpp
 +extern "C" int ps4_cpu_cull_off;                   // Core/ConfigManager.cpp
++extern "C" int ps4_fprf_off;                       // Core/ConfigManager.cpp
 +extern "C" int ps4_zoom_letterbox;                 // VideoCommon/Present.cpp
 +extern "C" char ps4_game_hle_only[64];             // Core/HLE/HLE_PS4Games.cpp
 +extern "C" int ps4_auto_clock, ps4_auto_clock_min, ps4_auto_clock_max;  // PlatformPS4.cpp
@@ -23054,7 +23069,7 @@ index 3bf40ea..ac08b9f 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +259,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +260,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -23065,7 +23080,7 @@ index 3bf40ea..ac08b9f 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +274,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +275,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -23084,7 +23099,7 @@ index 3bf40ea..ac08b9f 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +306,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +307,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -23095,7 +23110,7 @@ index 3bf40ea..ac08b9f 100644
  #endif
        });
  
-@@ -270,7 +373,448 @@ int main(const int argc, char* argv[])
+@@ -270,7 +374,449 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -23175,6 +23190,7 @@ index 3bf40ea..ac08b9f 100644
 +      Config::SetBase(Config::MAIN_CPU_THREAD, dual_core == "on" || dual_core == "force");
 +      ps4_force_dual_core = dual_core == "force";
 +      ps4_cpu_cull_off = Platform::GetPS4Option("cpu_cull", "game") == "off";
++      ps4_fprf_off = Platform::GetPS4Option("fprf", "game") == "off";
 +    }
 +    // Keeps the GPU thread from running ahead of the CPU thread in dual core mode; without it
 +    // a game desynced ("GFX FIFO: Unknown Opcode") on loading.
@@ -23544,7 +23560,7 @@ index 3bf40ea..ac08b9f 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +828,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +830,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -23560,7 +23576,7 @@ index 3bf40ea..ac08b9f 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +856,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +858,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -30233,10 +30249,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..65d63b0
+index 0000000..80aa421
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1036 @@
+@@ -0,0 +1,1041 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -30373,6 +30389,11 @@ index 0000000..65d63b0
 +    {"speed_mode", "Speed Features", "Performance",
 +     {{"fast", "Fast"}, {"compatible", "Compatible"}}, "fast", false,
 +     "Compatible turns off the port's command-stream shortcuts if a game glitches or freezes."},
++    {"fprf", "Float Result Flags", "Performance", {{"game", "Game's Choice"}, {"off", "Off"}},
++     "game", false,
++     "Some games (F-Zero GX among them) have Dolphin compute the CPU's floating-point result "
++     "flags after every float instruction - slower. Off skips that; if a game then behaves "
++     "oddly (physics, collisions), set it back."},
 +    {"dual_core", "Dual Core", "Performance",
 +     {{"on", "On"}, {"force", "Forced"}, {"off", "Off"}}, "on", false,
 +     "Emulates the GPU on its own thread."},
