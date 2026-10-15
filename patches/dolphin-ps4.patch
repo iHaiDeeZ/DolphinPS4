@@ -23057,7 +23057,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..1273495 100644
+index 3bf40ea..6096db8 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -23226,7 +23226,7 @@ index 3bf40ea..1273495 100644
  #endif
        });
  
-@@ -270,7 +379,463 @@ int main(const int argc, char* argv[])
+@@ -270,7 +379,469 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -23543,6 +23543,12 @@ index 3bf40ea..1273495 100644
 +    // EA's VP6 videos need it - FIFA Street 2).
 +    Config::SetBase(Config::GFX_HACK_FAST_TEXTURE_SAMPLING,
 +                    Platform::GetPS4Option("manual_texture_sampling", "off") != "on");
++    // hires_textures=on: Dolphin's "Load Custom Textures" (HD packs in User/Load/Textures/<ID>);
++    // hires_prefetch=on: "Prefetch Custom Textures" (the whole pack in memory at the start).
++    Config::SetBase(Config::GFX_HIRES_TEXTURES,
++                    Platform::GetPS4Option("hires_textures", "off") == "on");
++    Config::SetBase(Config::GFX_CACHE_HIRES_TEXTURES,
++                    Platform::GetPS4Option("hires_prefetch", "off") == "on");
 +    // Settings -> System: the Wii's SD card (an image in User/Load; with the folder setting it is
 +    // packed from User/Load/WiiSDSync when a game starts and unpacked into it when it ends).
 +    Config::SetBase(Config::MAIN_WII_SD_CARD, Platform::GetPS4Option("sd_card", "on") == "on");
@@ -23690,7 +23696,7 @@ index 3bf40ea..1273495 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +849,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +855,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -23706,7 +23712,7 @@ index 3bf40ea..1273495 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +877,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +883,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -30379,10 +30385,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..80aa421
+index 0000000..5a1bd41
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1041 @@
+@@ -0,0 +1,1050 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -30480,6 +30486,13 @@ index 0000000..80aa421
 +    {"manual_texture_sampling", "Manual Texture Sampling", "Graphics",
 +     {{"off", "Off"}, {"on", "On"}}, "off", true,
 +     "Exact texture sampling (fixes some videos, e.g. FIFA Street 2); slower."},
++    {"hires_textures", "Custom Textures", "Graphics", {{"off", "Off"}, {"on", "On"}}, "off", true,
++     "HD texture packs: put a pack's folder in /data/DolphinPS4/User/Load/Textures/<game ID>/ "
++     "(e.g. GFZE01). DDS packs load fastest; PNG packs can stutter the first time."},
++    {"hires_prefetch", "Preload Custom Textures", "Graphics", {{"off", "Off"}, {"on", "On"}}, "off",
++     false,
++     "Loads the whole pack when the game starts: no stutter later, but a big pack can run out of "
++     "the PS4's memory. Off loads each texture when the game first uses it."},
 +    {"gpu_texture_decoding", "GPU Texture Decoding", "Graphics",
 +     {{"off", "Off"}, {"on", "On"}}, "off", false,
 +     "Decodes game textures on the GPU instead of the video thread (helps draw-heavy scenes)."},
@@ -31129,6 +31142,8 @@ index 0000000..80aa421
 +    Config::SetBase(Config::GFX_HACK_EFB_ACCESS_ENABLE, on);
 +  else if (key == "manual_texture_sampling")
 +    Config::SetBase(Config::GFX_HACK_FAST_TEXTURE_SAMPLING, !on);
++  else if (key == "hires_textures")
++    Config::SetBase(Config::GFX_HIRES_TEXTURES, on);
 +  else if (key == "cpu_clock")
 +  {
 +    if (value == "auto")
