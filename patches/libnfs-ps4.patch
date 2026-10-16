@@ -1,8 +1,49 @@
 diff --git a/lib/socket.c b/lib/socket.c
-index 7897efb..c2cd98a 100644
+index 7897efb..2a06d04 100644
 --- a/lib/socket.c
 +++ b/lib/socket.c
-@@ -1991,7 +1991,7 @@ rpc_connect_sockaddr_async(struct rpc_context *rpc)
+@@ -1833,6 +1833,7 @@ rpc_connect_sockaddr_async(struct rpc_context *rpc)
+ {
+         struct sockaddr_storage *s = &rpc->s;
+         socklen_t socksize;
++        int family;
+ 
+ 	assert(rpc->magic == RPC_CONTEXT_MAGIC);
+ 
+@@ -1865,7 +1866,13 @@ rpc_connect_sockaddr_async(struct rpc_context *rpc)
+ 		}
+ 	}
+ 
+-	switch (s->ss_family) {
++#ifdef HAVE_SOCKADDR_LEN
++	family = ((const struct sockaddr *)s)->sa_family;
++#else
++	family = s->ss_family;
++#endif
++
++	switch (family) {
+ 	case AF_INET:
+ 		socksize = sizeof(struct sockaddr_in);
+ 		rpc->fd = create_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+@@ -1904,6 +1911,6 @@ rpc_connect_sockaddr_async(struct rpc_context *rpc)
+ 		break;
+ 	default:
+-		rpc_set_error(rpc, "Can not handle AF_FAMILY:%d", s->ss_family);
++		rpc_set_error(rpc, "Can not handle AF_FAMILY:%d", family);
+ 		return -1;
+ 	}
+ 
+@@ -1981,8 +1988,8 @@ rpc_connect_sockaddr_async(struct rpc_context *rpc)
+ 			/* skip well-known ports */
+ 			if (!getservbyport(port, "tcp")) {
+ 				memset(&ss, 0, sizeof(ss));
+ 
+-				switch (s->ss_family) {
++				switch (family) {
+ 				case AF_INET:
+ 					sin->sin_port = port;
+ 					sin->sin_family = AF_INET;
+@@ -1991,7 +1998,7 @@ rpc_connect_sockaddr_async(struct rpc_context *rpc)
  				case AF_INET6:
  					sin6->sin6_port = port;
  					sin6->sin6_family = AF_INET6;
@@ -11,7 +52,16 @@ index 7897efb..c2cd98a 100644
  					sin6->sin6_len =
                                                  sizeof(struct sockaddr_in6);
  #endif
-@@ -2109,7 +2109,7 @@ rpc_set_sockaddr(struct rpc_context *rpc, const char *server, int port)
+@@ -2013,7 +2020,7 @@ rpc_connect_sockaddr_async(struct rpc_context *rpc)
+ 	rpc->is_nonblocking = !set_nonblocking(rpc->fd);
+ 	set_nolinger(rpc->fd);
+ 
+-#ifdef HAVE_NETINET_TCP_H
++#if defined(HAVE_NETINET_TCP_H) && !defined(__ORBIS__)
+ 	/*
+ 	 * Enable keepalive to detect and terminate dead connections when server
+ 	 * TCP stops responding.
+@@ -2109,7 +2116,7 @@ rpc_set_sockaddr(struct rpc_context *rpc, const char *server, int port)
  		((struct sockaddr_in6 *)&rpc->s)->sin6_port = htons(port);
  		((struct sockaddr_in6 *)&rpc->s)->sin6_addr =
                          ((struct sockaddr_in6 *)(void *)(ai->ai_addr))->sin6_addr;

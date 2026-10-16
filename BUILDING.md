@@ -65,7 +65,19 @@ The build tree lives in WSL, at `~/dolphinps4-build` (`PSB` in
 
    Run `configure-dolphin.sh` again after changing CMake files or the toolchain.
 
-5. **Package.** `DOLPHIN_PS4_VERSION` is the version shown under Settings → About:
+5. **Network shares (optional).** Prepare the library sources and build their PS4 static
+   libraries. The libnfs patch is maintained against a fixed revision; the build script rejects
+   other revisions so it cannot silently skip an incompatible patch.
+
+   ```sh
+   mkdir -p ~/dolphinps4-build/src
+   git clone https://github.com/sahlberg/libnfs.git ~/dolphinps4-build/src/libnfs
+   git -C ~/dolphinps4-build/src/libnfs checkout 7613236464317bee2d9636f087f995148de4db27
+   git clone https://github.com/sahlberg/libsmb2.git ~/dolphinps4-build/src/libsmb2
+   scripts/build-netlibs.sh
+   ```
+
+6. **Package.** `DOLPHIN_PS4_VERSION` is the version shown under Settings → About:
 
    ```sh
    DOLPHIN_PS4_VERSION=02.95 scripts/package-dolphin.sh
