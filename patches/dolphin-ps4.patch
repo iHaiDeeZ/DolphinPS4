@@ -9975,10 +9975,10 @@ index 0000000..482d3bc
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
 new file mode 100644
-index 0000000..8614349
+index 0000000..3568305
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
-@@ -0,0 +1,2875 @@
+@@ -0,0 +1,2913 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10128,6 +10128,7 @@ index 0000000..8614349
 +extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp (PC: below)
 +extern "C" int ps4_hot_take(uint64_t* out, int max);  // port/ps4_sampler.cpp (PC: below)
 +extern "C" void ps4_hot_sampling(int on);
++extern "C" void ps4_hot_debug(char* out, size_t size);  // port/ps4_sampler.cpp
 +constexpr size_t PS4_HOT_SIZE = 4 << 20;
 +constexpr u32 PS4_HOT_THRESHOLD = 4;
 +static JitPS4* s_hot_jit = nullptr;
@@ -10220,22 +10221,56 @@ index 0000000..8614349
 +
 +void JitPS4::PS4HotTick()
 +{
++#ifdef DOLPHIN_PS4_HOST
++  // The PC bench's sampler targets the calling thread: started from here, the CPU thread.
 +  static bool s_sampling = false;
 +  if (!s_sampling)
 +  {
 +    s_sampling = true;
 +    ps4_hot_sampling(1);
 +  }
++#endif
 +  static u64 buffer[4096];
 +  static std::vector<u64> pending;
++  static u64 s_taken = 0, s_kept = 0, s_matched = 0, s_ticks = 0, s_first = 0;
++  static auto s_diag = std::chrono::steady_clock::now();
 +  const int n = ps4_hot_take(buffer, 4096);
++  s_ticks++;
++  s_taken += n > 0 ? n : 0;
++  if (n > 0 && !s_first)
++    s_first = buffer[0];
++  // A diagnostics line every 20 s: where the samples go.
++  if (std::chrono::steady_clock::now() - s_diag >= std::chrono::seconds(20))
++  {
++    s_diag = std::chrono::steady_clock::now();
++    u32 top = 0;
++    for (const auto& [address, count] : s_hot_samples)
++      top = std::max(top, count);
++    char line[320];
++    snprintf(line, sizeof(line),
++             "jit hot: %llu ticks, %llu samples taken (first %llx), %llu in the code region "
++             "%p-%p (hot %p), %llu in a block, %zu blocks counted (top %u), %zu hot",
++             static_cast<unsigned long long>(s_ticks), static_cast<unsigned long long>(s_taken),
++             static_cast<unsigned long long>(s_first), static_cast<unsigned long long>(s_kept),
++             static_cast<void*>(region), static_cast<void*>(region + region_size),
++             static_cast<void*>(m_ps4_hot_begin), static_cast<unsigned long long>(s_matched),
++             s_hot_samples.size(), top, s_hot_set.size());
++    ps4_boot_trace(line);
++#ifndef DOLPHIN_PS4_HOST
++    ps4_hot_debug(line, sizeof(line));
++    ps4_boot_trace(line);
++#endif
++  }
 +  const u64 lo = reinterpret_cast<u64>(region), hi = lo + region_size;
 +  const u64 hot_lo = reinterpret_cast<u64>(m_ps4_hot_begin),
 +            hot_hi = reinterpret_cast<u64>(m_ps4_hot_end);
 +  for (int i = 0; i < n; i++)
 +  {
 +    if (buffer[i] >= lo && buffer[i] < hi && !(buffer[i] >= hot_lo && buffer[i] < hot_hi))
++    {
 +      pending.push_back(buffer[i]);
++      s_kept++;
++    }
 +  }
 +  if (pending.size() < 1000 || !m_ps4_hot_begin)
 +    return;
@@ -10267,7 +10302,10 @@ index 0000000..8614349
 +      continue;
 +    --it;
 +    if (sample < it->to)
++    {
 +      s_hot_samples[it->address]++;
++      s_matched++;
++    }
 +  }
 +  pending.clear();
 +
@@ -23526,7 +23564,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..4b6ae29 100644
+index 3bf40ea..08d8763 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -23579,7 +23617,7 @@ index 3bf40ea..4b6ae29 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +55,247 @@
+@@ -31,6 +55,250 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -23609,6 +23647,9 @@ index 3bf40ea..4b6ae29 100644
 +extern "C" int ps4_jit_fcmp_merge_fprf;  // Core/PowerPC/JitPS4/Jit.cpp
 +extern "C" int ps4_jit_cross_dead;       // Core/PowerPC/JitPS4/Jit.cpp
 +extern "C" int ps4_jit_hot;              // Core/PowerPC/JitPS4/Jit.cpp
++#ifdef __ORBIS__
++extern "C" void ps4_hot_sampling(int on);  // port/ps4_sampler.cpp
++#endif
 +extern "C" int ps4_sync_spin, ps4_idle_skip, ps4_fifo_bp_batch, ps4_diag_counters;  // VideoCommon/Fifo.cpp
 +extern "C" int ps4_jit_gp_dynamic;       // Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 +extern "C" int ps4_jit_accurate_singles;  // Core/PowerPC/Jit64/Jit.cpp
@@ -23827,7 +23868,7 @@ index 3bf40ea..4b6ae29 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +438,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +441,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -23838,7 +23879,7 @@ index 3bf40ea..4b6ae29 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +453,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +456,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -23857,7 +23898,7 @@ index 3bf40ea..4b6ae29 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +485,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +488,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -23868,7 +23909,7 @@ index 3bf40ea..4b6ae29 100644
  #endif
        });
  
-@@ -270,7 +552,492 @@ int main(const int argc, char* argv[])
+@@ -270,7 +555,499 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -24095,6 +24136,13 @@ index 3bf40ea..4b6ae29 100644
 +    // jit_hot (PS4 JIT; on in the JIT Lab to measure it): the CPU thread's busiest code moved
 +    // together into a hot code area (fewer code TLB and cache misses on the Jaguar).
 +    ps4_jit_hot = Platform::GetPS4Option("jit_hot", "on") == "on";
++#ifdef __ORBIS__
++    // Started here, on the main thread: the sampler thread takes its creator's core and
++    // priority, and started from the CPU thread it shared the CPU thread's core - it only ran
++    // when the CPU thread waited, so every sample landed in a system call (JIT Lab v60.29-31).
++    if (ps4_jit_hot)
++      ps4_hot_sampling(1);
++#endif
 +#ifdef __ORBIS__
 +    if (Platform::GetPS4Option("jit_tlb_probe", "off") == "on")
 +      PS4TlbProbe();
@@ -24361,7 +24409,7 @@ index 3bf40ea..4b6ae29 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +1051,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +1061,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -24377,7 +24425,7 @@ index 3bf40ea..4b6ae29 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +1079,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +1089,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  

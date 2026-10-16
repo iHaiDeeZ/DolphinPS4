@@ -53,7 +53,7 @@ constexpr uint64_t kSystemLibs = 0x800000000ULL, kCallerTag = 1ULL << 62;
 // frame pointers, PS4_FRAME_POINTERS): the caller's ELF address, reported as "syscall from elf".
 constexpr uint64_t kWaitTag = 1ULL << 61;
 constexpr uintptr_t kTextWindow = 0x4000000;
-constexpr int kMaxThreads = 4;
+constexpr int kMaxThreads = 8;  // CPU, video, VK record, DVD, ... (at 4 the CPU thread came 5th and was dropped)
 constexpr int kMaxSamples = 16384;  // per thread and window (10 s at 1 kHz fits)
 
 struct ThreadSamples {
@@ -772,26 +772,40 @@ extern "C" void ps4_hot_sampling(int on) {
 
 // The CPU thread's JIT samples since the last call (its last 4096 at most, ~4 s at 1 kHz): the
 // interrupted addresses (system module samples are tagged and left out).
+// jit_hot diagnostics: every registered thread, its sample ring position and its last sample.
+extern "C" void ps4_hot_debug(char* out, size_t size) {
+    size_t used = 0;
+    used += snprintf(out + used, size - used, "sampler: %d threads, on %d hot %d:",
+                     g_thread_count.load(), g_sampler_on.load() ? 1 : 0, g_hot_on.load() ? 1 : 0);
+    for (int i = 0; i < g_thread_count.load() && used < size; i++) {
+        ThreadSamples& t = g_threads[i];
+        const uint32_t pos = t.ring_pos.load();
+        used += snprintf(out + used, size - used, " [%s ring %u last %llx]", t.name ? t.name : "?",
+                         pos, static_cast<unsigned long long>(pos ? t.ring[(pos - 1) % kRing] : 0));
+    }
+}
+
 extern "C" int ps4_hot_take(uint64_t* out, int max) {
-    static uint32_t s_read = 0;
+    // Every thread registered as the CPU thread (a game can register it more than once, and
+    // the first one may be a thread that only waits), each with its own read position.
+    static uint32_t s_read[kMaxThreads] = {};
+    int n = 0;
     for (int i = 0; i < g_thread_count.load(std::memory_order_acquire); i++) {
         ThreadSamples& t = g_threads[i];
         if (!t.name || strcmp(t.name, "CPU thread") != 0)
             continue;
         const uint32_t pos = t.ring_pos.load(std::memory_order_acquire);
-        uint32_t from = s_read;
+        uint32_t from = s_read[i];
         if (pos - from > kRing)
             from = pos - kRing;
-        int n = 0;
         for (uint32_t k = from; k != pos && n < max; k++) {
             const uint64_t sample = t.ring[k % kRing];
             if (!(sample >> 61))  // untagged (no wait/caller tag): JIT code or the eboot
                 out[n++] = sample;
         }
-        s_read = pos;
-        return n;
+        s_read[i] = pos;
     }
-    return 0;
+    return n;
 }
 
 // The game is stopping (MainNoGUI's core state callback, PlatformPS4's exit): the sampler stops
