@@ -2422,7 +2422,7 @@ index fc614fd..75657a7 100644
    {
      system.GetPowerPC().SetMode(PowerPC::CoreMode::JIT);
 diff --git a/Source/Core/Core/CoreTiming.cpp b/Source/Core/Core/CoreTiming.cpp
-index 1fa39d7..dcf14c1 100644
+index 1fa39d7..7b955be 100644
 --- a/Source/Core/Core/CoreTiming.cpp
 +++ b/Source/Core/Core/CoreTiming.cpp
 @@ -21,6 +21,7 @@
@@ -2445,10 +2445,23 @@ index 1fa39d7..dcf14c1 100644
  namespace CoreTiming
  {
  static constexpr int MAX_SLICE_LENGTH = 20000;
-@@ -346,6 +352,16 @@ void CoreTimingManager::MoveEvents()
+@@ -344,8 +350,29 @@ void CoreTimingManager::MoveEvents()
+   }
+ }
  
++// jit_hot (Core/PowerPC/JitPS4/Jit.cpp): called on the CPU thread between slices, a few times a
++// second, to move the code the CPU thread spends its time in to the JIT's hot code area.
++extern "C" {
++void (*ps4_hot_tick)() = nullptr;
++}
++
  void CoreTimingManager::Advance()
  {
++  {
++    static u32 s_hot_advances = 0;
++    if (ps4_hot_tick && (++s_hot_advances & 8191) == 0)
++      ps4_hot_tick();
++  }
 +#ifdef __ORBIS__
 +  // fifo_defer: bursts left in the gather pipe by JIT blocks reach the GPU at least once per slice.
 +  if (ps4_fifo_defer)
@@ -2462,7 +2475,7 @@ index 1fa39d7..dcf14c1 100644
    CPUThreadConfigCallback::CheckForConfigChanges();
  
    MoveEvents();
-@@ -571,6 +587,13 @@ void CoreTimingManager::AdjustEventQueueTimes(u32 new_ppc_clock, u32 old_ppc_clo
+@@ -571,6 +598,13 @@ void CoreTimingManager::AdjustEventQueueTimes(u32 new_ppc_clock, u32 old_ppc_clo
    }
  }
  
@@ -2476,7 +2489,7 @@ index 1fa39d7..dcf14c1 100644
  void CoreTimingManager::Idle()
  {
    if (m_config_sync_on_skip_idle)
-@@ -578,7 +601,16 @@ void CoreTimingManager::Idle()
+@@ -578,7 +612,16 @@ void CoreTimingManager::Idle()
      // When the FIFO is processing data we must not advance because in this way
      // the VI will be desynchronized. So, We are waiting until the FIFO finish and
      // while we process only the events required by the FIFO.
@@ -7255,10 +7268,10 @@ index 0000000..f014d74
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Common/BlockCache.h b/Source/Core/Core/PowerPC/JitPS4/Common/BlockCache.h
 new file mode 100644
-index 0000000..86441fe
+index 0000000..e290c60
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Common/BlockCache.h
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,44 @@
 +// Copyright 2016 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -7286,6 +7299,14 @@ index 0000000..86441fe
 +  const std::vector<std::pair<u8*, u8*>>& GetRangesToFreeFar() const;
 +
 +  void ClearRangesToFree();
++
++  // jit_hot: before a block is moved, its exits jump to the dispatcher again - its old code stays
++  // (a fast return can still come back into it) and must not reach blocks freed later.
++  void PS4UnlinkExits(const JitBlock& block)
++  {
++    for (const auto& link : block.linkData)
++      WriteLinkBlock(link, nullptr);
++  }
 +
 +private:
 +  void WriteLinkBlock(const JitBlock::LinkData& source, const JitBlock* dest) override;
@@ -9954,10 +9975,10 @@ index 0000000..482d3bc
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
 new file mode 100644
-index 0000000..fe14f80
+index 0000000..8614349
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
-@@ -0,0 +1,2612 @@
+@@ -0,0 +1,2875 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -9979,9 +10000,12 @@ index 0000000..fe14f80
 +
 +#include <memory>
 +#include <mutex>
++#include <unordered_map>
 +#include <unordered_set>
 +#ifdef DOLPHIN_PS4_HOST
 +#include <atomic>
++#include <chrono>
++#include <thread>
 +extern std::atomic<unsigned> ps4_bench_xfb_copies;  // VideoCommon/BPStructs.cpp
 +std::atomic<unsigned> ps4_bench_frames{0};          // Core/HW/VideoInterface.cpp
 +#endif
@@ -10000,6 +10024,7 @@ index 0000000..fe14f80
 +#include <sys/stat.h>
 +#include <unistd.h>
 +#endif
++#include "Common/FileUtil.h"
 +#include "Common/IOFile.h"
 +#include "Common/Logging/Log.h"
 +#include "Common/Swap.h"
@@ -10087,6 +10112,235 @@ index 0000000..fe14f80
 +    for (const int r : dead)
 +      MOV(32, PPCSTATE_GPR(r), Imm32(0xDEAD0000 | r));
 +  }
++}
++
++// jit_hot (DolphinNoGUI/MainNoGUI.cpp; PS4JIT_HOT=1 on the PC): the code the CPU thread spends its
++// time in, moved together. Blocks sit where they were first compiled, among tens of MiB of code
++// that rarely runs: on the PS4 a jump costs ~1 ns within 16 pages and ~46 ns across 1024 (the
++// Jaguar's code TLB and L1 code cache; jit_tlb_probe, JIT Lab v60.27-28), and Bully's busiest
++// code touched ~920 4 KiB pages, F-Zero GX's ~550. The CPU thread is sampled (1 kHz, the Profiler's
++// sampler without its files); a block with PS4_HOT_THRESHOLD samples is dropped and placed in the
++// hot area when it next runs (copied from the code cache, or compiled). Its old code stays in
++// place (a fast return can still come back into it) with its exits sent to the dispatcher.
++extern "C" int ps4_jit_hot;
++int ps4_jit_hot = 0;
++extern "C" void (*ps4_hot_tick)();  // Core/CoreTiming.cpp
++extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp (PC: below)
++extern "C" int ps4_hot_take(uint64_t* out, int max);  // port/ps4_sampler.cpp (PC: below)
++extern "C" void ps4_hot_sampling(int on);
++constexpr size_t PS4_HOT_SIZE = 4 << 20;
++constexpr u32 PS4_HOT_THRESHOLD = 4;
++static JitPS4* s_hot_jit = nullptr;
++static std::unordered_set<u32> s_hot_set;
++static std::unordered_map<u32, u32> s_hot_samples;
++static bool s_hot_changed = false;
++static u64 s_hot_moves = 0;
++
++#ifdef DOLPHIN_PS4_HOST
++// The PC test bench's stand-in for the PS4 sampler: the CPU thread's instruction pointer every
++// millisecond (a real-time signal: SIGPROF is the bench profiler's).
++static std::atomic<u64> s_host_ring[4096];
++static std::atomic<u32> s_host_pos{0};
++static pthread_t s_host_cpu;
++static void HostHotHandler(int, siginfo_t*, void* context)
++{
++  const u64 rip = static_cast<ucontext_t*>(context)->uc_mcontext.gregs[REG_RIP];
++  const u32 pos = s_host_pos.load(std::memory_order_relaxed);
++  s_host_ring[pos % 4096].store(rip, std::memory_order_relaxed);
++  s_host_pos.store(pos + 1, std::memory_order_release);
++}
++extern "C" void ps4_hot_sampling(int on)
++{
++  static bool s_started = false;
++  if (!on || s_started)
++    return;
++  s_started = true;
++  s_host_cpu = pthread_self();  // called on the CPU thread (the first hot tick)
++  struct sigaction action{};
++  action.sa_sigaction = HostHotHandler;
++  action.sa_flags = SA_SIGINFO | SA_RESTART;
++  sigemptyset(&action.sa_mask);
++  sigaction(SIGRTMIN + 5, &action, nullptr);
++  std::thread([] {
++    for (;;)
++    {
++      std::this_thread::sleep_for(std::chrono::milliseconds(1));
++      pthread_kill(s_host_cpu, SIGRTMIN + 5);
++    }
++  }).detach();
++}
++extern "C" int ps4_hot_take(uint64_t* out, int max)
++{
++  static u32 s_read = 0;
++  const u32 pos = s_host_pos.load(std::memory_order_acquire);
++  u32 from = s_read;
++  if (pos - from > 4096)
++    from = pos - 4096;
++  int n = 0;
++  for (u32 k = from; k != pos && n < max; k++)
++    out[n++] = s_host_ring[k % 4096].load(std::memory_order_relaxed);
++  s_read = pos;
++  return n;
++}
++#endif
++
++bool JitPS4::PS4SetEmitterFor(u32 em_address)
++{
++  m_ps4_placing_hot = false;
++  if (m_ps4_hot_begin && s_hot_set.contains(em_address) &&
++      m_ps4_hot_end - m_ps4_hot_ptr > 64 * 1024)
++  {
++    const auto free_far = m_free_ranges_far.by_size_begin();
++    if (free_far != m_free_ranges_far.by_size_end())
++    {
++      SetCodePtr(m_ps4_hot_ptr, m_ps4_hot_end);
++      m_far_code.SetCodePtr(free_far.from(), free_far.to());
++      m_ps4_placing_hot = true;
++      return true;
++    }
++  }
++  return SetEmitterStateToFreeCodeRegion();
++}
++
++void JitPS4::PS4PlacedBlock(const JitBlock* block)
++{
++  if (m_ps4_placing_hot && block && block->near_end > m_ps4_hot_ptr &&
++      block->near_end <= m_ps4_hot_end)
++  {
++    m_ps4_hot_ptr = block->near_end;
++  }
++  m_ps4_placing_hot = false;
++}
++
++void JitPS4::PS4HotTickThunk()
++{
++  if (s_hot_jit)
++    s_hot_jit->PS4HotTick();
++}
++
++void JitPS4::PS4HotTick()
++{
++  static bool s_sampling = false;
++  if (!s_sampling)
++  {
++    s_sampling = true;
++    ps4_hot_sampling(1);
++  }
++  static u64 buffer[4096];
++  static std::vector<u64> pending;
++  const int n = ps4_hot_take(buffer, 4096);
++  const u64 lo = reinterpret_cast<u64>(region), hi = lo + region_size;
++  const u64 hot_lo = reinterpret_cast<u64>(m_ps4_hot_begin),
++            hot_hi = reinterpret_cast<u64>(m_ps4_hot_end);
++  for (int i = 0; i < n; i++)
++  {
++    if (buffer[i] >= lo && buffer[i] < hi && !(buffer[i] >= hot_lo && buffer[i] < hot_hi))
++      pending.push_back(buffer[i]);
++  }
++  if (pending.size() < 1000 || !m_ps4_hot_begin)
++    return;
++
++  // Which block each sample is in (by its near code).
++  struct Span
++  {
++    u64 from, to;
++    u32 address;
++  };
++  std::vector<Span> spans;
++  spans.reserve(blocks.GetBlockCount());
++  {
++    const Core::CPUThreadGuard guard(m_system);
++    blocks.RunOnBlocks(guard, [&](const JitBlock& b) {
++      if (b.near_begin != b.near_end)
++      {
++        spans.push_back({reinterpret_cast<u64>(b.near_begin), reinterpret_cast<u64>(b.near_end),
++                         b.effectiveAddress});
++      }
++    });
++  }
++  std::sort(spans.begin(), spans.end(), [](const Span& a, const Span& b) { return a.from < b.from; });
++  for (const u64 sample : pending)
++  {
++    auto it = std::upper_bound(spans.begin(), spans.end(), sample,
++                               [](u64 value, const Span& s) { return value < s.from; });
++    if (it == spans.begin())
++      continue;
++    --it;
++    if (sample < it->to)
++      s_hot_samples[it->address]++;
++  }
++  pending.clear();
++
++  // The busiest ones not in the hot area yet: moved (at most 256 a time, the busiest first).
++  std::vector<std::pair<u32, u32>> moves;
++  for (const auto& [address, count] : s_hot_samples)
++  {
++    if (count >= PS4_HOT_THRESHOLD && !s_hot_set.contains(address))
++      moves.emplace_back(count, address);
++  }
++  if (moves.empty() || m_ps4_hot_end - m_ps4_hot_ptr < 256 * 1024)
++    return;
++  std::sort(moves.rbegin(), moves.rend());
++  if (moves.size() > 256)
++    moves.resize(256);
++  FreeRanges();  // what other blocks gave back until now is still freed
++  for (const auto& [count, address] : moves)
++  {
++    s_hot_set.insert(address);
++    s_hot_changed = true;
++    if (JitBlock* old = blocks.GetBlockFromStartAddress(address, m_ppc_state.feature_flags))
++    {
++      blocks.PS4UnlinkExits(*old);
++      blocks.EraseSingleBlock(*old);
++      s_hot_moves++;
++    }
++  }
++  blocks.ClearRangesToFree();  // the old code is never reused (see above)
++  static auto s_reported = std::chrono::steady_clock::time_point{};
++  const auto now = std::chrono::steady_clock::now();
++  if (now - s_reported >= std::chrono::seconds(20))
++  {
++    s_reported = now;
++    char line[160];
++    snprintf(line, sizeof(line), "jit hot: %llu blocks moved, %zu hot, hot area %zu KiB used",
++             static_cast<unsigned long long>(s_hot_moves), s_hot_set.size(),
++             static_cast<size_t>(m_ps4_hot_ptr - m_ps4_hot_begin) / 1024);
++    ps4_boot_trace(line);
++#ifdef DOLPHIN_PS4_HOST
++    fprintf(stderr, "[bench] %s\n", line);
++#endif
++  }
++}
++
++void JitPS4::PS4LoadHot(const std::string& path)
++{
++  if (!ps4_jit_hot)
++    return;
++  File::IOFile file(path, "rb");
++  if (!file)
++    return;
++  u32 address;
++  while (file.ReadBytes(&address, sizeof(address)))
++    s_hot_set.insert(address);
++  char line[160];
++  snprintf(line, sizeof(line), "jit hot: %zu hot blocks from the last runs", s_hot_set.size());
++  ps4_boot_trace(line);
++}
++
++void JitPS4::PS4SaveHot(const std::string& path)
++{
++  if (!ps4_jit_hot || !s_hot_changed)
++    return;
++  const std::string temp = path + ".new";
++  {
++    File::IOFile file(temp, "wb");
++    if (!file)
++      return;
++    for (const u32 address : s_hot_set)
++      file.WriteBytes(&address, sizeof(address));
++  }
++  if (File::Rename(temp, path))
++    s_hot_changed = false;
 +}
 +
 +BitSet32 JitPS4::PS4DeadForCheck(u32 destination)
@@ -10709,6 +10963,8 @@ index 0000000..fe14f80
 +  s_count_on = getenv("PS4JIT_COUNT") != nullptr;
 +  if (const char* cross = getenv("PS4JIT_CROSS_DEAD"))
 +    ps4_jit_cross_dead = atoi(cross);
++  if (const char* hot = getenv("PS4JIT_HOT"))
++    ps4_jit_hot = atoi(hot);
 +  if (const char* lazy = getenv("PS4JIT_LAZY_FPRF"))
 +    ps4_jit_lazy_fprf = atoi(lazy);
 +  // PS4JIT_TRACE=auto: jit_trace as on the PS4; PS4JIT_TRACE=<blocks.txt>: from that profile.
@@ -10884,6 +11140,11 @@ index 0000000..fe14f80
 +  EnableOptimization();
 +
 +  ResetFreeMemoryRanges();
++  if (ps4_jit_hot)
++  {
++    s_hot_jit = this;
++    ps4_hot_tick = &JitPS4::PS4HotTickThunk;
++  }
 +}
 +
 +void JitPS4::ClearCache()
@@ -10924,12 +11185,30 @@ index 0000000..fe14f80
 +  // Set the entire near and far code regions as unused.
 +  m_free_ranges_near.clear();
 +  m_free_ranges_near.insert(region, region + region_size);
++  // jit_hot: the near region's end is the hot area, filled in order (PS4HotTick).
++  m_ps4_hot_begin = m_ps4_hot_ptr = m_ps4_hot_end = nullptr;
++  if (ps4_jit_hot && region_size > 4 * PS4_HOT_SIZE)
++  {
++    m_ps4_hot_end = region + region_size;
++    m_ps4_hot_begin = m_ps4_hot_ptr = m_ps4_hot_end - PS4_HOT_SIZE;
++    m_free_ranges_near.erase(m_ps4_hot_begin, m_ps4_hot_end);
++  }
 +  m_free_ranges_far.clear();
 +  m_free_ranges_far.insert(m_far_code.GetWritableCodePtr(), m_far_code.GetWritableCodeEnd());
 +}
 +
 +void JitPS4::Shutdown()
 +{
++  ps4_hot_tick = nullptr;
++  s_hot_jit = nullptr;
++  if (ps4_jit_hot && m_ps4_hot_begin)
++  {
++    char line[160];
++    snprintf(line, sizeof(line), "jit hot: at the end %llu blocks moved, %zu hot, hot area %zu KiB used",
++             static_cast<unsigned long long>(s_hot_moves), s_hot_set.size(),
++             static_cast<size_t>(m_ps4_hot_ptr - m_ps4_hot_begin) / 1024);
++    ps4_boot_trace(line);
++  }
 +  if (ps4_jit_verify)
 +    VerifySummary();
 +  {
@@ -11948,8 +12227,11 @@ index 0000000..fe14f80
 +  FreeRanges();
 +
 +  // Compiled in an earlier run and saved (CodeCache): copied in, nothing to analyse or compile.
-+  if (SetEmitterStateToFreeCodeRegion() && m_code_cache.Restore(em_address))
++  if (PS4SetEmitterFor(em_address) && m_code_cache.Restore(em_address))
++  {
++    PS4PlacedBlock(blocks.GetBlockFromStartAddress(em_address, m_ppc_state.feature_flags));
 +    return;
++  }
 +
 +  std::size_t block_size = m_code_buffer.size();
 +
@@ -11969,7 +12251,7 @@ index 0000000..fe14f80
 +    return;
 +  }
 +
-+  if (SetEmitterStateToFreeCodeRegion())
++  if (PS4SetEmitterFor(em_address))
 +  {
 +    u8* near_start = GetWritableCodePtr();
 +    u8* far_start = m_far_code.GetWritableCodePtr();
@@ -11999,6 +12281,7 @@ index 0000000..fe14f80
 +
 +      m_code_cache.Add(*b, code_block);
 +      blocks.FinalizeBlock(*b, jo.enableBlocklink, code_block, m_code_buffer);
++      PS4PlacedBlock(b);
 +
 +      return;
 +    }
@@ -12031,7 +12314,7 @@ index 0000000..fe14f80
 +  {
 +    return true;
 +  }
-+  if (!SetEmitterStateToFreeCodeRegion())
++  if (!PS4SetEmitterFor(em_address))
 +    return false;
 +  u8* near_start = GetWritableCodePtr();
 +  u8* far_start = m_far_code.GetWritableCodePtr();
@@ -12059,6 +12342,7 @@ index 0000000..fe14f80
 +  b->far_end = far_end;
 +  m_code_cache.Add(*b, code_block);
 +  blocks.FinalizeBlock(*b, jo.enableBlocklink, code_block, m_code_buffer);
++  PS4PlacedBlock(b);
 +  return true;
 +}
 +
@@ -12572,10 +12856,10 @@ index 0000000..fe14f80
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.h b/Source/Core/Core/PowerPC/JitPS4/Jit.h
 new file mode 100644
-index 0000000..565448c
+index 0000000..b019b99
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.h
-@@ -0,0 +1,375 @@
+@@ -0,0 +1,391 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -12733,6 +13017,12 @@ index 0000000..565448c
 +    BitSet8 constant_gqr_valid;
 +  };
 +  std::vector<PS4PendingJoin> m_ps4_joins;
++  // jit_hot: the hot code area (the near code region's last PS4_HOT_SIZE bytes, filled in order),
++  // and whether the block being placed goes there.
++  u8* m_ps4_hot_begin = nullptr;
++  u8* m_ps4_hot_ptr = nullptr;
++  u8* m_ps4_hot_end = nullptr;
++  bool m_ps4_placing_hot = false;
 +  std::chrono::steady_clock::time_point m_ps4_bench_start;  // the PC test bench (Shutdown)
 +  const u8* PS4FarRegionStart() const { return m_far_code.GetRegionStart(); }
 +  void* m_ps4_count_block = nullptr;  // jit_trace learning / PS4JIT_COUNT: this block's counters
@@ -12752,6 +13042,16 @@ index 0000000..565448c
 +  void PS4ExitFlush(u32 destination);
 +  // The registers PS4ExitFlush leaves unstored for an exit to `destination` (Verify.cpp).
 +  BitSet32 PS4DeadForCheck(u32 destination);
++  // jit_hot: code space for the block at `em_address` (the hot area when it is a hot block), and
++  // the hot area's fill after a block was placed there.
++  bool PS4SetEmitterFor(u32 em_address);
++  void PS4PlacedBlock(const JitBlock* block);
++  // jit_hot: the sampled CPU thread's busiest blocks move to the hot area (CoreTiming::Advance).
++  void PS4HotTick();
++  static void PS4HotTickThunk();
++  // jit_hot: the game's hot blocks, kept beside its code cache (<ID>.jitc.hot).
++  void PS4LoadHot(const std::string& path);
++  void PS4SaveHot(const std::string& path);
 +
 +  bool CheckMergedBranch(u32 crf) const;
 +  void DoMergedBranch();
@@ -23226,7 +23526,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..f1b2fd1 100644
+index 3bf40ea..4b6ae29 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -23279,7 +23579,7 @@ index 3bf40ea..f1b2fd1 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +55,77 @@
+@@ -31,6 +55,247 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -23308,6 +23608,7 @@ index 3bf40ea..f1b2fd1 100644
 +extern "C" int ps4_jit_lazy_fprf;        // Core/PowerPC/JitPS4/Jit.cpp
 +extern "C" int ps4_jit_fcmp_merge_fprf;  // Core/PowerPC/JitPS4/Jit.cpp
 +extern "C" int ps4_jit_cross_dead;       // Core/PowerPC/JitPS4/Jit.cpp
++extern "C" int ps4_jit_hot;              // Core/PowerPC/JitPS4/Jit.cpp
 +extern "C" int ps4_sync_spin, ps4_idle_skip, ps4_fifo_bp_batch, ps4_diag_counters;  // VideoCommon/Fifo.cpp
 +extern "C" int ps4_jit_gp_dynamic;       // Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 +extern "C" int ps4_jit_accurate_singles;  // Core/PowerPC/Jit64/Jit.cpp
@@ -23347,6 +23648,175 @@ index 3bf40ea..f1b2fd1 100644
 +extern "C" int ps4_auto_clock, ps4_auto_clock_min, ps4_auto_clock_max;  // PlatformPS4.cpp
 +extern "C" size_t sceKernelGetDirectMemorySize();  // libkernel
 +extern "C" void ps4_boot_trace(const char* line);  // DolphinPS4 port/ps4_crashlog.cpp
++
++#ifdef __ORBIS__
++#include <cerrno>
++#include <setjmp.h>
++#include <signal.h>
++#include <sys/mman.h>
++#include <cstring>
++#include <time.h>
++extern "C" {
++size_t sceKernelGetDirectMemorySize(void);
++int32_t sceKernelAllocateDirectMemory(off_t start, off_t end, size_t len, size_t align, int32_t type,
++                                      off_t* phys);
++int32_t sceKernelMapDirectMemory(void** addr, size_t len, int32_t prot, int32_t flags, off_t phys,
++                                 size_t align);
++int32_t sceKernelMunmap(void* addr, size_t len);
++int32_t sceKernelReleaseDirectMemory(off_t start, size_t len);
++int32_t sceKernelReserveVirtualRange(void** addr, size_t len, int32_t flags, size_t alignment);
++int32_t sceKernelMapNamedFlexibleMemory(void** addr, size_t len, int32_t prot, int32_t flags,
++                                        const char* name);
++int32_t sceKernelMprotect(const void* addr, size_t len, int32_t prot);
++}
++
++// jit_tlb_probe (JIT Lab): does code in 2 MiB-aligned direct memory run faster than in the JIT's
++// usual memory (mmap RWX)? A chain of jumps, one per 4 KiB page (+64 bytes, so each lands in
++// another cache set), is timed in both: with N pages above the CPU's code TLB reach, a region on
++// large pages misses far less. 16 pages (within every TLB) is the baseline per jump.
++static double PS4TimeJumpChain(u8* base, int pages, int laps, size_t STRIDE = 4096 + 64)
++{
++  u8* const entry = base;  // mov ecx, edi; jmp stub0
++  const auto rel = [](u8* at, u8* to) {
++    const int32_t d = static_cast<int32_t>(to - (at + 4));
++    memcpy(at, &d, 4);
++  };
++  u8* stub0 = base + STRIDE;
++  entry[0] = 0x89; entry[1] = 0xF9;  // mov ecx, edi
++  entry[2] = 0xE9;
++  rel(entry + 3, stub0);
++  for (int k = 0; k < pages; k++)
++  {
++    u8* at = base + STRIDE * (k + 1);
++    if (k + 1 < pages)
++    {
++      at[0] = 0xE9;  // jmp next
++      rel(at + 1, base + STRIDE * (k + 2));
++    }
++    else
++    {
++      at[0] = 0xFF; at[1] = 0xC9;  // dec ecx
++      at[2] = 0x0F; at[3] = 0x85;  // jnz stub0
++      rel(at + 4, stub0);
++      at[8] = 0xC3;  // ret
++    }
++  }
++  using Fn = void (*)(int);
++  const Fn fn = reinterpret_cast<Fn>(entry);
++  fn(4);  // warm up
++  timespec a{}, b{};
++  clock_gettime(CLOCK_MONOTONIC, &a);
++  fn(laps);
++  clock_gettime(CLOCK_MONOTONIC, &b);
++  const double ns = (b.tv_sec - a.tv_sec) * 1e9 + (b.tv_nsec - a.tv_nsec);
++  return ns / (static_cast<double>(laps) * pages);
++}
++
++static sigjmp_buf s_tlb_probe_jump;
++static void PS4TlbProbeFault(int)
++{
++  siglongjmp(s_tlb_probe_jump, 1);
++}
++
++static void PS4TlbProbe()
++{
++  constexpr size_t SIZE = 8 << 20, MB2 = 2 << 20;
++  char line[512];
++  // The regions to time: [0] mmap RWX (the JIT's memory today), [1] the same, 2 MiB-aligned
++  // (MAP_ALIGNED_SUPER) and every page touched (FreeBSD can promote it to 2 MiB pages), [2]
++  // flexible memory mapped RWX into a 2 MiB-aligned reservation, [3] direct memory mapped RW,
++  // then made executable.
++  const char* names[4] = {"mmap", "mmap 2M-aligned", "flexible 2M", "direct RW->RWX"};
++  u8* region[4] = {};
++  int32_t err[4] = {};
++  void* m = mmap(nullptr, SIZE, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_ANON | MAP_PRIVATE, -1, 0);
++  region[0] = m == MAP_FAILED ? nullptr : static_cast<u8*>(m);
++  m = mmap(nullptr, SIZE, PROT_READ | PROT_WRITE | PROT_EXEC,
++           MAP_ANON | MAP_PRIVATE | 0x01000000 /* MAP_ALIGNED_SUPER */, -1, 0);
++  if (m != MAP_FAILED)
++  {
++    memset(m, 0xCC, SIZE);  // every page present: a 2 MiB run can be promoted
++    region[1] = static_cast<u8*>(m);
++  }
++  else
++  {
++    err[1] = errno;
++  }
++  void* flex = nullptr;
++  err[2] = sceKernelReserveVirtualRange(&flex, SIZE, 0, MB2);
++  if (err[2] == 0)
++  {
++    err[2] = sceKernelMapNamedFlexibleMemory(&flex, SIZE, 0x7, 0x10 /* fixed */, "tlb probe");
++    if (err[2] == 0)
++    {
++      memset(flex, 0xCC, SIZE);
++      region[2] = static_cast<u8*>(flex);
++    }
++  }
++  off_t phys = 0;
++  void* direct = nullptr;
++  err[3] = sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), SIZE, MB2, 0, &phys);
++  const bool direct_allocated = err[3] == 0;
++  if (err[3] == 0)
++    err[3] = sceKernelMapDirectMemory(&direct, SIZE, 0x3, 0, phys, MB2);
++  const bool direct_mapped = err[3] == 0;
++  if (err[3] == 0)
++    err[3] = sceKernelMprotect(direct, SIZE, 0x7);
++  if (err[3] == 0)
++    region[3] = static_cast<u8*>(direct);
++
++  // A fault (memory that can't run code) ends that region's test instead of the app.
++  struct sigaction probe_action{}, old_segv{}, old_bus{};
++  probe_action.sa_handler = PS4TlbProbeFault;
++  sigemptyset(&probe_action.sa_mask);
++  sigaction(SIGSEGV, &probe_action, &old_segv);
++  sigaction(10 /* SIGBUS (FreeBSD) */, &probe_action, &old_bus);
++  const int counts[3] = {16, 256, 1024};
++  for (int i = 0; i < 4; i++)
++  {
++    double r[3] = {};
++    double dense = 0;
++    bool faulted = false;
++    if (region[i])
++    {
++      if (sigsetjmp(s_tlb_probe_jump, 1) == 0)
++      {
++        for (int t = 0; t < 3; t++)
++          r[t] = PS4TimeJumpChain(region[i], counts[t], 2000000 / counts[t]);
++        if (i == 0)
++          dense = PS4TimeJumpChain(region[i], 1024, 2000, 64);  // 1024 lines in 16 pages
++      }
++      else
++      {
++        faulted = true;
++      }
++    }
++    if (!region[i])
++      snprintf(line, sizeof(line), "tlb probe: %s: not mapped (0x%x)", names[i],
++               static_cast<unsigned>(err[i]));
++    else if (faulted)
++      snprintf(line, sizeof(line), "tlb probe: %s: faulted running code there", names[i]);
++    else
++      snprintf(line, sizeof(line),
++               "tlb probe: %s at %p: ns per jump, 16 / 256 / 1024 pages: %.2f / %.2f / %.2f%s",
++               names[i], static_cast<void*>(region[i]), r[0], r[1], r[2],
++               i == 0 ? (" (1024 lines in 16 pages: " + std::to_string(dense) + ")").c_str() : "");
++    ps4_boot_trace(line);
++  }
++  sigaction(SIGSEGV, &old_segv, nullptr);
++  sigaction(10, &old_bus, nullptr);
++  if (region[0])
++    munmap(region[0], SIZE);
++  if (region[1])
++    munmap(region[1], SIZE);
++  if (region[2])
++    sceKernelMunmap(region[2], SIZE);
++  if (direct_mapped)
++    sceKernelMunmap(direct, SIZE);
++  if (direct_allocated)
++    sceKernelReleaseDirectMemory(phys, SIZE);
++}
++#endif
 +extern "C" int ps4_uniform_merge_mode;  // VideoBackends/OGL/OGLGfx.cpp
 +extern "C" int ps4_audio_thread_core;   // AudioCommon/PS4AudioStream.cpp
 +extern "C" unsigned ps4_uniform_ring_count;  // VideoBackends/OGL/ProgramShaderCache.cpp
@@ -23357,7 +23827,7 @@ index 3bf40ea..f1b2fd1 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +268,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +438,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -23368,7 +23838,7 @@ index 3bf40ea..f1b2fd1 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +283,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +453,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -23387,7 +23857,7 @@ index 3bf40ea..f1b2fd1 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +315,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +485,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -23398,7 +23868,7 @@ index 3bf40ea..f1b2fd1 100644
  #endif
        });
  
-@@ -270,7 +382,485 @@ int main(const int argc, char* argv[])
+@@ -270,7 +552,492 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -23622,6 +24092,13 @@ index 3bf40ea..f1b2fd1 100644
 +    // block leaving to a known address doesn't store the registers the code there overwrites
 +    // before reading them.
 +    ps4_jit_cross_dead = Platform::GetPS4Option("jit_cross_dead", "on") == "on";
++    // jit_hot (PS4 JIT; on in the JIT Lab to measure it): the CPU thread's busiest code moved
++    // together into a hot code area (fewer code TLB and cache misses on the Jaguar).
++    ps4_jit_hot = Platform::GetPS4Option("jit_hot", "on") == "on";
++#ifdef __ORBIS__
++    if (Platform::GetPS4Option("jit_tlb_probe", "off") == "on")
++      PS4TlbProbe();
++#endif
 +    ps4_sync_spin = Platform::GetPS4Option("sync_spin", "on") == "on";
 +    ps4_idle_skip = Platform::GetPS4Option("idle_skip", "on") == "on";
 +    ps4_fifo_bp_batch = Platform::GetPS4Option("fifo_bp_batch", "on") == "on";
@@ -23884,7 +24361,7 @@ index 3bf40ea..f1b2fd1 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +874,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +1051,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -23900,7 +24377,7 @@ index 3bf40ea..f1b2fd1 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +902,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +1079,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -51588,10 +52065,10 @@ index 0000000..e234d2b
 +}  // namespace Common::NetFS
 diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 new file mode 100755
-index 0000000..3ddab9c
+index 0000000..21ec041
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
-@@ -0,0 +1,1259 @@
+@@ -0,0 +1,1262 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -52104,10 +52581,13 @@ index 0000000..3ddab9c
 +  m_stats.loaded = m_blobs.size();
 +  Trace("loaded " + std::to_string(m_blobs.size()) + " blocks (" +
 +        std::to_string(m_bytes / 1024) + " KiB) from " + m_path);
++  m_jit.PS4LoadHot(m_path + ".hot");
 +}
 +
 +void CodeCache::Save()
 +{
++  if (m_ready)
++    m_jit.PS4SaveHot(m_path + ".hot");
 +  if (!m_ready || !m_dirty)
 +    return;
 +  std::vector<u8> sets;
@@ -52360,8 +52840,8 @@ index 0000000..3ddab9c
 +    if (!m_jit.blocks.GetBlockFromStartAddress(saved[i], flags))
 +    {
 +      m_jit.FreeRanges();
-+      if (m_jit.SetEmitterStateToFreeCodeRegion())
-+        Restore(saved[i]);
++      if (m_jit.PS4SetEmitterFor(saved[i]) && Restore(saved[i]))
++        m_jit.PS4PlacedBlock(m_jit.blocks.GetBlockFromStartAddress(saved[i], flags));
 +    }
 +    ps4_prepare_done = static_cast<int>(i + 1);
 +  }

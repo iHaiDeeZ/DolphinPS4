@@ -432,31 +432,51 @@ void dumpJitCode() {
 }
 
 std::atomic<bool> g_sampler_on{false};
+// jit_hot (JitPS4's hot code area): the CPU thread is sampled for the JIT even with the Profiler
+// off - no files, only its sample ring (ps4_hot_take).
+std::atomic<bool> g_hot_on{false};
 
 void* samplerThread(void*) {
-    const int fd = open(profilePath("samples", "log").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    if (fd < 0)
-        return nullptr;
-    writeModuleList(fd);
-    g_jit_fd = open(profilePath("jitsamples", "log").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    close(open(profilePath("hitches", "log").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666));  // this run only
+    // The profile files are opened (and truncated) only once the Profiler is on.
+    int fd = -1;
     const double start = now();
     double window_start = start, last_dump = start;
     const timespec period = {0, 1000000}, paused = {0, 100000000};
     for (;;) {
         if (g_sampler_stopping.load())
             return nullptr;
+        const bool profiling = g_sampler_on.load(std::memory_order_relaxed);
         // Profiler switched off in the menus: no signals, no new windows until it is back on.
-        if (!g_sampler_on.load(std::memory_order_relaxed)) {
+        if (!profiling && !g_hot_on.load(std::memory_order_relaxed)) {
             nanosleep(&paused, nullptr);
             window_start = now();
             continue;
         }
+        if (profiling && fd < 0) {
+            fd = open(profilePath("samples", "log").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+            if (fd < 0) {
+                g_sampler_on.store(false);
+                continue;
+            }
+            writeModuleList(fd);
+            g_jit_fd = open(profilePath("jitsamples", "log").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+            close(open(profilePath("hitches", "log").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666));  // this run only
+            window_start = last_dump = now();
+        }
         nanosleep(&period, nullptr);
         const int threads = g_thread_count.load(std::memory_order_acquire);
-        for (int i = 0; i < threads; i++)
+        for (int i = 0; i < threads; i++) {
+            if (!profiling && !(g_threads[i].name && strcmp(g_threads[i].name, "CPU thread") == 0))
+                continue;  // the JIT only needs the CPU thread
             pthread_kill(g_threads[i].thread.load(std::memory_order_relaxed), kSigProf);
+        }
         if (now() - window_start >= 10.0) {
+            if (!profiling) {
+                for (int i = 0; i < threads; i++)
+                    g_threads[i].count.store(0, std::memory_order_release);  // only the ring is used
+                window_start = now();
+                continue;
+            }
             writeModuleList(fd);
             for (int i = 0; i < threads; i++)
                 report(fd, g_threads[i], window_start - start);
@@ -719,9 +739,9 @@ extern "C" void ps4_sampler_register_thread(const char* name) {
     g_thread_count.store(index + 1, std::memory_order_release);
 }
 
-extern "C" void ps4_sampler_start() {
+// The signal handler and the sampler thread, once (the Profiler and jit_hot share them).
+static void samplerStartOnce() {
     static std::atomic<bool> s_started{false};
-    g_sampler_on.store(true);
     if (s_started.exchange(true))
         return;
     struct sigaction action;
@@ -734,7 +754,44 @@ extern "C" void ps4_sampler_start() {
 
     pthread_t thread;
     if (pthread_create(&thread, nullptr, samplerThread, nullptr) == 0)
-        ps4_boot_trace(("sampler: started, writing " + profilePath("samples", "log") + " every 10 s").c_str());
+        ps4_boot_trace("sampler: started");
+}
+
+extern "C" void ps4_sampler_start() {
+    g_sampler_on.store(true);
+    samplerStartOnce();
+    ps4_boot_trace(("sampler: profiling, writing " + profilePath("samples", "log") + " every 10 s").c_str());
+}
+
+// jit_hot (Core/PowerPC/JitPS4/Jit.cpp): sample the CPU thread for the JIT's hot code area.
+extern "C" void ps4_hot_sampling(int on) {
+    g_hot_on.store(on != 0);
+    if (on)
+        samplerStartOnce();
+}
+
+// The CPU thread's JIT samples since the last call (its last 4096 at most, ~4 s at 1 kHz): the
+// interrupted addresses (system module samples are tagged and left out).
+extern "C" int ps4_hot_take(uint64_t* out, int max) {
+    static uint32_t s_read = 0;
+    for (int i = 0; i < g_thread_count.load(std::memory_order_acquire); i++) {
+        ThreadSamples& t = g_threads[i];
+        if (!t.name || strcmp(t.name, "CPU thread") != 0)
+            continue;
+        const uint32_t pos = t.ring_pos.load(std::memory_order_acquire);
+        uint32_t from = s_read;
+        if (pos - from > kRing)
+            from = pos - kRing;
+        int n = 0;
+        for (uint32_t k = from; k != pos && n < max; k++) {
+            const uint64_t sample = t.ring[k % kRing];
+            if (!(sample >> 61))  // untagged (no wait/caller tag): JIT code or the eboot
+                out[n++] = sample;
+        }
+        s_read = pos;
+        return n;
+    }
+    return 0;
 }
 
 // The game is stopping (MainNoGUI's core state callback, PlatformPS4's exit): the sampler stops
