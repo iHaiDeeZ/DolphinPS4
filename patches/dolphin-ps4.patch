@@ -3706,6 +3706,20 @@ index b3c43b8..b81f39e 100644
  
  protected:
    // Additional AUX buffers
+diff --git a/Source/Core/Core/HW/DVD/DVDInterface.h b/Source/Core/Core/HW/DVD/DVDInterface.h
+index 2e3c562..676ff24 100644
+--- a/Source/Core/Core/HW/DVD/DVDInterface.h
++++ b/Source/Core/Core/HW/DVD/DVDInterface.h
+@@ -146,6 +146,9 @@ public:
+   void ChangeDisc(const Core::CPUThreadGuard& guard, const std::vector<std::string>& paths);
+   void ChangeDisc(const Core::CPUThreadGuard& guard, const std::string& new_path);
+   bool AutoChangeDisc(const Core::CPUThreadGuard& guard);
++  // PS4 in-game menu (Change Disc): the game's discs, and the one in the drive.
++  const std::vector<std::string>& PS4DiscPaths() const { return m_auto_disc_change_paths; }
++  size_t PS4DiscIndex() const { return m_auto_disc_change_index; }
+ 
+   // This function returns true and calls SConfig::SetRunningGameMetadata(Volume&, Partition&)
+   // if both of the following conditions are true:
 diff --git a/Source/Core/Core/HW/DVD/DVDThread.cpp b/Source/Core/Core/HW/DVD/DVDThread.cpp
 index e7b40fa..022eacc 100644
 --- a/Source/Core/Core/HW/DVD/DVDThread.cpp
@@ -23057,7 +23071,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..6096db8 100644
+index 3bf40ea..9456df4 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -23226,7 +23240,7 @@ index 3bf40ea..6096db8 100644
  #endif
        });
  
-@@ -270,7 +379,469 @@ int main(const int argc, char* argv[])
+@@ -270,7 +379,473 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -23543,6 +23557,10 @@ index 3bf40ea..6096db8 100644
 +    // EA's VP6 videos need it - FIFA Street 2).
 +    Config::SetBase(Config::GFX_HACK_FAST_TEXTURE_SAMPLING,
 +                    Platform::GetPS4Option("manual_texture_sampling", "off") != "on");
++    // auto_disc_change (default on): Dolphin's "Change Discs Automatically" - a multi-disc game
++    // that asks for the next disc gets it (all the game's discs are on the command line).
++    Config::SetBase(Config::MAIN_AUTO_DISC_CHANGE,
++                    Platform::GetPS4Option("auto_disc_change", "on") == "on");
 +    // hires_textures=on: Dolphin's "Load Custom Textures" (HD packs in User/Load/Textures/<ID>);
 +    // hires_prefetch=on: "Prefetch Custom Textures" (the whole pack in memory at the start).
 +    Config::SetBase(Config::GFX_HIRES_TEXTURES,
@@ -23696,7 +23714,7 @@ index 3bf40ea..6096db8 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +855,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +859,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -23712,7 +23730,7 @@ index 3bf40ea..6096db8 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +883,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +887,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -25639,10 +25657,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100755
-index 0000000..e4b8668
+index 0000000..d0d47ec
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,3653 @@
+@@ -0,0 +1,3690 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -25687,6 +25705,7 @@ index 0000000..e4b8668
 +#include "InputCommon/ControllerEmu/ControllerEmu.h"
 +#include "InputCommon/ControllerEmu/Setting/NumericSetting.h"
 +#include "Core/HW/GCPad.h"
++#include "Core/HW/DVD/DVDInterface.h"
 +#ifdef USE_RETRO_ACHIEVEMENTS
 +#include "Core/AchievementManager.h"
 +#include "Core/Config/AchievementSettings.h"
@@ -25759,6 +25778,7 @@ index 0000000..e4b8668
 +  MAIN_QUIT,
 +  MAIN_CONTROLS,
 +  MAIN_ACHIEVEMENTS,
++  MAIN_DISC,  // Change Disc: games on more than one disc
 +  MAIN_COUNT,
 +};
 +
@@ -26607,6 +26627,13 @@ index 0000000..e4b8668
 +                            std::to_string(s_ach.unlocked) + " / " + std::to_string(s_ach.total) :
 +                            AchievementBrief()});
 +        break;
++      case MAIN_DISC:
++      {
++        auto& dvd = Core::System::GetInstance().GetDVDInterface();
++        rows.push_back({"Change Disc", "Disc " + std::to_string(dvd.PS4DiscIndex() + 1) + " of " +
++                                           std::to_string(dvd.PS4DiscPaths().size())});
++        break;
++      }
 +      case MAIN_RESTART:
 +        rows.push_back({"Restart Game"});
 +        break;
@@ -26906,6 +26933,9 @@ index 0000000..e4b8668
 +  if (s_ach_loaded)
 +    s_main_items.push_back(MAIN_ACHIEVEMENTS);
 +#endif
++  // Games on several discs (MGS: The Twin Snakes, Killer7, ...): the next disc on demand.
++  if (system.GetDVDInterface().PS4DiscPaths().size() > 1)
++    s_main_items.push_back(MAIN_DISC);
 +  s_main_items.insert(s_main_items.end(), {MAIN_RESTART, MAIN_QUIT});
 +  {
 +    // What the slots look like for this game (a report of "empty" slots after an update).
@@ -27867,6 +27897,25 @@ index 0000000..e4b8668
 +    if (s_row_keys.size() > 1 && !s_row_keys[1].empty())
 +      s_settings_selected = 1;
 +    break;
++  case MAIN_DISC:
++  {
++    // The next disc goes in (the drive opens, then closes a second later - as the game asks for
++    // when it says "change the disc"); the game runs on to see it.
++    auto& dvd = system.GetDVDInterface();
++    const auto& paths = dvd.PS4DiscPaths();
++    if (paths.size() < 2)
++      break;
++    const size_t next = (dvd.PS4DiscIndex() + 1) % paths.size();
++    const std::string path = paths[next];
++    {
++      const Core::CPUThreadGuard guard(system);
++      dvd.ChangeDisc(guard, path);
++    }
++    Log("disc: changing to disc " + std::to_string(next + 1) + " (" + path + ")");
++    Toast("Disc " + std::to_string(next + 1) + " inserted");
++    Close(system);
++    break;
++  }
 +  case MAIN_RESTART:
 +    // The same clean stop as Quit Game (memory cards and the NAND are written as the game saves);
 +    // the app then restarts into this game instead of the menu: a fresh boot, like a console reset.
@@ -28353,6 +28402,12 @@ index 0000000..e4b8668
 +  }
 +  case MAIN_ACHIEVEMENTS:
 +    DrawTrophy(dl, c, r * 2.0f, col);
++    break;
++  case MAIN_DISC:
++    dl->AddCircle(c, r * 0.85f, col, 28, t);
++    dl->AddCircle(c, r * 0.28f, col, 16, t);
++    dl->PathArcTo(c, r * 0.58f, -2.6f, -1.6f, 10);
++    dl->PathStroke(col, 0, t * 0.8f);
 +    break;
 +  case MAIN_QUIT:
 +    dl->PathArcTo(c, r * 0.72f, -1.1f, 4.24f, 24);
