@@ -12,6 +12,7 @@ build() {
     local name="$1"; shift
     local build="$PS4_BUILD_ROOT/build/$name"
     rm -rf "$build"
+    mkdir -p "$build"
     env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u LIBS \
         cmake -S "$PS4_BUILD_ROOT/src/$name" -B "$build" -G Ninja \
         -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" -DCMAKE_BUILD_TYPE=Release \
