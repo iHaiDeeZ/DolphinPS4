@@ -288,22 +288,23 @@ index 0000000..c4a90ff
 +#endif
 +};
 diff --git a/Source/Core/Common/BlockingLoop.h b/Source/Core/Common/BlockingLoop.h
-index 472a84b..d666627 100644
+index 472a84b..521b909 100644
 --- a/Source/Core/Common/BlockingLoop.h
 +++ b/Source/Core/Common/BlockingLoop.h
-@@ -10,6 +10,11 @@
+@@ -10,6 +10,12 @@
  #include "Common/Event.h"
  #include "Common/Flag.h"
  
 +#ifdef __ORBIS__
 +#include <time.h>
 +extern "C" void ps4_wait_add(int slot, long long ns);  // port/ps4_sampler.cpp
++extern "C" int ps4_sync_spin;  // ps4.ini sync_spin (VideoCommon/Fifo.cpp; off = sleep at once)
 +#endif
 +
  namespace Common
  {
  // This class provides a synchronized loop.
-@@ -55,6 +60,15 @@ public:
+@@ -55,6 +61,15 @@ public:
      // already done
      if (IsDone())
        return;
@@ -313,13 +314,13 @@ index 472a84b..d666627 100644
 +    // waking up again - far slower on the PS4 than the work waited for). Spin first, up to
 +    // 0.5 ms: each thread has a core of its own. Done that way, the worker isn't told to sleep
 +    // either (the 1 kHz AllowSleep from SystemTimers still lets it when the game idles).
-+    if (PS4SpinUntil([this] { return IsDone(); }, 500'000))
++    if (ps4_sync_spin && PS4SpinUntil([this] { return IsDone(); }, 500'000))
 +      return;
 +#endif
  
      // notifying this event will only wake up one thread, so use a mutex here to
      // allow only one waiting thread. And in this way, we get an event free wakeup
-@@ -177,6 +191,27 @@ public:
+@@ -177,6 +192,28 @@ public:
  
        case STATE_SLEEPING:
          // Just relax
@@ -333,7 +334,8 @@ index 472a84b..d666627 100644
 +        // New work usually comes right back (see Wait): spin up to 0.2 ms before sleeping. A
 +        // Wakeup in that time may also have set the event - the next sleep then returns at once
 +        // for one more pass of the payload, which is harmless.
-+        if (PS4SpinUntil(
++        if (ps4_sync_spin &&
++            PS4SpinUntil(
 +                [this] {
 +                  return m_running_state.load() != STATE_SLEEPING || m_shutdown.IsSet();
 +                },
@@ -347,7 +349,7 @@ index 472a84b..d666627 100644
          if (timeout > 0)
          {
            m_new_work_event.WaitFor(std::chrono::milliseconds(timeout));
-@@ -185,6 +220,11 @@ public:
+@@ -185,6 +222,11 @@ public:
          {
            m_new_work_event.Wait();
          }
@@ -359,7 +361,7 @@ index 472a84b..d666627 100644
          break;
        }
      }
-@@ -228,10 +268,38 @@ public:
+@@ -228,10 +270,38 @@ public:
  
    bool IsRunning() const { return !m_stopped.IsSet() && !m_shutdown.IsSet(); }
    bool IsDone() const { return m_stopped.IsSet() || m_running_state.load() <= STATE_DONE; }
@@ -9952,10 +9954,10 @@ index 0000000..482d3bc
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
 new file mode 100644
-index 0000000..78ab0cb
+index 0000000..e595d9c
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
-@@ -0,0 +1,2527 @@
+@@ -0,0 +1,2529 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10041,6 +10043,8 @@ index 0000000..78ab0cb
 +// cache keys replaced each other's file at every start (F-Zero GX recompiled during races).
 +extern "C" int ps4_game_fprf;
 +int ps4_game_fprf = -1;
++extern "C" int ps4_jit_fcmp_merge_fprf;  // jit_fcmp_merge_fprf (DolphinNoGUI/MainNoGUI.cpp)
++int ps4_jit_fcmp_merge_fprf = 1;
 +extern "C" int ps4_fifo_defer;  // VideoCommon/Fifo.cpp (ps4.ini fifo_defer)
 +extern "C" void ps4_boot_trace(const char* line);  // DolphinPS4 port/ps4_crashlog.cpp
 +extern "C" int ps4_gp_fuse;     // ps4.ini jit_gp_fuse (DolphinNoGUI)
@@ -14076,10 +14080,10 @@ index 0000000..b11d825
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit_FloatingPoint.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit_FloatingPoint.cpp
 new file mode 100644
-index 0000000..62a65ba
+index 0000000..7a0c2e2
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit_FloatingPoint.cpp
-@@ -0,0 +1,986 @@
+@@ -0,0 +1,988 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -14779,6 +14783,7 @@ index 0000000..62a65ba
 +}
 +
 +extern "C" int ps4_jit_fcmp_merge;  // ps4.ini jit_fcmp_merge (DolphinNoGUI/MainNoGUI.cpp)
++extern "C" int ps4_jit_fcmp_merge_fprf;  // jit_fcmp_merge_fprf (JitPS4/Jit.cpp; off = as in v04.06)
 +
 +void JitPS4::FloatCompare(UGeckoInstruction inst, bool upper)
 +{
@@ -14811,7 +14816,8 @@ index 0000000..62a65ba
 +  // the TEST below, which sets the flags the branch uses. Not with a merged cror (the bc is then
 +  // the instruction after it) or a branch on SO (unordered: the integer merge treats SO as never
 +  // set).
-+  const bool merge_branch = ps4_jit_fcmp_merge && js.skipInstructions == 0 &&
++  const bool merge_branch = ps4_jit_fcmp_merge && (!fprf || ps4_jit_fcmp_merge_fprf) &&
++                            js.skipInstructions == 0 &&
 +                            CheckMergedBranch(crf) &&
 +                            3 - (js.op[1].inst.BI & 3) != PowerPC::CR_SO_BIT;
 +
@@ -23071,7 +23077,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..9456df4 100644
+index 3bf40ea..43fef82 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -23124,7 +23130,7 @@ index 3bf40ea..9456df4 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +55,74 @@
+@@ -31,6 +55,76 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -23151,6 +23157,8 @@ index 3bf40ea..9456df4 100644
 +extern "C" int ps4_jit_join;             // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_trace;            // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_lazy_fprf;        // Core/PowerPC/JitPS4/Jit.cpp
++extern "C" int ps4_jit_fcmp_merge_fprf;  // Core/PowerPC/JitPS4/Jit.cpp
++extern "C" int ps4_sync_spin, ps4_idle_skip, ps4_fifo_bp_batch, ps4_diag_counters;  // VideoCommon/Fifo.cpp
 +extern "C" int ps4_jit_gp_dynamic;       // Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 +extern "C" int ps4_jit_accurate_singles;  // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_round_results, ps4_jit_round_operands;  // Jit64/Jit_FloatingPoint.cpp
@@ -23199,7 +23207,7 @@ index 3bf40ea..9456df4 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +265,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +267,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -23210,7 +23218,7 @@ index 3bf40ea..9456df4 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +280,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +282,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -23229,7 +23237,7 @@ index 3bf40ea..9456df4 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +312,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +314,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -23240,7 +23248,7 @@ index 3bf40ea..9456df4 100644
  #endif
        });
  
-@@ -270,7 +379,473 @@ int main(const int argc, char* argv[])
+@@ -270,7 +381,481 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -23456,6 +23464,14 @@ index 3bf40ea..9456df4 100644
 +    // jit_lazy_fprf=off (PS4 JIT): FPSCR[FPRF] classified after every float instruction again,
 +    // instead of only where a game reads FPSCR (JitPS4 SetFPRFIfNeeded, ps4_fprf_materialize).
 +    ps4_jit_lazy_fprf = Platform::GetPS4Option("jit_lazy_fprf", "on") == "on";
++    // Switches for the changes since v04.06 (on by default; off = as in v04.06): fcmp + bc merged
++    // with FPRF too, the CPU/GPU threads spinning before they sleep, idle syncs only when the GPU
++    // has work, FIFO batches up to a breakpoint, the "fifo sync" / "vk submits" counters.
++    ps4_jit_fcmp_merge_fprf = Platform::GetPS4Option("jit_fcmp_merge_fprf", "on") == "on";
++    ps4_sync_spin = Platform::GetPS4Option("sync_spin", "on") == "on";
++    ps4_idle_skip = Platform::GetPS4Option("idle_skip", "on") == "on";
++    ps4_fifo_bp_batch = Platform::GetPS4Option("fifo_bp_batch", "on") == "on";
++    ps4_diag_counters = Platform::GetPS4Option("diag_counters", "on") == "on";
 +    // jit_gp_dynamic=off (Dolphin Lab): gather pipe writes through a pointer call MMU::Write again.
 +    ps4_jit_gp_dynamic = Platform::GetPS4Option("jit_gp_dynamic", "on") == "on";
 +    // jit_accurate_singles=off (per game): no rounding to single precision after float ops.
@@ -23714,7 +23730,7 @@ index 3bf40ea..9456df4 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +859,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +869,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -23730,7 +23746,7 @@ index 3bf40ea..9456df4 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +887,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +897,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -32096,10 +32112,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..cb7df8b
+index 0000000..2558f49
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,7183 @@
+@@ -0,0 +1,7192 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -37943,7 +37959,7 @@ index 0000000..cb7df8b
 +std::string Menu::CenterSummary(const CenterEntry& entry)
 +{
 +  std::vector<std::string> parts;
-+  bool shortcut = false;
++  bool shortcut = false, v0406 = false;
 +  for (const auto& [key, value] : entry.values)
 +  {
 +    if (key == "speed_mode")
@@ -37954,6 +37970,15 @@ index 0000000..cb7df8b
 +      {
 +        parts.push_back("speed shortcuts adjusted");
 +        shortcut = true;
++      }
++    }
++    else if (key == "jit_lazy_fprf" || key == "jit_fcmp_merge_fprf" || key == "sync_spin" ||
++             key == "idle_skip" || key == "fifo_bp_batch" || key == "diag_counters")
++    {
++      if (value == "off" && !v0406)
++      {
++        parts.push_back("speed changes since v04.06 off");
++        v0406 = true;
 +      }
 +    }
 +    else if (key == "flip_thread")
@@ -46781,7 +46806,7 @@ index da0e4d8..c5eb5f7 100644
    VkDescriptorSet m_compute_descriptor_set = VK_NULL_HANDLE;
  
 diff --git a/Source/Core/VideoBackends/Vulkan/VKGfx.cpp b/Source/Core/VideoBackends/Vulkan/VKGfx.cpp
-index c88e422..9da213c 100644
+index c88e422..9d762c4 100644
 --- a/Source/Core/VideoBackends/Vulkan/VKGfx.cpp
 +++ b/Source/Core/VideoBackends/Vulkan/VKGfx.cpp
 @@ -4,7 +4,9 @@
@@ -46794,12 +46819,13 @@ index c88e422..9da213c 100644
  #include <utility>
  
  #include "Common/CommonTypes.h"
-@@ -347,8 +349,59 @@ bool VKGfx::IsFullscreen() const
+@@ -347,8 +349,61 @@ bool VKGfx::IsFullscreen() const
    return m_swap_chain && m_swap_chain->GetCurrentFullscreenState();
  }
  
 +#ifdef __ORBIS__
 +extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
++extern "C" int ps4_diag_counters;  // VideoCommon/Fifo.cpp (ps4.ini diag_counters)
 +// Where command buffers are submitted from, written to boot-trace every 5 s ("vk submits:"): the
 +// callers (program addresses, 0-based like crash logs) with their counts and how many waited for
 +// the GPU. Many submits a frame make the video thread wait for older ones (Super Mario Galaxy:
@@ -46849,7 +46875,8 @@ index c88e422..9da213c 100644
  void VKGfx::ExecuteCommandBuffer(bool submit_off_thread, bool wait_for_completion)
  {
 +#ifdef __ORBIS__
-+  PS4CountSubmit(__builtin_return_address(0), wait_for_completion);
++  if (ps4_diag_counters)
++    PS4CountSubmit(__builtin_return_address(0), wait_for_completion);
 +#endif
    StateTracker::GetInstance()->EndRenderPass();
  
@@ -47761,10 +47788,10 @@ index 180bc86..e55ccfc 100644
  
          u32 height = static_cast<u32>(num_xfb_lines);
 diff --git a/Source/Core/VideoCommon/CommandProcessor.cpp b/Source/Core/VideoCommon/CommandProcessor.cpp
-index 1dbf466..8468bd7 100644
+index 1dbf466..37270a2 100644
 --- a/Source/Core/VideoCommon/CommandProcessor.cpp
 +++ b/Source/Core/VideoCommon/CommandProcessor.cpp
-@@ -336,9 +336,22 @@ void CommandProcessorManager::RegisterMMIO(MMIO::Mapping* mmio, u32 base)
+@@ -336,9 +336,26 @@ void CommandProcessorManager::RegisterMMIO(MMIO::Mapping* mmio, u32 base)
    mmio->Register(base | FIFO_READ_POINTER_HI, fifo_read_hi_r, fifo_read_hi_w);
  }
  
@@ -47772,36 +47799,40 @@ index 1dbf466..8468bd7 100644
 +extern "C" int ps4_flush_site;                     // VideoCommon/Fifo.cpp
 +extern "C" unsigned long long ps4_fifo_bursts[4];  // VideoCommon/Fifo.cpp
 +extern "C" void PS4FifoSyncStats();                // VideoCommon/Fifo.cpp
++extern "C" int ps4_diag_counters;                  // VideoCommon/Fifo.cpp
 +#endif
 +
  void CommandProcessorManager::GatherPipeBursted()
  {
    SetCPStatusFromCPU();
 +#ifdef __ORBIS__
++  if (ps4_diag_counters)
++  {
 +  ps4_fifo_bursts[m_cp_ctrl_reg.GPLinkEnable ? 0 : 2]++;
 +  if (m_fifo.bFF_BPEnable.load(std::memory_order_relaxed))
 +    ps4_fifo_bursts[3]++;
 +  if ((ps4_fifo_bursts[0] + ps4_fifo_bursts[2]) % 4096 == 0)
 +    PS4FifoSyncStats();
++  }
 +#endif
  
    auto& processor_interface = m_system.GetProcessorInterface();
  
-@@ -353,7 +366,13 @@ void CommandProcessorManager::GatherPipeBursted()
+@@ -353,7 +370,13 @@ void CommandProcessorManager::GatherPipeBursted()
            (processor_interface.m_fifo_cpu_base == m_fifo.CPBase.load(std::memory_order_relaxed)) &&
            m_fifo.CPReadWriteDistance.load(std::memory_order_relaxed) > 0)
        {
 +#ifdef __ORBIS__
 +        ps4_flush_site = 2;
-+        m_system.GetFifo().FlushGpu();
+         m_system.GetFifo().FlushGpu();
 +        ps4_flush_site = 0;
 +#else
-         m_system.GetFifo().FlushGpu();
++        m_system.GetFifo().FlushGpu();
 +#endif
        }
      }
      m_system.GetFifo().RunGpu();
-@@ -384,6 +403,9 @@ void CommandProcessorManager::GatherPipeBursted()
+@@ -384,6 +407,9 @@ void CommandProcessorManager::GatherPipeBursted()
      m_system.GetCoreTiming().ForceExceptionCheck(0);
  
    m_fifo.CPReadWriteDistance.fetch_add(GPFifo::GATHER_PIPE_SIZE, std::memory_order_seq_cst);
@@ -47811,7 +47842,7 @@ index 1dbf466..8468bd7 100644
  
    m_system.GetFifo().RunGpu();
  
-@@ -406,6 +428,52 @@ void CommandProcessorManager::GatherPipeBursted()
+@@ -406,6 +432,55 @@ void CommandProcessorManager::GatherPipeBursted()
               "FIFOs linked but out of sync");
  }
  
@@ -47829,9 +47860,12 @@ index 1dbf466..8468bd7 100644
 +void CommandProcessorManager::GatherPipeBurstedBatch(u32 bursts)
 +{
 +  SetCPStatusFromCPU();
-+  ps4_fifo_bursts[1] += bursts;
-+  if (m_fifo.bFF_BPEnable.load(std::memory_order_relaxed))
-+    ps4_fifo_bursts[3] += bursts;
++  if (ps4_diag_counters)
++  {
++    ps4_fifo_bursts[1] += bursts;
++    if (m_fifo.bFF_BPEnable.load(std::memory_order_relaxed))
++      ps4_fifo_bursts[3] += bursts;
++  }
 +
 +  const u32 base = m_fifo.CPBase.load(std::memory_order_relaxed);
 +  const u32 end = m_fifo.CPEnd.load(std::memory_order_relaxed);
@@ -47864,7 +47898,7 @@ index 1dbf466..8468bd7 100644
  void CommandProcessorManager::UpdateInterrupts(u64 userdata)
  {
    if (userdata)
-@@ -476,12 +544,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
+@@ -476,12 +551,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
    }
  
    // overflow & underflow check
@@ -47891,7 +47925,7 @@ index 1dbf466..8468bd7 100644
  
    bool bpInt = m_fifo.bFF_Breakpoint.load(std::memory_order_relaxed) &&
                 m_fifo.bFF_BPInt.load(std::memory_order_relaxed);
-@@ -514,12 +596,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
+@@ -514,12 +603,26 @@ void CommandProcessorManager::SetCPStatusFromGPU()
  void CommandProcessorManager::SetCPStatusFromCPU()
  {
    // overflow & underflow check
@@ -47935,7 +47969,7 @@ index 976592c..a20137f 100644
    void UpdateInterruptsFromVideoBackend(u64 userdata);
  
 diff --git a/Source/Core/VideoCommon/Fifo.cpp b/Source/Core/VideoCommon/Fifo.cpp
-index f183c93..24ab758 100644
+index f183c93..85d5dad 100644
 --- a/Source/Core/VideoCommon/Fifo.cpp
 +++ b/Source/Core/VideoCommon/Fifo.cpp
 @@ -3,6 +3,10 @@
@@ -48002,7 +48036,7 @@ index f183c93..24ab758 100644
  }
  
  // The deterministic_gpu_thread version.
-@@ -283,16 +311,83 @@ void FifoManager::ResetVideoBuffer()
+@@ -283,16 +311,84 @@ void FifoManager::ResetVideoBuffer()
  
  // Description: Main FIFO update loop
  // Purpose: Keep the Core HW updated about the CPU-GPU distance
@@ -48010,6 +48044,7 @@ index f183c93..24ab758 100644
 +}  // namespace Fifo
 +extern "C" int ps4_fifo_batch;  // ps4.ini fifo_batch (DolphinNoGUI)
 +int ps4_fifo_batch = 0;
++extern "C" int ps4_fifo_bp_batch;  // ps4.ini fifo_bp_batch (defined below)
 +// ps4.ini fifo_defer=on: JIT blocks leave up to 127 bytes in the gather pipe instead of flushing
 +// every complete 32-byte burst at their end (Jit64::Cleanup), so bursts reach the command
 +// processor in batches. Pending bytes are flushed before every MMIO/EFB access, at every CPU
@@ -48086,7 +48121,7 @@ index f183c93..24ab758 100644
  
          if (m_use_deterministic_gpu_thread)
          {
-@@ -302,6 +397,7 @@ void FifoManager::RunGpuLoop()
+@@ -302,6 +398,7 @@ void FifoManager::RunGpuLoop()
            // See comment in SyncGPU
            if (write_ptr > seen_ptr)
            {
@@ -48094,7 +48129,7 @@ index f183c93..24ab758 100644
              m_video_buffer_read_ptr =
                  OpcodeDecoder::RunFifo(DataReader(m_video_buffer_read_ptr, write_ptr), nullptr);
              m_video_buffer_seen_ptr = write_ptr;
-@@ -312,6 +408,9 @@ void FifoManager::RunGpuLoop()
+@@ -312,6 +409,9 @@ void FifoManager::RunGpuLoop()
            auto& command_processor = m_system.GetCommandProcessor();
            auto& fifo = command_processor.GetFifo();
            command_processor.SetCPStatusFromGPU();
@@ -48104,7 +48139,7 @@ index f183c93..24ab758 100644
  
            // check if we are able to run this buffer
            while (!command_processor.IsInterruptWaiting() &&
-@@ -323,28 +422,71 @@ void FifoManager::RunGpuLoop()
+@@ -323,28 +423,72 @@ void FifoManager::RunGpuLoop()
                break;
  
              u32 cyclesExecuted = 0;
@@ -48122,7 +48157,8 @@ index f183c93..24ab758 100644
 +            // then checked per batch. Never across the FIFO's wrap point. With a FIFO breakpoint
 +            // on, a batch ends right at it: the loop stops there as before, burst by burst (NBA
 +            // Street V3 keeps one on - a third of the GPU thread went to 32-byte passes).
-+            if (ps4_fifo_batch && !m_config_sync_gpu)
++            if (ps4_fifo_batch && !m_config_sync_gpu &&
++                (ps4_fifo_bp_batch || !fifo.bFF_BPEnable.load(std::memory_order_relaxed)))
 +            {
 +              const u32 available = fifo.CPReadWriteDistance.load(std::memory_order_acquire) /
 +                                    GPFifo::GATHER_PIPE_SIZE;
@@ -48185,7 +48221,7 @@ index f183c93..24ab758 100644
              if ((write_ptr - m_video_buffer_read_ptr) == 0)
              {
                fifo.SafeCPReadPointer.store(fifo.CPReadPointer.load(std::memory_order_relaxed),
-@@ -381,21 +523,168 @@ void FifoManager::RunGpuLoop()
+@@ -381,21 +525,180 @@ void FifoManager::RunGpuLoop()
  
            // The fifo is empty and it's unlikely we will get any more work in the near future.
            // Make sure VertexManager finishes drawing any primitives it has stored in it's buffer.
@@ -48228,6 +48264,10 @@ index f183c93..24ab758 100644
 +// isn't linked to) and the bursts the CPU hands over. CPU thread only.
 +extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
 +extern "C" {
++// ps4.ini switches for the v60.04-v60.08 changes (on by default; off = as in v04.06):
++// sync_spin (BlockingLoop: spin before sleeping), idle_skip (PS4FlushGpuOnIdle),
++// fifo_bp_batch (batches up to a FIFO breakpoint), diag_counters ("fifo sync" / "vk submits").
++int ps4_sync_spin = 1, ps4_idle_skip = 1, ps4_fifo_bp_batch = 1, ps4_diag_counters = 1;
 +int ps4_flush_site = 0;
 +unsigned long long ps4_flush_calls[3], ps4_flush_ns[3], ps4_idle_skips;
 +unsigned long long ps4_fifo_bursts[4];
@@ -48270,6 +48310,11 @@ index f183c93..24ab758 100644
 +{
 +  if (!m_system.IsDualCoreMode() || m_use_deterministic_gpu_thread)
 +    return;
++  if (!ps4_idle_skip)
++  {
++    FlushGpu();
++    return;
++  }
 +  auto& command_processor = m_system.GetCommandProcessor();
 +  auto& fifo = command_processor.GetFifo();
 +  if (fifo.CPReadWriteDistance.load(std::memory_order_acquire) == 0 ||
@@ -48292,15 +48337,18 @@ index f183c93..24ab758 100644
 +  // Time the CPU thread waits for the GPU thread (monitor: "waits").
 +  timespec t0, t1;
 +  clock_gettime(CLOCK_MONOTONIC, &t0);
-+  m_gpu_mainloop.Wait();
+   m_gpu_mainloop.Wait();
 +  clock_gettime(CLOCK_MONOTONIC, &t1);
 +  const long long waited = (t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec);
 +  ps4_wait_add(0, waited);
-+  ps4_flush_calls[ps4_flush_site]++;
-+  ps4_flush_ns[ps4_flush_site] += waited;
-+  PS4FifoSyncStats();
++  if (ps4_diag_counters)
++  {
++    ps4_flush_calls[ps4_flush_site]++;
++    ps4_flush_ns[ps4_flush_site] += waited;
++    PS4FifoSyncStats();
++  }
 +#else
-   m_gpu_mainloop.Wait();
++  m_gpu_mainloop.Wait();
 +#endif
  }
  
@@ -48354,7 +48402,7 @@ index f183c93..24ab758 100644
  void FifoManager::GpuMaySleep()
  {
    m_gpu_mainloop.AllowSleep();
-@@ -551,7 +840,10 @@ int FifoManager::WaitForGpuThread(int ticks)
+@@ -551,7 +854,10 @@ int FifoManager::WaitForGpuThread(int ticks)
  
    // Wait for GPU
    if (now >= m_config_sync_gpu_max_distance)
@@ -50299,12 +50347,930 @@ index c56f32c..64e5240 100644
  
    customDriverLibraryName = Config::Get(Config::GFX_DRIVER_LIB_NAME);
  
+diff --git a/Source/Core/Common/PS4NetFS.cpp b/Source/Core/Common/PS4NetFS.cpp
+new file mode 100755
+index 0000000..75bac96
+--- /dev/null
++++ b/Source/Core/Common/PS4NetFS.cpp
+@@ -0,0 +1,845 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "Common/PS4NetFS.h"
++
++#include <algorithm>
++#include <cctype>
++#include <cerrno>
++#include <chrono>
++#include <cstring>
++#include <fcntl.h>
++#include <map>
++#include <memory>
++#include <mutex>
++#include <optional>
++#include <netdb.h>
++#include <poll.h>
++#include <signal.h>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include <nfsc/libnfs.h>
++#include <nfsc/libnfs-raw.h>
++#include <nfsc/libnfs-raw-nfs.h>
++#include <smb2/smb2.h>
++#include <smb2/libsmb2.h>
++
++extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
++
++namespace Common::NetFS
++{
++namespace
++{
++using Clock = std::chrono::steady_clock;
++
++// DirectIOFile handles from here up: far above any real file descriptor.
++constexpr int HANDLE_BASE = 0x40000000;
++// Reads smaller than this go through a per-file read-ahead buffer of this size (disc formats read
++// a header, then blocks of 32 KiB - 2 MiB; one network round trip per MiB instead of per block).
++constexpr size_t READ_AHEAD = 1 << 20;
++constexpr auto STAT_LIFETIME = std::chrono::seconds(10);
++constexpr auto IDLE_LIFETIME = std::chrono::seconds(120);
++constexpr size_t IDLE_PER_SERVER = 2;
++
++enum class Kind
++{
++  NFS,
++  SMB,
++};
++
++// Where a path connects: the connection (server and export, or server and share) and the path
++// inside it ("/dir/file" for NFS, "dir/file" for SMB).
++struct Location
++{
++  Kind kind;
++  std::string key;
++  std::string path;
++};
++
++struct Connection
++{
++  Kind kind = Kind::NFS;
++  std::string key;
++  nfs_context* nfs = nullptr;
++  smb2_context* smb = nullptr;
++  bool busy = false;
++  Clock::time_point idle_since;
++
++  ~Connection()
++  {
++    if (nfs)
++      nfs_destroy_context(nfs);
++    if (smb)
++    {
++      smb2_disconnect_share(smb);
++      smb2_destroy_context(smb);
++    }
++  }
++};
++
++struct StatResult
++{
++  bool exists = false;
++  bool directory = false;
++  u64 size = 0;
++  Clock::time_point when;
++};
++
++struct Stream
++{
++  std::mutex mutex;  // one read at a time (copied DirectIOFiles share it)
++  std::string url;
++  Location location;
++  Connection* connection = nullptr;
++  nfsfh* nfs_file = nullptr;
++  smb2fh* smb_file = nullptr;
++  u64 size = 0;
++  std::vector<u8> cache;
++  u64 cache_at = 0;
++  size_t cache_length = 0;
++};
++
++std::mutex s_mutex;  // everything below
++std::vector<std::string> s_shares;
++std::vector<std::unique_ptr<Connection>> s_pool;
++std::map<std::string, StatResult> s_stats;
++std::map<int, std::shared_ptr<Stream>> s_handles;
++int s_next_handle = HANDLE_BASE;
++std::string s_last_error;
++
++void Log(const std::string& text)
++{
++  ps4_boot_trace(("netfs: " + text).c_str());
++}
++
++void Fail(const std::string& url, const std::string& what)
++{
++  const std::string text = Redact(url) + ": " + what;
++  Log(text);
++  std::lock_guard lock(s_mutex);
++  s_last_error = text;
++}
++
++bool StartsWithNoCase(std::string_view text, std::string_view prefix)
++{
++  if (text.size() < prefix.size())
++    return false;
++  for (size_t i = 0; i < prefix.size(); i++)
++  {
++    if (std::tolower(static_cast<unsigned char>(text[i])) != prefix[i])
++      return false;
++  }
++  return true;
++}
++
++std::string TrimSlashes(std::string url)
++{
++  const size_t scheme = url.find("://");
++  while (url.size() > scheme + 3 && url.back() == '/')
++    url.pop_back();
++  return url;
++}
++
++// %XX escapes (user names and passwords: "me%40home").
++std::string Decode(const std::string& text)
++{
++  std::string out;
++  for (size_t i = 0; i < text.size(); i++)
++  {
++    if (text[i] == '%' && i + 2 < text.size() && std::isxdigit(static_cast<unsigned char>(text[i + 1])) &&
++        std::isxdigit(static_cast<unsigned char>(text[i + 2])))
++    {
++      out += static_cast<char>(std::stoi(text.substr(i + 1, 2), nullptr, 16));
++      i += 2;
++    }
++    else
++    {
++      out += text[i];
++    }
++  }
++  return out;
++}
++
++// folder: the path is a folder to list (an NFS path outside the configured shares connects at it).
++std::optional<Location> Resolve(const std::string& raw, bool folder)
++{
++  const std::string url = TrimSlashes(raw);
++  const size_t host_end = url.find('/', 6);
++  if (StartsWithNoCase(url, "smb://"))
++  {
++    // One connection per share: smb://[user@]server/share; the rest is the path in it.
++    if (host_end == std::string::npos)
++      return std::nullopt;
++    const size_t share_end = url.find('/', host_end + 1);
++    Location location{Kind::SMB, url.substr(0, share_end), ""};
++    if (share_end != std::string::npos)
++      location.path = url.substr(share_end + 1);
++    return location;
++  }
++  if (!StartsWithNoCase(url, "nfs://") || host_end == std::string::npos)
++    return std::nullopt;
++  // NFS: the export can be any number of folders deep, so a path inside a configured share connects
++  // at that share; other paths at their own folder (or the folder they are in).
++  std::string root;
++  {
++    std::lock_guard lock(s_mutex);
++    for (const std::string& configured : s_shares)
++    {
++      const std::string share = TrimSlashes(configured);
++      if (share.size() > root.size() && url.compare(0, share.size(), share) == 0 &&
++          (url.size() == share.size() || url[share.size()] == '/'))
++      {
++        root = share;
++      }
++    }
++  }
++  if (root.empty())
++  {
++    const size_t slash = url.rfind('/');
++    root = folder ? url : url.substr(0, slash);
++    if (root.size() <= host_end)
++      return std::nullopt;
++  }
++  Location location{Kind::NFS, root, url.substr(root.size())};
++  if (location.path.empty())
++    location.path = "/";
++  return location;
++}
++
++// Whether something answers on one of the ports within the time: a switched-off PC fails in
++// moments instead of the 6-9 seconds the clients wait (the menu reads the shares when it opens).
++bool Reachable(const std::string& host, const std::vector<int>& ports, int milliseconds)
++{
++  std::vector<pollfd> sockets;
++  for (const int port : ports)
++  {
++    addrinfo hints{};
++    hints.ai_family = AF_INET;
++    hints.ai_socktype = SOCK_STREAM;
++    addrinfo* found = nullptr;
++    if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &found) != 0 || !found)
++      return false;
++    const int fd = socket(found->ai_family, SOCK_STREAM, 0);
++    if (fd >= 0)
++    {
++      fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
++      if (connect(fd, found->ai_addr, found->ai_addrlen) == 0 || errno == EINPROGRESS)
++        sockets.push_back({fd, POLLOUT, 0});
++      else
++        close(fd);
++    }
++    freeaddrinfo(found);
++  }
++  bool reached = false;
++  const auto deadline = Clock::now() + std::chrono::milliseconds(milliseconds);
++  while (!reached && !sockets.empty() && Clock::now() < deadline)
++  {
++    const int left = static_cast<int>(
++        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count());
++    if (poll(sockets.data(), sockets.size(), std::max(left, 1)) <= 0)
++      break;
++    for (auto it = sockets.begin(); it != sockets.end();)
++    {
++      if (!it->revents)
++      {
++        ++it;
++        continue;
++      }
++      int failure = 0;
++      socklen_t length = sizeof(failure);
++      getsockopt(it->fd, SOL_SOCKET, SO_ERROR, &failure, &length);
++      reached |= failure == 0;
++      close(it->fd);
++      it = sockets.erase(it);
++    }
++  }
++  for (const pollfd& socket : sockets)
++    close(socket.fd);
++  return reached;
++}
++
++// "server:port" -> server, port (or the default).
++std::pair<std::string, int> HostAndPort(const std::string& authority, int default_port)
++{
++  const size_t colon = authority.rfind(':');
++  if (colon == std::string::npos)
++    return {authority, default_port};
++  return {authority.substr(0, colon), std::atoi(authority.c_str() + colon + 1)};
++}
++
++std::unique_ptr<Connection> Connect(const Location& location, std::string* error)
++{
++  // Writing to a connection the server closed raises SIGPIPE, which ends the whole program by
++  // default (a PC or NAS restarting mid-game). Ignored, the write fails and the read reconnects.
++  static std::once_flag s_sigpipe;
++  std::call_once(s_sigpipe, [] { signal(SIGPIPE, SIG_IGN); });
++  auto connection = std::make_unique<Connection>();
++  connection->kind = location.kind;
++  connection->key = location.key;
++  if (location.kind == Kind::NFS)
++  {
++    nfs_context* nfs = nfs_init_context();
++    if (!nfs)
++    {
++      *error = "out of memory";
++      return nullptr;
++    }
++    connection->nfs = nfs;
++    nfs_set_timeout(nfs, 8000);
++    nfs_url* url = nfs_parse_url_dir(nfs, location.key.c_str());
++    if (!url)
++    {
++      *error = std::string("bad address: ") + nfs_get_error(nfs);
++      return nullptr;
++    }
++    // NFS answers on 2049 (v4, and v3 on most servers) or its port mapper on 111.
++    if (!Reachable(url->server, url->port ? std::vector<int>{url->port} : std::vector<int>{2049, 111},
++                   2000))
++    {
++      *error = std::string("no answer from ") + url->server + " (is it on, and NFS running?)";
++      nfs_destroy_url(url);
++      return nullptr;
++    }
++    const int result = nfs_mount(nfs, url->server, url->path);
++    nfs_destroy_url(url);
++    if (result != 0)
++    {
++      *error = std::string("can't connect: ") + nfs_get_error(nfs);
++      return nullptr;
++    }
++    return connection;
++  }
++
++  // smb://[[domain;]user[:password]@]server[:port]/share
++  const std::string rest = location.key.substr(6);
++  const size_t slash = rest.find('/');
++  const std::string authority = rest.substr(0, slash);
++  const std::string share = slash == std::string::npos ? "" : rest.substr(slash + 1);
++  const size_t at = authority.rfind('@');
++  const std::string server = at == std::string::npos ? authority : authority.substr(at + 1);
++  std::string user, password, domain;
++  if (at != std::string::npos)
++  {
++    const std::string info = authority.substr(0, at);
++    const size_t colon = info.find(':');
++    user = Decode(info.substr(0, colon));
++    if (colon != std::string::npos)
++      password = Decode(info.substr(colon + 1));
++    if (const size_t semicolon = user.find(';'); semicolon != std::string::npos)
++    {
++      domain = user.substr(0, semicolon);
++      user = user.substr(semicolon + 1);
++    }
++  }
++  if (user.empty())
++    user = "Guest";
++  if (share.empty())
++  {
++    *error = "no share name (smb://server/share)";
++    return nullptr;
++  }
++  const auto [host, port] = HostAndPort(server, 445);
++  if (!Reachable(host, {port}, 2000))
++  {
++    *error = "no answer from " + host + " (is it on, and the folder shared?)";
++    return nullptr;
++  }
++  smb2_context* smb = smb2_init_context();
++  if (!smb)
++  {
++    *error = "out of memory";
++    return nullptr;
++  }
++  connection->smb = smb;
++  smb2_set_security_mode(smb, SMB2_NEGOTIATE_SIGNING_ENABLED);
++  smb2_set_timeout(smb, 10);
++  smb2_set_user(smb, user.c_str());
++  smb2_set_password(smb, password.c_str());
++  if (!domain.empty())
++    smb2_set_domain(smb, domain.c_str());
++  if (smb2_connect_share(smb, server.c_str(), share.c_str(), user.c_str()) < 0)
++  {
++    *error = std::string("can't connect: ") + smb2_get_error(smb);
++    smb2_destroy_context(smb);
++    connection->smb = nullptr;
++    return nullptr;
++  }
++  return connection;
++}
++
++// A connection for this location, only for the caller until Release.
++Connection* Acquire(const Location& location, const std::string& url)
++{
++  {
++    std::lock_guard lock(s_mutex);
++    for (const auto& connection : s_pool)
++    {
++      if (!connection->busy && connection->key == location.key)
++      {
++        connection->busy = true;
++        return connection.get();
++      }
++    }
++  }
++  std::string error;
++  std::unique_ptr<Connection> connection = Connect(location, &error);
++  if (!connection)
++  {
++    Fail(url, error);
++    return nullptr;
++  }
++  Log("connected to " + Redact(location.key));
++  std::lock_guard lock(s_mutex);
++  connection->busy = true;
++  s_pool.push_back(std::move(connection));
++  return s_pool.back().get();
++}
++
++// Back to the pool; broken: closed instead (the server went away: the next use reconnects).
++void Release(Connection* connection, bool broken)
++{
++  std::vector<std::unique_ptr<Connection>> closing;
++  {
++    std::lock_guard lock(s_mutex);
++    const auto now = Clock::now();
++    connection->busy = false;
++    connection->idle_since = now;
++    std::map<std::string, size_t> idle;
++    for (auto it = s_pool.rbegin(); it != s_pool.rend(); ++it)
++    {
++      Connection& c = **it;
++      if (c.busy)
++        continue;
++      if ((&c == connection && broken) || now - c.idle_since > IDLE_LIFETIME ||
++          ++idle[c.key] > IDLE_PER_SERVER)
++      {
++        closing.push_back(std::move(*it));
++      }
++    }
++    std::erase_if(s_pool, [](const std::unique_ptr<Connection>& c) { return !c; });
++  }
++}
++
++void RememberStat(const std::string& url, bool exists, bool directory, u64 size)
++{
++  std::lock_guard lock(s_mutex);
++  if (s_stats.size() > 20000)
++    s_stats.clear();
++  s_stats[TrimSlashes(url)] = {exists, directory, size, Clock::now()};
++}
++
++bool OpenFile(Stream& stream)
++{
++  stream.connection = Acquire(stream.location, stream.url);
++  if (!stream.connection)
++    return false;
++  Connection& c = *stream.connection;
++  const char* path = stream.location.path.c_str();
++  if (c.kind == Kind::NFS)
++  {
++    if (nfs_open(c.nfs, path, O_RDONLY, &stream.nfs_file) != 0)
++    {
++      Fail(stream.url, std::string("can't open: ") + nfs_get_error(c.nfs));
++      Release(stream.connection, false);
++      stream.connection = nullptr;
++      return false;
++    }
++    nfs_stat_64 st{};
++    if (nfs_fstat64(c.nfs, stream.nfs_file, &st) == 0 || nfs_stat64(c.nfs, path, &st) == 0)
++      stream.size = st.nfs_size;
++  }
++  else
++  {
++    stream.smb_file = smb2_open(c.smb, path, O_RDONLY);
++    if (!stream.smb_file)
++    {
++      Fail(stream.url, std::string("can't open: ") + smb2_get_error(c.smb));
++      Release(stream.connection, false);
++      stream.connection = nullptr;
++      return false;
++    }
++    // Some servers don't answer a handle's size (impacket): then the path's.
++    smb2_stat_64 st{};
++    const int by_handle = smb2_fstat(c.smb, stream.smb_file, &st);
++    if (by_handle < 0 || st.smb2_size == 0)
++    {
++      Log("size by handle failed (" + std::to_string(by_handle) + "): by path");
++      st = {};
++      smb2_stat(c.smb, path, &st);
++    }
++    stream.size = st.smb2_size;
++  }
++  return true;
++}
++
++void CloseFile(Stream& stream, bool broken)
++{
++  if (!stream.connection)
++    return;
++  Connection& c = *stream.connection;
++  if (!broken)
++  {
++    if (stream.nfs_file)
++      nfs_close(c.nfs, stream.nfs_file);
++    if (stream.smb_file)
++      smb2_close(c.smb, stream.smb_file);
++  }
++  stream.nfs_file = nullptr;
++  stream.smb_file = nullptr;
++  Release(stream.connection, broken);
++  stream.connection = nullptr;
++}
++
++bool RawRead(Stream& stream, u64 offset, u8* out, u64 size)
++{
++  if (!stream.connection)
++    return false;
++  Connection& c = *stream.connection;
++  while (size > 0)
++  {
++    int result;
++    if (c.kind == Kind::NFS)
++    {
++      const u64 chunk = std::min<u64>(size, std::max<size_t>(nfs_get_readmax(c.nfs), 32768));
++      result = nfs_pread(c.nfs, stream.nfs_file, out, chunk, offset);
++      if (result < 0)
++        Fail(stream.url, std::string("read failed: ") + nfs_get_error(c.nfs));
++    }
++    else
++    {
++      const u64 chunk = std::min<u64>(size, std::max<u32>(smb2_get_max_read_size(c.smb), 65536));
++      result = smb2_pread(c.smb, stream.smb_file, out, static_cast<u32>(chunk), offset);
++      if (result < 0)
++        Fail(stream.url, std::string("read failed: ") + smb2_get_error(c.smb));
++    }
++    if (result <= 0)
++      return false;
++    out += result;
++    offset += result;
++    size -= result;
++  }
++  return true;
++}
++
++// A read; when it fails, the connection is dropped and the file opened again once (a server that
++// restarted, a dropped Wi-Fi link).
++bool Fetch(Stream& stream, u64 offset, u8* out, u64 size)
++{
++  if (RawRead(stream, offset, out, size))
++    return true;
++  CloseFile(stream, true);
++  if (!OpenFile(stream))
++    return false;
++  Log("reconnected for " + Redact(stream.url));
++  return RawRead(stream, offset, out, size);
++}
++
++bool Read(Stream& stream, u64 offset, u8* out, u64 size)
++{
++  if (offset > stream.size || size > stream.size - offset)
++    return false;
++  while (size > 0)
++  {
++    if (offset >= stream.cache_at && offset < stream.cache_at + stream.cache_length)
++    {
++      const u64 n = std::min<u64>(size, stream.cache_at + stream.cache_length - offset);
++      std::memcpy(out, stream.cache.data() + (offset - stream.cache_at), n);
++      out += n;
++      offset += n;
++      size -= n;
++      continue;
++    }
++    if (size >= READ_AHEAD)
++      return Fetch(stream, offset, out, size);
++    const u64 n = std::min<u64>(READ_AHEAD, stream.size - offset);
++    stream.cache.resize(READ_AHEAD);
++    stream.cache_length = 0;
++    if (!Fetch(stream, offset, stream.cache.data(), n))
++      return false;
++    stream.cache_at = offset;
++    stream.cache_length = n;
++  }
++  return true;
++}
++
++std::shared_ptr<Stream> FindHandle(int handle)
++{
++  std::lock_guard lock(s_mutex);
++  const auto it = s_handles.find(handle);
++  return it == s_handles.end() ? nullptr : it->second;
++}
++
++// The FILE* for File::IOFile.
++struct Cookie
++{
++  int handle;
++  u64 position = 0;
++};
++
++ssize_t CookieRead(void* cookie, char* out, size_t size)
++{
++  Cookie& c = *static_cast<Cookie*>(cookie);
++  const u64 total = HandleSize(c.handle);
++  if (c.position >= total)
++    return 0;
++  const u64 n = std::min<u64>(size, total - c.position);
++  if (!ReadAt(c.handle, c.position, reinterpret_cast<u8*>(out), n))
++  {
++    errno = EIO;
++    return -1;
++  }
++  c.position += n;
++  return static_cast<ssize_t>(n);
++}
++
++int CookieSeek(void* cookie, off_t* offset, int whence)
++{
++  Cookie& c = *static_cast<Cookie*>(cookie);
++  const s64 base = whence == SEEK_SET ? 0 :
++                   whence == SEEK_CUR ? static_cast<s64>(c.position) :
++                                        static_cast<s64>(HandleSize(c.handle));
++  const s64 position = base + *offset;
++  if (position < 0)
++  {
++    errno = EINVAL;
++    return -1;
++  }
++  c.position = static_cast<u64>(position);
++  *offset = position;
++  return 0;
++}
++
++int CookieClose(void* cookie)
++{
++  Cookie* c = static_cast<Cookie*>(cookie);
++  CloseHandle(c->handle);
++  delete c;
++  return 0;
++}
++}  // namespace
++
++bool IsNetPath(std::string_view path)
++{
++  return StartsWithNoCase(path, "nfs://") || StartsWithNoCase(path, "smb://");
++}
++
++void SetShares(std::vector<std::string> roots)
++{
++  std::lock_guard lock(s_mutex);
++  s_shares = std::move(roots);
++  s_stats.clear();
++}
++
++std::string Redact(const std::string& url)
++{
++  const size_t scheme = url.find("://");
++  if (scheme == std::string::npos)
++    return url;
++  const size_t host_end = url.find('/', scheme + 3);
++  const size_t at = url.rfind('@', host_end);
++  if (at == std::string::npos || at < scheme)
++    return url;
++  const size_t colon = url.find(':', scheme + 3);
++  if (colon == std::string::npos || colon > at)
++    return url;
++  return url.substr(0, colon + 1) + "***" + url.substr(at);
++}
++
++std::string LastError()
++{
++  std::lock_guard lock(s_mutex);
++  return s_last_error;
++}
++
++bool List(const std::string& url, std::vector<Entry>* entries)
++{
++  entries->clear();
++  const std::optional<Location> location = Resolve(url, true);
++  if (!location)
++  {
++    Fail(url, "not a network address (nfs://server/export or smb://server/share)");
++    return false;
++  }
++  Connection* c = Acquire(*location, url);
++  if (!c)
++    return false;
++  bool ok = true;
++  if (c->kind == Kind::NFS)
++  {
++    nfsdir* dir = nullptr;
++    if (nfs_opendir(c->nfs, location->path.c_str(), &dir) != 0)
++    {
++      Fail(url, std::string("can't list: ") + nfs_get_error(c->nfs));
++      ok = false;
++    }
++    else
++    {
++      while (nfsdirent* entry = nfs_readdir(c->nfs, dir))
++      {
++        const bool directory = entry->type == NF3DIR || S_ISDIR(entry->mode);
++        entries->push_back({entry->name, directory, entry->size});
++      }
++      nfs_closedir(c->nfs, dir);
++    }
++  }
++  else
++  {
++    smb2dir* dir = smb2_opendir(c->smb, location->path.c_str());
++    if (!dir)
++    {
++      Fail(url, std::string("can't list: ") + smb2_get_error(c->smb));
++      ok = false;
++    }
++    else
++    {
++      while (smb2dirent* entry = smb2_readdir(c->smb, dir))
++      {
++        entries->push_back(
++            {entry->name, entry->st.smb2_type == SMB2_TYPE_DIRECTORY, entry->st.smb2_size});
++      }
++      smb2_closedir(c->smb, dir);
++    }
++  }
++  Release(c, false);
++  std::erase_if(*entries, [](const Entry& e) { return e.name == "." || e.name == ".."; });
++  // What the listing says about each entry saves a request per file while the library is read.
++  const std::string base = TrimSlashes(url);
++  for (const Entry& entry : *entries)
++    RememberStat(base + "/" + entry.name, true, entry.directory, entry.size);
++  return ok;
++}
++
++bool Stat(const std::string& url, u64* size, bool* directory)
++{
++  const std::string key = TrimSlashes(url);
++  {
++    std::lock_guard lock(s_mutex);
++    const auto it = s_stats.find(key);
++    if (it != s_stats.end() && Clock::now() - it->second.when < STAT_LIFETIME)
++    {
++      *size = it->second.size;
++      *directory = it->second.directory;
++      return it->second.exists;
++    }
++  }
++  const std::optional<Location> location = Resolve(url, false);
++  if (!location)
++    return false;
++  Connection* c = Acquire(*location, url);
++  if (!c)
++    return false;
++  int result;
++  if (c->kind == Kind::NFS)
++  {
++    nfs_stat_64 st{};
++    result = nfs_stat64(c->nfs, location->path.c_str(), &st);
++    *size = st.nfs_size;
++    *directory = S_ISDIR(st.nfs_mode);
++  }
++  else
++  {
++    smb2_stat_64 st{};
++    result = smb2_stat(c->smb, location->path.c_str(), &st);
++    *size = st.smb2_size;
++    *directory = st.smb2_type == SMB2_TYPE_DIRECTORY;
++  }
++  // Missing: a normal answer. Anything else: the connection may be gone.
++  Release(c, result < 0 && result != -ENOENT && result != -ENOTDIR);
++  const bool exists = result == 0;
++  if (!exists)
++  {
++    *size = 0;
++    *directory = false;
++  }
++  RememberStat(url, exists, *directory, *size);
++  return exists;
++}
++
++bool IsHandle(int handle)
++{
++  return handle >= HANDLE_BASE;
++}
++
++int OpenHandle(const std::string& url)
++{
++  const std::optional<Location> location = Resolve(url, false);
++  if (!location)
++  {
++    Fail(url, "not a network address");
++    return -1;
++  }
++  auto stream = std::make_shared<Stream>();
++  stream->url = url;
++  stream->location = *location;
++  if (!OpenFile(*stream))
++    return -1;
++  RememberStat(url, true, false, stream->size);
++  std::lock_guard lock(s_mutex);
++  const int handle = s_next_handle++;
++  s_handles[handle] = std::move(stream);
++  return handle;
++}
++
++bool ReadAt(int handle, u64 offset, u8* out, u64 size)
++{
++  const std::shared_ptr<Stream> stream = FindHandle(handle);
++  if (!stream)
++    return false;
++  std::lock_guard lock(stream->mutex);
++  return Read(*stream, offset, out, size);
++}
++
++u64 HandleSize(int handle)
++{
++  const std::shared_ptr<Stream> stream = FindHandle(handle);
++  return stream ? stream->size : 0;
++}
++
++int DuplicateHandle(int handle)
++{
++  std::lock_guard lock(s_mutex);
++  const auto it = s_handles.find(handle);
++  if (it == s_handles.end())
++    return -1;
++  const int copy = s_next_handle++;
++  s_handles[copy] = it->second;
++  return copy;
++}
++
++void CloseHandle(int handle)
++{
++  std::shared_ptr<Stream> stream;
++  {
++    std::lock_guard lock(s_mutex);
++    const auto it = s_handles.find(handle);
++    if (it == s_handles.end())
++      return;
++    stream = std::move(it->second);
++    s_handles.erase(it);
++  }
++  // The last handle of the file closes it.
++  if (stream.use_count() == 1)
++  {
++    std::lock_guard lock(stream->mutex);
++    CloseFile(*stream, false);
++  }
++}
++
++std::FILE* OpenStream(const std::string& url)
++{
++  const int handle = OpenHandle(url);
++  if (handle < 0)
++    return nullptr;
++  Cookie* cookie = new Cookie{handle};
++  std::FILE* file =
++      fopencookie(cookie, "rb", cookie_io_functions_t{CookieRead, nullptr, CookieSeek, CookieClose});
++  if (!file)
++  {
++    CloseHandle(handle);
++    delete cookie;
++  }
++  return file;
++}
++}  // namespace Common::NetFS
+diff --git a/Source/Core/Common/PS4NetFS.h b/Source/Core/Common/PS4NetFS.h
+new file mode 100755
+index 0000000..e234d2b
+--- /dev/null
++++ b/Source/Core/Common/PS4NetFS.h
+@@ -0,0 +1,61 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++// Network shares on the PS4: games read straight from an NFS export or an SMB (Windows) share, so
++// the library isn't limited by the console's own storage. libnfs and libsmb2 are user-space
++// clients (no kernel support needed); scripts/build-netlibs.sh builds them.
++//
++// A share is a URL:
++//   nfs://<server>/<export>[/<folder>]            (NFS v3; add ?version=4 for NFS v4)
++//   smb://[<user>[:<password>]@]<server>/<share>[/<folder>]   (SMB 2/3; no user: Guest)
++// and a file in it is that URL plus its path ("nfs://192.168.0.10/games/Melee.rvz"). Such paths
++// work wherever Dolphin opens a file to read (File::IOFile, File::DirectIOFile, File::Exists /
++// GetSize / IsDirectory): disc images in every format read from the network as they would from
++// the disk. Read-only.
++
++#pragma once
++
++#include <cstdio>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "Common/CommonTypes.h"
++
++namespace Common::NetFS
++{
++bool IsNetPath(std::string_view path);
++
++// The configured shares (each one connection root: its server, export or share, and folder).
++// A path inside one of them connects at that root; any other network path at its own folder.
++void SetShares(std::vector<std::string> roots);
++
++// The URL with its password hidden ("smb://me:***@pc/games"), for logs and the menus.
++std::string Redact(const std::string& url);
++
++// The last error (connection, open, read), for the menus and logs.
++std::string LastError();
++
++struct Entry
++{
++  std::string name;
++  bool directory = false;
++  u64 size = 0;
++};
++// The files and folders in a network folder (without "." and ".."). False: unreachable.
++bool List(const std::string& url, std::vector<Entry>* entries);
++
++// Whether the path exists, its size and whether it is a folder (cached for a few seconds).
++bool Stat(const std::string& url, u64* size, bool* directory);
++
++// Handles for File::DirectIOFile: numbers no real file descriptor reaches.
++bool IsHandle(int handle);
++int OpenHandle(const std::string& url);  // -1: can't be opened
++bool ReadAt(int handle, u64 offset, u8* out, u64 size);  // thread safe
++u64 HandleSize(int handle);
++int DuplicateHandle(int handle);
++void CloseHandle(int handle);
++
++// A read-only stdio stream for File::IOFile (nullptr: can't be opened).
++std::FILE* OpenStream(const std::string& url);
++}  // namespace Common::NetFS
 diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 new file mode 100755
-index 0000000..f1f9f61
+index 0000000..e72971d
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
-@@ -0,0 +1,1258 @@
+@@ -0,0 +1,1259 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -50347,7 +51313,8 @@ index 0000000..f1f9f61
 +    ps4_jit_tlb_inline, ps4_lfs_forward, ps4_jit_accurate_singles, ps4_jit_round_results,
 +    ps4_jit_round_operands, ps4_jit_fcmp_merge, ps4_jit_msr_link, ps4_jit_gp_dynamic,
 +    ps4_fifo_batch, ps4_fifo_defer;
-+extern "C" int ps4_jit_unroll, ps4_jit_join, ps4_jit_trace, ps4_jit_lazy_fprf, ps4_game_fprf;  // Core/PowerPC/PPCAnalyst.cpp
++extern "C" int ps4_jit_unroll, ps4_jit_join, ps4_jit_trace, ps4_jit_lazy_fprf, ps4_game_fprf,
++    ps4_jit_fcmp_merge_fprf;  // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_pin[4];
 +extern "C" int ps4_jit_verify;  // JitPS4/Verify.cpp
 +
@@ -50686,7 +51653,7 @@ index 0000000..f1f9f61
 +                ps4_jit_tlb_inline, ps4_lfs_forward, ps4_jit_accurate_singles,
 +                ps4_jit_round_results, ps4_jit_round_operands, ps4_jit_fcmp_merge,
 +                ps4_jit_msr_link, ps4_jit_gp_dynamic, ps4_fifo_batch, ps4_fifo_defer, ps4_jit_verify,
-+                ps4_jit_unroll, ps4_jit_join, ps4_jit_trace, ps4_jit_lazy_fprf, ps4_jit_pin[0], ps4_jit_pin[1], ps4_jit_pin[2], ps4_jit_pin[3]})
++                ps4_jit_unroll, ps4_jit_join, ps4_jit_trace, ps4_jit_lazy_fprf, ps4_jit_fcmp_merge_fprf, ps4_jit_pin[0], ps4_jit_pin[1], ps4_jit_pin[2], ps4_jit_pin[3]})
 +  {
 +    h = Mix(h, v);
 +  }
@@ -52216,921 +53183,3 @@ index 0000000..3317422
 +void VerifyBeginFromJit(JitPS4* jit, u32 pc);
 +void VerifyExitFromJit(JitPS4* jit, u32 destination);
 +}  // namespace PS4Jit
-diff --git a/Source/Core/Common/PS4NetFS.cpp b/Source/Core/Common/PS4NetFS.cpp
-new file mode 100755
-index 0000000..75bac96
---- /dev/null
-+++ b/Source/Core/Common/PS4NetFS.cpp
-@@ -0,0 +1,845 @@
-+// Copyright 2026 Dolphin Emulator Project
-+// SPDX-License-Identifier: GPL-2.0-or-later
-+
-+#include "Common/PS4NetFS.h"
-+
-+#include <algorithm>
-+#include <cctype>
-+#include <cerrno>
-+#include <chrono>
-+#include <cstring>
-+#include <fcntl.h>
-+#include <map>
-+#include <memory>
-+#include <mutex>
-+#include <optional>
-+#include <netdb.h>
-+#include <poll.h>
-+#include <signal.h>
-+#include <sys/socket.h>
-+#include <sys/stat.h>
-+#include <unistd.h>
-+
-+#include <nfsc/libnfs.h>
-+#include <nfsc/libnfs-raw.h>
-+#include <nfsc/libnfs-raw-nfs.h>
-+#include <smb2/smb2.h>
-+#include <smb2/libsmb2.h>
-+
-+extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
-+
-+namespace Common::NetFS
-+{
-+namespace
-+{
-+using Clock = std::chrono::steady_clock;
-+
-+// DirectIOFile handles from here up: far above any real file descriptor.
-+constexpr int HANDLE_BASE = 0x40000000;
-+// Reads smaller than this go through a per-file read-ahead buffer of this size (disc formats read
-+// a header, then blocks of 32 KiB - 2 MiB; one network round trip per MiB instead of per block).
-+constexpr size_t READ_AHEAD = 1 << 20;
-+constexpr auto STAT_LIFETIME = std::chrono::seconds(10);
-+constexpr auto IDLE_LIFETIME = std::chrono::seconds(120);
-+constexpr size_t IDLE_PER_SERVER = 2;
-+
-+enum class Kind
-+{
-+  NFS,
-+  SMB,
-+};
-+
-+// Where a path connects: the connection (server and export, or server and share) and the path
-+// inside it ("/dir/file" for NFS, "dir/file" for SMB).
-+struct Location
-+{
-+  Kind kind;
-+  std::string key;
-+  std::string path;
-+};
-+
-+struct Connection
-+{
-+  Kind kind = Kind::NFS;
-+  std::string key;
-+  nfs_context* nfs = nullptr;
-+  smb2_context* smb = nullptr;
-+  bool busy = false;
-+  Clock::time_point idle_since;
-+
-+  ~Connection()
-+  {
-+    if (nfs)
-+      nfs_destroy_context(nfs);
-+    if (smb)
-+    {
-+      smb2_disconnect_share(smb);
-+      smb2_destroy_context(smb);
-+    }
-+  }
-+};
-+
-+struct StatResult
-+{
-+  bool exists = false;
-+  bool directory = false;
-+  u64 size = 0;
-+  Clock::time_point when;
-+};
-+
-+struct Stream
-+{
-+  std::mutex mutex;  // one read at a time (copied DirectIOFiles share it)
-+  std::string url;
-+  Location location;
-+  Connection* connection = nullptr;
-+  nfsfh* nfs_file = nullptr;
-+  smb2fh* smb_file = nullptr;
-+  u64 size = 0;
-+  std::vector<u8> cache;
-+  u64 cache_at = 0;
-+  size_t cache_length = 0;
-+};
-+
-+std::mutex s_mutex;  // everything below
-+std::vector<std::string> s_shares;
-+std::vector<std::unique_ptr<Connection>> s_pool;
-+std::map<std::string, StatResult> s_stats;
-+std::map<int, std::shared_ptr<Stream>> s_handles;
-+int s_next_handle = HANDLE_BASE;
-+std::string s_last_error;
-+
-+void Log(const std::string& text)
-+{
-+  ps4_boot_trace(("netfs: " + text).c_str());
-+}
-+
-+void Fail(const std::string& url, const std::string& what)
-+{
-+  const std::string text = Redact(url) + ": " + what;
-+  Log(text);
-+  std::lock_guard lock(s_mutex);
-+  s_last_error = text;
-+}
-+
-+bool StartsWithNoCase(std::string_view text, std::string_view prefix)
-+{
-+  if (text.size() < prefix.size())
-+    return false;
-+  for (size_t i = 0; i < prefix.size(); i++)
-+  {
-+    if (std::tolower(static_cast<unsigned char>(text[i])) != prefix[i])
-+      return false;
-+  }
-+  return true;
-+}
-+
-+std::string TrimSlashes(std::string url)
-+{
-+  const size_t scheme = url.find("://");
-+  while (url.size() > scheme + 3 && url.back() == '/')
-+    url.pop_back();
-+  return url;
-+}
-+
-+// %XX escapes (user names and passwords: "me%40home").
-+std::string Decode(const std::string& text)
-+{
-+  std::string out;
-+  for (size_t i = 0; i < text.size(); i++)
-+  {
-+    if (text[i] == '%' && i + 2 < text.size() && std::isxdigit(static_cast<unsigned char>(text[i + 1])) &&
-+        std::isxdigit(static_cast<unsigned char>(text[i + 2])))
-+    {
-+      out += static_cast<char>(std::stoi(text.substr(i + 1, 2), nullptr, 16));
-+      i += 2;
-+    }
-+    else
-+    {
-+      out += text[i];
-+    }
-+  }
-+  return out;
-+}
-+
-+// folder: the path is a folder to list (an NFS path outside the configured shares connects at it).
-+std::optional<Location> Resolve(const std::string& raw, bool folder)
-+{
-+  const std::string url = TrimSlashes(raw);
-+  const size_t host_end = url.find('/', 6);
-+  if (StartsWithNoCase(url, "smb://"))
-+  {
-+    // One connection per share: smb://[user@]server/share; the rest is the path in it.
-+    if (host_end == std::string::npos)
-+      return std::nullopt;
-+    const size_t share_end = url.find('/', host_end + 1);
-+    Location location{Kind::SMB, url.substr(0, share_end), ""};
-+    if (share_end != std::string::npos)
-+      location.path = url.substr(share_end + 1);
-+    return location;
-+  }
-+  if (!StartsWithNoCase(url, "nfs://") || host_end == std::string::npos)
-+    return std::nullopt;
-+  // NFS: the export can be any number of folders deep, so a path inside a configured share connects
-+  // at that share; other paths at their own folder (or the folder they are in).
-+  std::string root;
-+  {
-+    std::lock_guard lock(s_mutex);
-+    for (const std::string& configured : s_shares)
-+    {
-+      const std::string share = TrimSlashes(configured);
-+      if (share.size() > root.size() && url.compare(0, share.size(), share) == 0 &&
-+          (url.size() == share.size() || url[share.size()] == '/'))
-+      {
-+        root = share;
-+      }
-+    }
-+  }
-+  if (root.empty())
-+  {
-+    const size_t slash = url.rfind('/');
-+    root = folder ? url : url.substr(0, slash);
-+    if (root.size() <= host_end)
-+      return std::nullopt;
-+  }
-+  Location location{Kind::NFS, root, url.substr(root.size())};
-+  if (location.path.empty())
-+    location.path = "/";
-+  return location;
-+}
-+
-+// Whether something answers on one of the ports within the time: a switched-off PC fails in
-+// moments instead of the 6-9 seconds the clients wait (the menu reads the shares when it opens).
-+bool Reachable(const std::string& host, const std::vector<int>& ports, int milliseconds)
-+{
-+  std::vector<pollfd> sockets;
-+  for (const int port : ports)
-+  {
-+    addrinfo hints{};
-+    hints.ai_family = AF_INET;
-+    hints.ai_socktype = SOCK_STREAM;
-+    addrinfo* found = nullptr;
-+    if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &found) != 0 || !found)
-+      return false;
-+    const int fd = socket(found->ai_family, SOCK_STREAM, 0);
-+    if (fd >= 0)
-+    {
-+      fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-+      if (connect(fd, found->ai_addr, found->ai_addrlen) == 0 || errno == EINPROGRESS)
-+        sockets.push_back({fd, POLLOUT, 0});
-+      else
-+        close(fd);
-+    }
-+    freeaddrinfo(found);
-+  }
-+  bool reached = false;
-+  const auto deadline = Clock::now() + std::chrono::milliseconds(milliseconds);
-+  while (!reached && !sockets.empty() && Clock::now() < deadline)
-+  {
-+    const int left = static_cast<int>(
-+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count());
-+    if (poll(sockets.data(), sockets.size(), std::max(left, 1)) <= 0)
-+      break;
-+    for (auto it = sockets.begin(); it != sockets.end();)
-+    {
-+      if (!it->revents)
-+      {
-+        ++it;
-+        continue;
-+      }
-+      int failure = 0;
-+      socklen_t length = sizeof(failure);
-+      getsockopt(it->fd, SOL_SOCKET, SO_ERROR, &failure, &length);
-+      reached |= failure == 0;
-+      close(it->fd);
-+      it = sockets.erase(it);
-+    }
-+  }
-+  for (const pollfd& socket : sockets)
-+    close(socket.fd);
-+  return reached;
-+}
-+
-+// "server:port" -> server, port (or the default).
-+std::pair<std::string, int> HostAndPort(const std::string& authority, int default_port)
-+{
-+  const size_t colon = authority.rfind(':');
-+  if (colon == std::string::npos)
-+    return {authority, default_port};
-+  return {authority.substr(0, colon), std::atoi(authority.c_str() + colon + 1)};
-+}
-+
-+std::unique_ptr<Connection> Connect(const Location& location, std::string* error)
-+{
-+  // Writing to a connection the server closed raises SIGPIPE, which ends the whole program by
-+  // default (a PC or NAS restarting mid-game). Ignored, the write fails and the read reconnects.
-+  static std::once_flag s_sigpipe;
-+  std::call_once(s_sigpipe, [] { signal(SIGPIPE, SIG_IGN); });
-+  auto connection = std::make_unique<Connection>();
-+  connection->kind = location.kind;
-+  connection->key = location.key;
-+  if (location.kind == Kind::NFS)
-+  {
-+    nfs_context* nfs = nfs_init_context();
-+    if (!nfs)
-+    {
-+      *error = "out of memory";
-+      return nullptr;
-+    }
-+    connection->nfs = nfs;
-+    nfs_set_timeout(nfs, 8000);
-+    nfs_url* url = nfs_parse_url_dir(nfs, location.key.c_str());
-+    if (!url)
-+    {
-+      *error = std::string("bad address: ") + nfs_get_error(nfs);
-+      return nullptr;
-+    }
-+    // NFS answers on 2049 (v4, and v3 on most servers) or its port mapper on 111.
-+    if (!Reachable(url->server, url->port ? std::vector<int>{url->port} : std::vector<int>{2049, 111},
-+                   2000))
-+    {
-+      *error = std::string("no answer from ") + url->server + " (is it on, and NFS running?)";
-+      nfs_destroy_url(url);
-+      return nullptr;
-+    }
-+    const int result = nfs_mount(nfs, url->server, url->path);
-+    nfs_destroy_url(url);
-+    if (result != 0)
-+    {
-+      *error = std::string("can't connect: ") + nfs_get_error(nfs);
-+      return nullptr;
-+    }
-+    return connection;
-+  }
-+
-+  // smb://[[domain;]user[:password]@]server[:port]/share
-+  const std::string rest = location.key.substr(6);
-+  const size_t slash = rest.find('/');
-+  const std::string authority = rest.substr(0, slash);
-+  const std::string share = slash == std::string::npos ? "" : rest.substr(slash + 1);
-+  const size_t at = authority.rfind('@');
-+  const std::string server = at == std::string::npos ? authority : authority.substr(at + 1);
-+  std::string user, password, domain;
-+  if (at != std::string::npos)
-+  {
-+    const std::string info = authority.substr(0, at);
-+    const size_t colon = info.find(':');
-+    user = Decode(info.substr(0, colon));
-+    if (colon != std::string::npos)
-+      password = Decode(info.substr(colon + 1));
-+    if (const size_t semicolon = user.find(';'); semicolon != std::string::npos)
-+    {
-+      domain = user.substr(0, semicolon);
-+      user = user.substr(semicolon + 1);
-+    }
-+  }
-+  if (user.empty())
-+    user = "Guest";
-+  if (share.empty())
-+  {
-+    *error = "no share name (smb://server/share)";
-+    return nullptr;
-+  }
-+  const auto [host, port] = HostAndPort(server, 445);
-+  if (!Reachable(host, {port}, 2000))
-+  {
-+    *error = "no answer from " + host + " (is it on, and the folder shared?)";
-+    return nullptr;
-+  }
-+  smb2_context* smb = smb2_init_context();
-+  if (!smb)
-+  {
-+    *error = "out of memory";
-+    return nullptr;
-+  }
-+  connection->smb = smb;
-+  smb2_set_security_mode(smb, SMB2_NEGOTIATE_SIGNING_ENABLED);
-+  smb2_set_timeout(smb, 10);
-+  smb2_set_user(smb, user.c_str());
-+  smb2_set_password(smb, password.c_str());
-+  if (!domain.empty())
-+    smb2_set_domain(smb, domain.c_str());
-+  if (smb2_connect_share(smb, server.c_str(), share.c_str(), user.c_str()) < 0)
-+  {
-+    *error = std::string("can't connect: ") + smb2_get_error(smb);
-+    smb2_destroy_context(smb);
-+    connection->smb = nullptr;
-+    return nullptr;
-+  }
-+  return connection;
-+}
-+
-+// A connection for this location, only for the caller until Release.
-+Connection* Acquire(const Location& location, const std::string& url)
-+{
-+  {
-+    std::lock_guard lock(s_mutex);
-+    for (const auto& connection : s_pool)
-+    {
-+      if (!connection->busy && connection->key == location.key)
-+      {
-+        connection->busy = true;
-+        return connection.get();
-+      }
-+    }
-+  }
-+  std::string error;
-+  std::unique_ptr<Connection> connection = Connect(location, &error);
-+  if (!connection)
-+  {
-+    Fail(url, error);
-+    return nullptr;
-+  }
-+  Log("connected to " + Redact(location.key));
-+  std::lock_guard lock(s_mutex);
-+  connection->busy = true;
-+  s_pool.push_back(std::move(connection));
-+  return s_pool.back().get();
-+}
-+
-+// Back to the pool; broken: closed instead (the server went away: the next use reconnects).
-+void Release(Connection* connection, bool broken)
-+{
-+  std::vector<std::unique_ptr<Connection>> closing;
-+  {
-+    std::lock_guard lock(s_mutex);
-+    const auto now = Clock::now();
-+    connection->busy = false;
-+    connection->idle_since = now;
-+    std::map<std::string, size_t> idle;
-+    for (auto it = s_pool.rbegin(); it != s_pool.rend(); ++it)
-+    {
-+      Connection& c = **it;
-+      if (c.busy)
-+        continue;
-+      if ((&c == connection && broken) || now - c.idle_since > IDLE_LIFETIME ||
-+          ++idle[c.key] > IDLE_PER_SERVER)
-+      {
-+        closing.push_back(std::move(*it));
-+      }
-+    }
-+    std::erase_if(s_pool, [](const std::unique_ptr<Connection>& c) { return !c; });
-+  }
-+}
-+
-+void RememberStat(const std::string& url, bool exists, bool directory, u64 size)
-+{
-+  std::lock_guard lock(s_mutex);
-+  if (s_stats.size() > 20000)
-+    s_stats.clear();
-+  s_stats[TrimSlashes(url)] = {exists, directory, size, Clock::now()};
-+}
-+
-+bool OpenFile(Stream& stream)
-+{
-+  stream.connection = Acquire(stream.location, stream.url);
-+  if (!stream.connection)
-+    return false;
-+  Connection& c = *stream.connection;
-+  const char* path = stream.location.path.c_str();
-+  if (c.kind == Kind::NFS)
-+  {
-+    if (nfs_open(c.nfs, path, O_RDONLY, &stream.nfs_file) != 0)
-+    {
-+      Fail(stream.url, std::string("can't open: ") + nfs_get_error(c.nfs));
-+      Release(stream.connection, false);
-+      stream.connection = nullptr;
-+      return false;
-+    }
-+    nfs_stat_64 st{};
-+    if (nfs_fstat64(c.nfs, stream.nfs_file, &st) == 0 || nfs_stat64(c.nfs, path, &st) == 0)
-+      stream.size = st.nfs_size;
-+  }
-+  else
-+  {
-+    stream.smb_file = smb2_open(c.smb, path, O_RDONLY);
-+    if (!stream.smb_file)
-+    {
-+      Fail(stream.url, std::string("can't open: ") + smb2_get_error(c.smb));
-+      Release(stream.connection, false);
-+      stream.connection = nullptr;
-+      return false;
-+    }
-+    // Some servers don't answer a handle's size (impacket): then the path's.
-+    smb2_stat_64 st{};
-+    const int by_handle = smb2_fstat(c.smb, stream.smb_file, &st);
-+    if (by_handle < 0 || st.smb2_size == 0)
-+    {
-+      Log("size by handle failed (" + std::to_string(by_handle) + "): by path");
-+      st = {};
-+      smb2_stat(c.smb, path, &st);
-+    }
-+    stream.size = st.smb2_size;
-+  }
-+  return true;
-+}
-+
-+void CloseFile(Stream& stream, bool broken)
-+{
-+  if (!stream.connection)
-+    return;
-+  Connection& c = *stream.connection;
-+  if (!broken)
-+  {
-+    if (stream.nfs_file)
-+      nfs_close(c.nfs, stream.nfs_file);
-+    if (stream.smb_file)
-+      smb2_close(c.smb, stream.smb_file);
-+  }
-+  stream.nfs_file = nullptr;
-+  stream.smb_file = nullptr;
-+  Release(stream.connection, broken);
-+  stream.connection = nullptr;
-+}
-+
-+bool RawRead(Stream& stream, u64 offset, u8* out, u64 size)
-+{
-+  if (!stream.connection)
-+    return false;
-+  Connection& c = *stream.connection;
-+  while (size > 0)
-+  {
-+    int result;
-+    if (c.kind == Kind::NFS)
-+    {
-+      const u64 chunk = std::min<u64>(size, std::max<size_t>(nfs_get_readmax(c.nfs), 32768));
-+      result = nfs_pread(c.nfs, stream.nfs_file, out, chunk, offset);
-+      if (result < 0)
-+        Fail(stream.url, std::string("read failed: ") + nfs_get_error(c.nfs));
-+    }
-+    else
-+    {
-+      const u64 chunk = std::min<u64>(size, std::max<u32>(smb2_get_max_read_size(c.smb), 65536));
-+      result = smb2_pread(c.smb, stream.smb_file, out, static_cast<u32>(chunk), offset);
-+      if (result < 0)
-+        Fail(stream.url, std::string("read failed: ") + smb2_get_error(c.smb));
-+    }
-+    if (result <= 0)
-+      return false;
-+    out += result;
-+    offset += result;
-+    size -= result;
-+  }
-+  return true;
-+}
-+
-+// A read; when it fails, the connection is dropped and the file opened again once (a server that
-+// restarted, a dropped Wi-Fi link).
-+bool Fetch(Stream& stream, u64 offset, u8* out, u64 size)
-+{
-+  if (RawRead(stream, offset, out, size))
-+    return true;
-+  CloseFile(stream, true);
-+  if (!OpenFile(stream))
-+    return false;
-+  Log("reconnected for " + Redact(stream.url));
-+  return RawRead(stream, offset, out, size);
-+}
-+
-+bool Read(Stream& stream, u64 offset, u8* out, u64 size)
-+{
-+  if (offset > stream.size || size > stream.size - offset)
-+    return false;
-+  while (size > 0)
-+  {
-+    if (offset >= stream.cache_at && offset < stream.cache_at + stream.cache_length)
-+    {
-+      const u64 n = std::min<u64>(size, stream.cache_at + stream.cache_length - offset);
-+      std::memcpy(out, stream.cache.data() + (offset - stream.cache_at), n);
-+      out += n;
-+      offset += n;
-+      size -= n;
-+      continue;
-+    }
-+    if (size >= READ_AHEAD)
-+      return Fetch(stream, offset, out, size);
-+    const u64 n = std::min<u64>(READ_AHEAD, stream.size - offset);
-+    stream.cache.resize(READ_AHEAD);
-+    stream.cache_length = 0;
-+    if (!Fetch(stream, offset, stream.cache.data(), n))
-+      return false;
-+    stream.cache_at = offset;
-+    stream.cache_length = n;
-+  }
-+  return true;
-+}
-+
-+std::shared_ptr<Stream> FindHandle(int handle)
-+{
-+  std::lock_guard lock(s_mutex);
-+  const auto it = s_handles.find(handle);
-+  return it == s_handles.end() ? nullptr : it->second;
-+}
-+
-+// The FILE* for File::IOFile.
-+struct Cookie
-+{
-+  int handle;
-+  u64 position = 0;
-+};
-+
-+ssize_t CookieRead(void* cookie, char* out, size_t size)
-+{
-+  Cookie& c = *static_cast<Cookie*>(cookie);
-+  const u64 total = HandleSize(c.handle);
-+  if (c.position >= total)
-+    return 0;
-+  const u64 n = std::min<u64>(size, total - c.position);
-+  if (!ReadAt(c.handle, c.position, reinterpret_cast<u8*>(out), n))
-+  {
-+    errno = EIO;
-+    return -1;
-+  }
-+  c.position += n;
-+  return static_cast<ssize_t>(n);
-+}
-+
-+int CookieSeek(void* cookie, off_t* offset, int whence)
-+{
-+  Cookie& c = *static_cast<Cookie*>(cookie);
-+  const s64 base = whence == SEEK_SET ? 0 :
-+                   whence == SEEK_CUR ? static_cast<s64>(c.position) :
-+                                        static_cast<s64>(HandleSize(c.handle));
-+  const s64 position = base + *offset;
-+  if (position < 0)
-+  {
-+    errno = EINVAL;
-+    return -1;
-+  }
-+  c.position = static_cast<u64>(position);
-+  *offset = position;
-+  return 0;
-+}
-+
-+int CookieClose(void* cookie)
-+{
-+  Cookie* c = static_cast<Cookie*>(cookie);
-+  CloseHandle(c->handle);
-+  delete c;
-+  return 0;
-+}
-+}  // namespace
-+
-+bool IsNetPath(std::string_view path)
-+{
-+  return StartsWithNoCase(path, "nfs://") || StartsWithNoCase(path, "smb://");
-+}
-+
-+void SetShares(std::vector<std::string> roots)
-+{
-+  std::lock_guard lock(s_mutex);
-+  s_shares = std::move(roots);
-+  s_stats.clear();
-+}
-+
-+std::string Redact(const std::string& url)
-+{
-+  const size_t scheme = url.find("://");
-+  if (scheme == std::string::npos)
-+    return url;
-+  const size_t host_end = url.find('/', scheme + 3);
-+  const size_t at = url.rfind('@', host_end);
-+  if (at == std::string::npos || at < scheme)
-+    return url;
-+  const size_t colon = url.find(':', scheme + 3);
-+  if (colon == std::string::npos || colon > at)
-+    return url;
-+  return url.substr(0, colon + 1) + "***" + url.substr(at);
-+}
-+
-+std::string LastError()
-+{
-+  std::lock_guard lock(s_mutex);
-+  return s_last_error;
-+}
-+
-+bool List(const std::string& url, std::vector<Entry>* entries)
-+{
-+  entries->clear();
-+  const std::optional<Location> location = Resolve(url, true);
-+  if (!location)
-+  {
-+    Fail(url, "not a network address (nfs://server/export or smb://server/share)");
-+    return false;
-+  }
-+  Connection* c = Acquire(*location, url);
-+  if (!c)
-+    return false;
-+  bool ok = true;
-+  if (c->kind == Kind::NFS)
-+  {
-+    nfsdir* dir = nullptr;
-+    if (nfs_opendir(c->nfs, location->path.c_str(), &dir) != 0)
-+    {
-+      Fail(url, std::string("can't list: ") + nfs_get_error(c->nfs));
-+      ok = false;
-+    }
-+    else
-+    {
-+      while (nfsdirent* entry = nfs_readdir(c->nfs, dir))
-+      {
-+        const bool directory = entry->type == NF3DIR || S_ISDIR(entry->mode);
-+        entries->push_back({entry->name, directory, entry->size});
-+      }
-+      nfs_closedir(c->nfs, dir);
-+    }
-+  }
-+  else
-+  {
-+    smb2dir* dir = smb2_opendir(c->smb, location->path.c_str());
-+    if (!dir)
-+    {
-+      Fail(url, std::string("can't list: ") + smb2_get_error(c->smb));
-+      ok = false;
-+    }
-+    else
-+    {
-+      while (smb2dirent* entry = smb2_readdir(c->smb, dir))
-+      {
-+        entries->push_back(
-+            {entry->name, entry->st.smb2_type == SMB2_TYPE_DIRECTORY, entry->st.smb2_size});
-+      }
-+      smb2_closedir(c->smb, dir);
-+    }
-+  }
-+  Release(c, false);
-+  std::erase_if(*entries, [](const Entry& e) { return e.name == "." || e.name == ".."; });
-+  // What the listing says about each entry saves a request per file while the library is read.
-+  const std::string base = TrimSlashes(url);
-+  for (const Entry& entry : *entries)
-+    RememberStat(base + "/" + entry.name, true, entry.directory, entry.size);
-+  return ok;
-+}
-+
-+bool Stat(const std::string& url, u64* size, bool* directory)
-+{
-+  const std::string key = TrimSlashes(url);
-+  {
-+    std::lock_guard lock(s_mutex);
-+    const auto it = s_stats.find(key);
-+    if (it != s_stats.end() && Clock::now() - it->second.when < STAT_LIFETIME)
-+    {
-+      *size = it->second.size;
-+      *directory = it->second.directory;
-+      return it->second.exists;
-+    }
-+  }
-+  const std::optional<Location> location = Resolve(url, false);
-+  if (!location)
-+    return false;
-+  Connection* c = Acquire(*location, url);
-+  if (!c)
-+    return false;
-+  int result;
-+  if (c->kind == Kind::NFS)
-+  {
-+    nfs_stat_64 st{};
-+    result = nfs_stat64(c->nfs, location->path.c_str(), &st);
-+    *size = st.nfs_size;
-+    *directory = S_ISDIR(st.nfs_mode);
-+  }
-+  else
-+  {
-+    smb2_stat_64 st{};
-+    result = smb2_stat(c->smb, location->path.c_str(), &st);
-+    *size = st.smb2_size;
-+    *directory = st.smb2_type == SMB2_TYPE_DIRECTORY;
-+  }
-+  // Missing: a normal answer. Anything else: the connection may be gone.
-+  Release(c, result < 0 && result != -ENOENT && result != -ENOTDIR);
-+  const bool exists = result == 0;
-+  if (!exists)
-+  {
-+    *size = 0;
-+    *directory = false;
-+  }
-+  RememberStat(url, exists, *directory, *size);
-+  return exists;
-+}
-+
-+bool IsHandle(int handle)
-+{
-+  return handle >= HANDLE_BASE;
-+}
-+
-+int OpenHandle(const std::string& url)
-+{
-+  const std::optional<Location> location = Resolve(url, false);
-+  if (!location)
-+  {
-+    Fail(url, "not a network address");
-+    return -1;
-+  }
-+  auto stream = std::make_shared<Stream>();
-+  stream->url = url;
-+  stream->location = *location;
-+  if (!OpenFile(*stream))
-+    return -1;
-+  RememberStat(url, true, false, stream->size);
-+  std::lock_guard lock(s_mutex);
-+  const int handle = s_next_handle++;
-+  s_handles[handle] = std::move(stream);
-+  return handle;
-+}
-+
-+bool ReadAt(int handle, u64 offset, u8* out, u64 size)
-+{
-+  const std::shared_ptr<Stream> stream = FindHandle(handle);
-+  if (!stream)
-+    return false;
-+  std::lock_guard lock(stream->mutex);
-+  return Read(*stream, offset, out, size);
-+}
-+
-+u64 HandleSize(int handle)
-+{
-+  const std::shared_ptr<Stream> stream = FindHandle(handle);
-+  return stream ? stream->size : 0;
-+}
-+
-+int DuplicateHandle(int handle)
-+{
-+  std::lock_guard lock(s_mutex);
-+  const auto it = s_handles.find(handle);
-+  if (it == s_handles.end())
-+    return -1;
-+  const int copy = s_next_handle++;
-+  s_handles[copy] = it->second;
-+  return copy;
-+}
-+
-+void CloseHandle(int handle)
-+{
-+  std::shared_ptr<Stream> stream;
-+  {
-+    std::lock_guard lock(s_mutex);
-+    const auto it = s_handles.find(handle);
-+    if (it == s_handles.end())
-+      return;
-+    stream = std::move(it->second);
-+    s_handles.erase(it);
-+  }
-+  // The last handle of the file closes it.
-+  if (stream.use_count() == 1)
-+  {
-+    std::lock_guard lock(stream->mutex);
-+    CloseFile(*stream, false);
-+  }
-+}
-+
-+std::FILE* OpenStream(const std::string& url)
-+{
-+  const int handle = OpenHandle(url);
-+  if (handle < 0)
-+    return nullptr;
-+  Cookie* cookie = new Cookie{handle};
-+  std::FILE* file =
-+      fopencookie(cookie, "rb", cookie_io_functions_t{CookieRead, nullptr, CookieSeek, CookieClose});
-+  if (!file)
-+  {
-+    CloseHandle(handle);
-+    delete cookie;
-+  }
-+  return file;
-+}
-+}  // namespace Common::NetFS
-diff --git a/Source/Core/Common/PS4NetFS.h b/Source/Core/Common/PS4NetFS.h
-new file mode 100755
-index 0000000..e234d2b
---- /dev/null
-+++ b/Source/Core/Common/PS4NetFS.h
-@@ -0,0 +1,61 @@
-+// Copyright 2026 Dolphin Emulator Project
-+// SPDX-License-Identifier: GPL-2.0-or-later
-+
-+// Network shares on the PS4: games read straight from an NFS export or an SMB (Windows) share, so
-+// the library isn't limited by the console's own storage. libnfs and libsmb2 are user-space
-+// clients (no kernel support needed); scripts/build-netlibs.sh builds them.
-+//
-+// A share is a URL:
-+//   nfs://<server>/<export>[/<folder>]            (NFS v3; add ?version=4 for NFS v4)
-+//   smb://[<user>[:<password>]@]<server>/<share>[/<folder>]   (SMB 2/3; no user: Guest)
-+// and a file in it is that URL plus its path ("nfs://192.168.0.10/games/Melee.rvz"). Such paths
-+// work wherever Dolphin opens a file to read (File::IOFile, File::DirectIOFile, File::Exists /
-+// GetSize / IsDirectory): disc images in every format read from the network as they would from
-+// the disk. Read-only.
-+
-+#pragma once
-+
-+#include <cstdio>
-+#include <string>
-+#include <string_view>
-+#include <vector>
-+
-+#include "Common/CommonTypes.h"
-+
-+namespace Common::NetFS
-+{
-+bool IsNetPath(std::string_view path);
-+
-+// The configured shares (each one connection root: its server, export or share, and folder).
-+// A path inside one of them connects at that root; any other network path at its own folder.
-+void SetShares(std::vector<std::string> roots);
-+
-+// The URL with its password hidden ("smb://me:***@pc/games"), for logs and the menus.
-+std::string Redact(const std::string& url);
-+
-+// The last error (connection, open, read), for the menus and logs.
-+std::string LastError();
-+
-+struct Entry
-+{
-+  std::string name;
-+  bool directory = false;
-+  u64 size = 0;
-+};
-+// The files and folders in a network folder (without "." and ".."). False: unreachable.
-+bool List(const std::string& url, std::vector<Entry>* entries);
-+
-+// Whether the path exists, its size and whether it is a folder (cached for a few seconds).
-+bool Stat(const std::string& url, u64* size, bool* directory);
-+
-+// Handles for File::DirectIOFile: numbers no real file descriptor reaches.
-+bool IsHandle(int handle);
-+int OpenHandle(const std::string& url);  // -1: can't be opened
-+bool ReadAt(int handle, u64 offset, u8* out, u64 size);  // thread safe
-+u64 HandleSize(int handle);
-+int DuplicateHandle(int handle);
-+void CloseHandle(int handle);
-+
-+// A read-only stdio stream for File::IOFile (nullptr: can't be opened).
-+std::FILE* OpenStream(const std::string& url);
-+}  // namespace Common::NetFS
