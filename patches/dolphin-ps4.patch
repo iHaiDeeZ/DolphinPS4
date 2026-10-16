@@ -9954,10 +9954,10 @@ index 0000000..482d3bc
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
 new file mode 100644
-index 0000000..e595d9c
+index 0000000..fe14f80
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
-@@ -0,0 +1,2529 @@
+@@ -0,0 +1,2612 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -10007,6 +10007,13 @@ index 0000000..e595d9c
 +#include "Core/Core.h"
 +#include "Core/CoreTiming.h"
 +#include "Core/HLE/HLE.h"
++#ifndef __ORBIS__
++#include "Common/CommonPaths.h"
++#include "Common/FileUtil.h"
++#include "Core/PowerPC/PPCAnalyst.h"
++#include "Core/PowerPC/PPCSymbolDB.h"
++#include "Core/PowerPC/SignatureDB/SignatureDB.h"
++#endif
 +#include "Core/HW/CPU.h"
 +#include "Core/HW/GPFifo.h"
 +#include "Core/HW/Memmap.h"
@@ -10045,6 +10052,50 @@ index 0000000..e595d9c
 +int ps4_game_fprf = -1;
 +extern "C" int ps4_jit_fcmp_merge_fprf;  // jit_fcmp_merge_fprf (DolphinNoGUI/MainNoGUI.cpp)
 +int ps4_jit_fcmp_merge_fprf = 1;
++// jit_cross_dead (DolphinNoGUI/MainNoGUI.cpp; PS4JIT_CROSS_DEAD on the PC): 0 off, 1 on, 2 on and
++// the registers left unstored get 0xDEAD00nn instead (a test: a wrong analysis shows as bad reads).
++extern "C" int ps4_jit_cross_dead;
++int ps4_jit_cross_dead = 0;
++static u64 s_cross_dead_exits, s_cross_dead_regs;
++
++void JitPS4::PS4ExitFlush(u32 destination)
++{
++  BitSet32 dead;
++  if (ps4_jit_cross_dead)
++  {
++    dead = analyzer.PS4DeadAt(destination, &code_block, jo.memcheck);
++    for (const int r : dead)
++    {
++      if (gpr.IsPinned(r))
++        dead[r] = false;  // never stored anyway (jit_pin)
++    }
++  }
++  if (!dead)
++  {
++    gpr.Flush();
++    fpr.Flush();
++    return;
++  }
++  s_cross_dead_exits++;
++  s_cross_dead_regs += dead.Count();
++  gpr.Discard(dead);
++  gpr.Flush(BitSet32::AllTrue(32), RegCache::FlushMode::Full,
++            RegCache::IgnoreDiscardedRegisters::Yes);
++  fpr.Flush();
++  if (ps4_jit_cross_dead == 2)
++  {
++    for (const int r : dead)
++      MOV(32, PPCSTATE_GPR(r), Imm32(0xDEAD0000 | r));
++  }
++}
++
++BitSet32 JitPS4::PS4DeadForCheck(u32 destination)
++{
++  if (!ps4_jit_cross_dead)
++    return {};
++  PPCAnalyst::CodeBlock scratch;
++  return analyzer.PS4DeadAt(destination, &scratch, jo.memcheck);
++}
 +extern "C" int ps4_fifo_defer;  // VideoCommon/Fifo.cpp (ps4.ini fifo_defer)
 +extern "C" void ps4_boot_trace(const char* line);  // DolphinPS4 port/ps4_crashlog.cpp
 +extern "C" int ps4_gp_fuse;     // ps4.ini jit_gp_fuse (DolphinNoGUI)
@@ -10424,6 +10475,31 @@ index 0000000..e595d9c
 +    fwrite(memory.GetRAM(), memory.GetRamSizeReal(), 1, out);
 +    fclose(out);
 +  }
++  // The game's functions, the Nintendo SDK ones named from the signature database (as the PS4's
++  // Profiler writes symbols-<ID>.txt): the profile's hot code by name (sdkagg.py).
++  {
++    const Core::CPUThreadGuard guard(jit.m_system);
++    auto& db = jit.m_system.GetPPCSymbolDB();
++    auto& memory = jit.m_system.GetMemory();
++    PPCAnalyst::FindFunctions(guard, Memory::MEM1_BASE_ADDR,
++                              Memory::MEM1_BASE_ADDR + memory.GetRamSizeReal(), &db);
++    SignatureDB signatures(SignatureDB::HandlerType::DSY);
++    // The bench isn't installed: the database from the source tree when Sys has none.
++    const std::string source_db =
++        std::string(getenv("HOME") ? getenv("HOME") : "") +
++        "/dolphinps4-build/src/dolphin-jit/Data/Sys/" TOTALDB;
++    if (signatures.Load(File::GetSysDirectory() + TOTALDB) || signatures.Load(source_db))
++      signatures.Apply(guard, &db);
++    else
++      fprintf(stderr, "[bench] no signature database (%s)\n", source_db.c_str());
++    if (FILE* out = fopen("/tmp/ps4jit-ana/symbols.txt", "w"))
++    {
++      db.ForEachSymbol([&](const Common::Symbol& symbol) {
++        fprintf(out, "%08x %u %s\n", symbol.address, symbol.size, symbol.name.c_str());
++      });
++      fclose(out);
++    }
++  }
 +  fprintf(stderr, "[bench] perf profile: %llu CPU thread samples in /tmp/ps4jit-ana\n",
 +          static_cast<unsigned long long>(total));
 +}
@@ -10631,6 +10707,8 @@ index 0000000..e595d9c
 +  m_ps4_bench_start = std::chrono::steady_clock::now();
 +  m_ps4_bench_thread = pthread_self();
 +  s_count_on = getenv("PS4JIT_COUNT") != nullptr;
++  if (const char* cross = getenv("PS4JIT_CROSS_DEAD"))
++    ps4_jit_cross_dead = atoi(cross);
 +  if (const char* lazy = getenv("PS4JIT_LAZY_FPRF"))
 +    ps4_jit_lazy_fprf = atoi(lazy);
 +  // PS4JIT_TRACE=auto: jit_trace as on the PS4; PS4JIT_TRACE=<blocks.txt>: from that profile.
@@ -10675,6 +10753,12 @@ index 0000000..e595d9c
 +                static_cast<unsigned long long>(m_code_cache.PS4Stats().compiled),
 +                static_cast<unsigned long long>(m_code_cache.PS4Stats().unsaved),
 +                m_code_cache.PS4Stats().last_unsaved ? m_code_cache.PS4Stats().last_unsaved : "");
++        if (ps4_jit_cross_dead)
++        {
++          fprintf(stderr, "[bench] %d s: cross-block dead registers: %llu exits, %llu stores left out\n",
++                  n * 10, static_cast<unsigned long long>(s_cross_dead_exits),
++                  static_cast<unsigned long long>(s_cross_dead_regs));
++        }
 +        fprintf(stderr, "[bench] %d s: %u frames (%u XFB copies), CPU thread %.3f s, %.0f M cycles\n", n * 10,
 +                ps4_bench_frames.load(), ps4_bench_xfb_copies.load(), cpu.tv_sec + cpu.tv_nsec / 1e9,
 +                m_system.GetCoreTiming().GetTicks() / 1e6);
@@ -12358,8 +12442,7 @@ index 0000000..e595d9c
 +
 +  if (code_block.m_broken)
 +  {
-+    gpr.Flush();
-+    fpr.Flush();
++    PS4ExitFlush(nextPC);
 +    WriteExit(nextPC);
 +  }
 +
@@ -12489,10 +12572,10 @@ index 0000000..e595d9c
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.h b/Source/Core/Core/PowerPC/JitPS4/Jit.h
 new file mode 100644
-index 0000000..39bd049
+index 0000000..565448c
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.h
-@@ -0,0 +1,370 @@
+@@ -0,0 +1,375 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -12664,6 +12747,11 @@ index 0000000..39bd049
 +  void PS4JoinMove(const PS4PendingJoin& join);
 +  void PS4JoinFallback(const PS4PendingJoin& join);
 +  void PS4JoinFallbacks(u32 first_index, u32 last_index);
++  // jit_cross_dead: the flush before an exit to `destination` (a known address) - registers the
++  // code there overwrites before reading aren't stored (PPCAnalyzer::PS4DeadAt).
++  void PS4ExitFlush(u32 destination);
++  // The registers PS4ExitFlush leaves unstored for an exit to `destination` (Verify.cpp).
++  BitSet32 PS4DeadForCheck(u32 destination);
 +
 +  bool CheckMergedBranch(u32 crf) const;
 +  void DoMergedBranch();
@@ -13748,7 +13836,7 @@ index 0000000..4690bbf
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit_Branch.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit_Branch.cpp
 new file mode 100644
-index 0000000..b11d825
+index 0000000..2360149
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit_Branch.cpp
 @@ -0,0 +1,326 @@
@@ -13844,14 +13932,15 @@ index 0000000..b11d825
 +    return;
 +  }
 +
-+  gpr.Flush();
-+  fpr.Flush();
 +  if (js.op->branchIsIdleLoop)
 +  {
++    gpr.Flush();
++    fpr.Flush();
 +    WriteIdleExit(js.op->branchTo);
 +  }
 +  else
 +  {
++    PS4ExitFlush(js.op->branchTo);
 +    WriteExit(js.op->branchTo, inst.LK, js.compilerPC + 4);
 +  }
 +}
@@ -13908,8 +13997,7 @@ index 0000000..b11d825
 +    {
 +      RCForkGuard gpr_guard = gpr.Fork();
 +      RCForkGuard fpr_guard = fpr.Fork();
-+      gpr.Flush();
-+      fpr.Flush();
++      PS4ExitFlush(js.compilerPC + 4);
 +      WriteExit(js.compilerPC + 4);
 +    }
 +    SetJumpTarget(taken);
@@ -13935,14 +14023,15 @@ index 0000000..b11d825
 +  {
 +    RCForkGuard gpr_guard = gpr.Fork();
 +    RCForkGuard fpr_guard = fpr.Fork();
-+    gpr.Flush();
-+    fpr.Flush();
 +    if (js.op->branchIsIdleLoop)
 +    {
++      gpr.Flush();
++      fpr.Flush();
 +      WriteIdleExit(js.op->branchTo);
 +    }
 +    else
 +    {
++      PS4ExitFlush(js.op->branchTo);
 +      WriteExit(js.op->branchTo, inst.LK, js.compilerPC + 4);
 +    }
 +  }
@@ -13954,8 +14043,7 @@ index 0000000..b11d825
 +
 +  if (!analyzer.HasOption(PPCAnalyst::PPCAnalyzer::OPTION_CONDITIONAL_CONTINUE))
 +  {
-+    gpr.Flush();
-+    fpr.Flush();
++    PS4ExitFlush(js.compilerPC + 4);
 +    WriteExit(js.compilerPC + 4);
 +  }
 +}
@@ -15074,10 +15162,10 @@ index 0000000..7a0c2e2
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit_Integer.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit_Integer.cpp
 new file mode 100644
-index 0000000..fd35e7d
+index 0000000..46817db
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit_Integer.cpp
-@@ -0,0 +1,2501 @@
+@@ -0,0 +1,2507 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -15550,8 +15638,15 @@ index 0000000..fd35e7d
 +    RCForkGuard gpr_guard = gpr.Fork();
 +    RCForkGuard fpr_guard = fpr.Fork();
 +
-+    gpr.Flush();
-+    fpr.Flush();
++    if (next.OPCD == 16 && !js.op[1].branchIsIdleLoop)
++    {
++      PS4ExitFlush(js.op[1].branchTo);
++    }
++    else
++    {
++      gpr.Flush();
++      fpr.Flush();
++    }
 +
 +    DoMergedBranch();
 +  }
@@ -15560,8 +15655,7 @@ index 0000000..fd35e7d
 +
 +  if (!analyzer.HasOption(PPCAnalyst::PPCAnalyzer::OPTION_CONDITIONAL_CONTINUE))
 +  {
-+    gpr.Flush();
-+    fpr.Flush();
++    PS4ExitFlush(nextPC + 4);
 +    WriteExit(nextPC + 4);
 +  }
 +}
@@ -22015,7 +22109,7 @@ index 8c12ead..5f87b87 100644
    {
      BAT_TRANSLATED,
 diff --git a/Source/Core/Core/PowerPC/PPCAnalyst.cpp b/Source/Core/Core/PowerPC/PPCAnalyst.cpp
-index 386e349..438a3b9 100644
+index 386e349..56c3114 100644
 --- a/Source/Core/Core/PowerPC/PPCAnalyst.cpp
 +++ b/Source/Core/Core/PowerPC/PPCAnalyst.cpp
 @@ -4,6 +4,7 @@
@@ -22069,7 +22163,49 @@ index 386e349..438a3b9 100644
  
  constexpr u32 INVALID_BRANCH_TARGET = 0xFFFFFFFF;
  
-@@ -832,6 +865,9 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
+@@ -572,6 +605,41 @@ void PPCAnalyzer::ReorderInstructions(u32 instructions, CodeOp* code) const
+     ReorderInstructionsCore(instructions, code, true, ReorderType::CROR);
+ }
+ 
++BitSet32 PPCAnalyzer::PS4DeadAt(u32 address, CodeBlock* ranges, bool memcheck) const
++{
++  auto& system = Core::System::GetInstance();
++  auto& mmu = system.GetMMU();
++  auto& power_pc = system.GetPowerPC();
++  BlockRegStats fpa{};
++  fpa.any = true;  // no "first FPU instruction" exception in the scan
++  CodeBlock scratch;
++  scratch.m_fpa = &fpa;
++  BitSet32 read, dead;
++  for (int i = 0; i < 32; i++, address += 4)
++  {
++    if (HLE::TryReplaceFunction(power_pc.GetSymbolDB(), address, power_pc.GetMode()))
++      break;  // HLE code reads the registers itself
++    const auto result = mmu.TryReadInstruction(address);
++    if (!result.valid)
++      break;
++    ranges->m_physical_addresses.insert(result.physical_address, result.physical_address + 4);
++    CodeOp op{};
++    op.inst = result.hex;
++    op.address = address;
++    op.opinfo = PPCTables::GetOpInfo(op.inst, address);
++    SetInstructionStats(&scratch, &op, op.opinfo);
++    read |= op.regsIn;
++    if (op.canEndBlock || (op.canCauseException &&
++                           (memcheck || (op.opinfo->flags & FL_PROGRAMEXCEPTION) ||
++                            !(op.opinfo->flags & FL_LOADSTORE))))
++    {
++      break;
++    }
++    dead |= op.regsOut & ~read;
++  }
++  return dead;
++}
++
+ void PPCAnalyzer::SetInstructionStats(CodeBlock* block, CodeOp* code,
+                                       const GekkoOPInfo* opinfo) const
+ {
+@@ -832,6 +900,9 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
    u32 num_inst = 0;
  
    const bool enable_follow = m_enable_branch_following;
@@ -22079,7 +22215,7 @@ index 386e349..438a3b9 100644
  
    auto& system = Core::System::GetInstance();
    auto& mmu = system.GetMMU();
-@@ -949,6 +985,43 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
+@@ -949,6 +1020,43 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
      code[i].branchIsIdleLoop =
          code[i].branchTo == block->m_address && IsBusyWaitLoop(block, code, i);
  
@@ -22123,7 +22259,7 @@ index 386e349..438a3b9 100644
      if (follow && numFollows < BRANCH_FOLLOWING_THRESHOLD)
      {
        // Follow the unconditional branch.
-@@ -984,6 +1057,35 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
+@@ -984,6 +1092,35 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
      block->m_broken = true;
    }
  
@@ -22159,7 +22295,7 @@ index 386e349..438a3b9 100644
    auto& power_pc = system.GetPowerPC();
    auto& ppc_symbol_db = power_pc.GetSymbolDB();
    // Scan for flag dependencies; assume the next block (or any branch that can leave the block)
-@@ -1075,10 +1177,33 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
+@@ -1075,10 +1212,33 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
    // Forward scan, for flags that need the other direction for calculation.
    BitSet32 fprIsSingle, fprIsDuplicated, fprIsStoreSafe;
    BitSet8 gqrUsed, gqrModified;
@@ -22194,7 +22330,7 @@ index 386e349..438a3b9 100644
      op.fprIsDuplicated = fprIsDuplicated;
      op.fprIsStoreSafeBeforeInst = fprIsStoreSafe;
 diff --git a/Source/Core/Core/PowerPC/PPCAnalyst.h b/Source/Core/Core/PowerPC/PPCAnalyst.h
-index f9081ba..89f1d4f 100644
+index f9081ba..5084b40 100644
 --- a/Source/Core/Core/PowerPC/PPCAnalyst.h
 +++ b/Source/Core/Core/PowerPC/PPCAnalyst.h
 @@ -51,6 +51,14 @@ struct CodeOp  // 16B
@@ -22232,6 +22368,19 @@ index f9081ba..89f1d4f 100644
    };
  
    // Option setting/getting
+@@ -185,6 +206,12 @@ public:
+   void SetFloatExceptionsEnabled(bool enabled) { m_enable_float_exceptions = enabled; }
+   void SetDivByZeroExceptionsEnabled(bool enabled) { m_enable_div_by_zero_exceptions = enabled; }
+   u32 Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer, std::size_t block_size) const;
++  // Dolphin Lab (PS4, jit_cross_dead): the GPRs the code at `address` overwrites before it reads
++  // them, from its straight-line start (up to the first branch or instruction that can raise an
++  // exception; loads and stores can't when `memcheck` is off). A block leaving to `address` needn't
++  // store them. The instructions scanned are added to `ranges` (the block's guest code, so a change
++  // there invalidates the block and its code cache entry).
++  BitSet32 PS4DeadAt(u32 address, CodeBlock* ranges, bool memcheck) const;
+ 
+ private:
+   enum class ReorderType
 diff --git a/Source/Core/Core/PowerPC/PowerPC.cpp b/Source/Core/Core/PowerPC/PowerPC.cpp
 index 564d74d..f618701 100644
 --- a/Source/Core/Core/PowerPC/PowerPC.cpp
@@ -23077,7 +23226,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..43fef82 100644
+index 3bf40ea..f1b2fd1 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -23130,7 +23279,7 @@ index 3bf40ea..43fef82 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +55,76 @@
+@@ -31,6 +55,77 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -23158,6 +23307,7 @@ index 3bf40ea..43fef82 100644
 +extern "C" int ps4_jit_trace;            // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_lazy_fprf;        // Core/PowerPC/JitPS4/Jit.cpp
 +extern "C" int ps4_jit_fcmp_merge_fprf;  // Core/PowerPC/JitPS4/Jit.cpp
++extern "C" int ps4_jit_cross_dead;       // Core/PowerPC/JitPS4/Jit.cpp
 +extern "C" int ps4_sync_spin, ps4_idle_skip, ps4_fifo_bp_batch, ps4_diag_counters;  // VideoCommon/Fifo.cpp
 +extern "C" int ps4_jit_gp_dynamic;       // Core/PowerPC/Jit64Common/EmuCodeBlock.cpp
 +extern "C" int ps4_jit_accurate_singles;  // Core/PowerPC/Jit64/Jit.cpp
@@ -23207,7 +23357,7 @@ index 3bf40ea..43fef82 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +267,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +268,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -23218,7 +23368,7 @@ index 3bf40ea..43fef82 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +282,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +283,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -23237,7 +23387,7 @@ index 3bf40ea..43fef82 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +314,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +315,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -23248,7 +23398,7 @@ index 3bf40ea..43fef82 100644
  #endif
        });
  
-@@ -270,7 +381,481 @@ int main(const int argc, char* argv[])
+@@ -270,7 +382,485 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -23468,6 +23618,10 @@ index 3bf40ea..43fef82 100644
 +    // with FPRF too, the CPU/GPU threads spinning before they sleep, idle syncs only when the GPU
 +    // has work, FIFO batches up to a breakpoint, the "fifo sync" / "vk submits" counters.
 +    ps4_jit_fcmp_merge_fprf = Platform::GetPS4Option("jit_fcmp_merge_fprf", "on") == "on";
++    // jit_cross_dead (PS4 JIT; on in the JIT Lab to measure it, off in releases until then): a
++    // block leaving to a known address doesn't store the registers the code there overwrites
++    // before reading them.
++    ps4_jit_cross_dead = Platform::GetPS4Option("jit_cross_dead", "on") == "on";
 +    ps4_sync_spin = Platform::GetPS4Option("sync_spin", "on") == "on";
 +    ps4_idle_skip = Platform::GetPS4Option("idle_skip", "on") == "on";
 +    ps4_fifo_bp_batch = Platform::GetPS4Option("fifo_bp_batch", "on") == "on";
@@ -23730,7 +23884,7 @@ index 3bf40ea..43fef82 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +869,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +874,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -23746,7 +23900,7 @@ index 3bf40ea..43fef82 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +897,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +902,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -30456,10 +30610,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..5a1bd41
+index 0000000..069fa4c
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1050 @@
+@@ -0,0 +1,1056 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -30515,6 +30669,10 @@ index 0000000..5a1bd41
 +    {"resolution", "Internal Resolution", "Video",
 +     {{"1", "Native (480p)"}, {"2", "2x (720p)"}, {"3", "3x (1080p)"}}, "1", true,
 +     "Sharper pictures at higher settings; costs GPU time."},
++    {"upscaling", "Upscaling", "Video", {{"bilinear", "Bilinear"}, {"fsr", "FSR 1"}}, "bilinear",
++     true,
++     "How the picture is enlarged to the TV. FSR 1 (AMD FidelityFX Super Resolution): sharp "
++     "edges without the blur; costs a little GPU time, no CPU time."},
 +    {"fps_limit", "Frame Rate Limit", "Video",
 +     {{"0", "Unlimited"},
 +      {"auto", "Auto (60/30)"},
@@ -31172,6 +31330,8 @@ index 0000000..5a1bd41
 +    Config::SetBase(Config::GFX_CROP_TO_ASPECT_RATIO, on);
 +  else if (key == "resolution")
 +    Config::SetBase(Config::GFX_EFB_SCALE, std::clamp(std::atoi(value.c_str()), 1, 4));
++  else if (key == "upscaling")
++    Config::SetBase(Config::GFX_ENHANCE_POST_SHADER, value == "fsr" ? "FSR1" : "");
 +  else if (key == "fps_limit")
 +    ps4_fps_limit = value == "auto" ? -1 : std::max(0, std::atoi(value.c_str()));
 +  else if (key == "vsync")
@@ -50347,6 +50507,167 @@ index c56f32c..64e5240 100644
  
    customDriverLibraryName = Config::Get(Config::GFX_DRIVER_LIB_NAME);
  
+diff --git a/Data/Sys/Shaders/FSR1.glsl b/Data/Sys/Shaders/FSR1.glsl
+new file mode 100644
+index 0000000..cbb6290
+--- /dev/null
++++ b/Data/Sys/Shaders/FSR1.glsl
+@@ -0,0 +1,155 @@
++// AMD FidelityFX Super Resolution 1.0 - EASU (Edge Adaptive Spatial Upsampling), one pass.
++// Ported to Dolphin's post-processing shader API for Dolphin for PS4 (Settings -> Video ->
++// Upscaling). Upscales the game's picture to the TV with sharp edges and no extra blur; when the
++// picture is already as large as the screen it falls back to plain bilinear.
++//
++// Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.
++// Permission is hereby granted, free of charge, to any person obtaining a copy of this software
++// and associated documentation files (the "Software"), to deal in the Software without
++// restriction, including without limitation the rights to use, copy, modify, merge, publish,
++// distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
++// Software is furnished to do so, subject to the following conditions:
++// The above copyright notice and this permission notice shall be included in all copies or
++// substantial portions of the Software.
++// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
++// BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
++// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
++// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++
++float3 FsrTap(float2 px)
++{
++	// Point sample at a source pixel centre, kept inside the game picture (src_rect).
++	float2 lo = src_rect.xy * GetResolution();
++	float2 hi = lo + src_rect.zw * GetResolution() - 1.0;
++	px = clamp(px, lo, hi);
++	return texture(samp1, float3((px + 0.5) * GetInvResolution(), GetLayer())).rgb;
++}
++
++float FsrLuma(float3 c)
++{
++	return c.b * 0.5 + (c.r * 0.5 + c.g);
++}
++
++void FsrEasuSet(inout float2 dir, inout float len, float w,
++                float lA, float lB, float lC, float lD, float lE)
++{
++	// Horizontal: B C D around C.
++	float dc = lD - lC;
++	float cb = lC - lB;
++	float lenX = max(abs(dc), abs(cb));
++	lenX = lenX > 0.0 ? 1.0 / lenX : 0.0;
++	float dirX = lD - lB;
++	dir.x += dirX * w;
++	lenX = clamp(abs(dirX) * lenX, 0.0, 1.0);
++	lenX *= lenX;
++	len += lenX * w;
++	// Vertical: A C E around C.
++	float ec = lE - lC;
++	float ca = lC - lA;
++	float lenY = max(abs(ec), abs(ca));
++	lenY = lenY > 0.0 ? 1.0 / lenY : 0.0;
++	float dirY = lE - lA;
++	dir.y += dirY * w;
++	lenY = clamp(abs(dirY) * lenY, 0.0, 1.0);
++	lenY *= lenY;
++	len += lenY * w;
++}
++
++void FsrEasuTap(inout float3 aC, inout float aW, float2 off, float2 dir, float2 len, float lob,
++                float clp, float3 c)
++{
++	// Rotate the offset into the edge's direction, then stretch it.
++	float2 v = float2(off.x * dir.x + off.y * dir.y, off.x * (-dir.y) + off.y * dir.x);
++	v *= len;
++	float d2 = min(v.x * v.x + v.y * v.y, clp);
++	// Lanczos-2 approximation: (25/16 * (2/5 * x^2 - 1)^2 - (25/16 - 1)) * (lob * x^2 - 1)^2
++	float wB = 0.4 * d2 - 1.0;
++	float wA = lob * d2 - 1.0;
++	wB *= wB;
++	wA *= wA;
++	wB = 1.5625 * wB - 0.5625;
++	float w = wB * wA;
++	aC += c * w;
++	aW += w;
++}
++
++void main()
++{
++	float2 source = src_rect.zw * GetResolution();
++	float2 target = GetWindowResolution();
++	// Not upscaling: EASU isn't a downscaler.
++	if (target.x <= source.x * 1.01 && target.y <= source.y * 1.01)
++	{
++		SetOutput(Sample());
++		return;
++	}
++
++	float2 pp = GetCoordinates() * GetResolution() - 0.5;
++	float2 fp = floor(pp);
++	pp -= fp;
++
++	//    b c
++	//  e f g h
++	//  i j k l
++	//    n o
++	float3 b = FsrTap(fp + float2(0.0, -1.0));
++	float3 c = FsrTap(fp + float2(1.0, -1.0));
++	float3 e = FsrTap(fp + float2(-1.0, 0.0));
++	float3 f = FsrTap(fp + float2(0.0, 0.0));
++	float3 g = FsrTap(fp + float2(1.0, 0.0));
++	float3 h = FsrTap(fp + float2(2.0, 0.0));
++	float3 i = FsrTap(fp + float2(-1.0, 1.0));
++	float3 j = FsrTap(fp + float2(0.0, 1.0));
++	float3 k = FsrTap(fp + float2(1.0, 1.0));
++	float3 l = FsrTap(fp + float2(2.0, 1.0));
++	float3 n = FsrTap(fp + float2(0.0, 2.0));
++	float3 o = FsrTap(fp + float2(1.0, 2.0));
++
++	float bL = FsrLuma(b), cL = FsrLuma(c), eL = FsrLuma(e), fL = FsrLuma(f);
++	float gL = FsrLuma(g), hL = FsrLuma(h), iL = FsrLuma(i), jL = FsrLuma(j);
++	float kL = FsrLuma(k), lL = FsrLuma(l), nL = FsrLuma(n), oL = FsrLuma(o);
++
++	// Edge direction and length, bilinearly weighted from the 4 nearest pixels.
++	float2 dir = float2(0.0, 0.0);
++	float len = 0.0;
++	FsrEasuSet(dir, len, (1.0 - pp.x) * (1.0 - pp.y), bL, eL, fL, gL, jL);
++	FsrEasuSet(dir, len, pp.x * (1.0 - pp.y), cL, fL, gL, hL, kL);
++	FsrEasuSet(dir, len, (1.0 - pp.x) * pp.y, fL, iL, jL, kL, nL);
++	FsrEasuSet(dir, len, pp.x * pp.y, gL, jL, kL, lL, oL);
++
++	float2 dir2 = dir * dir;
++	float dirR = dir2.x + dir2.y;
++	bool zro = dirR < (1.0 / 32768.0);
++	dirR = zro ? 1.0 : inversesqrt(dirR);
++	dir.x = zro ? 1.0 : dir.x;
++	dir *= dirR;
++	len = len * 0.5;
++	len *= len;
++	float stretch = (dir.x * dir.x + dir.y * dir.y) / max(abs(dir.x), abs(dir.y));
++	float2 len2 = float2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);
++	float lob = 0.5 + ((1.0 / 4.0 - 0.04) - 0.5) * len;
++	float clp = 1.0 / lob;
++
++	// No ringing: the result stays within the 4 nearest pixels' range.
++	float3 min4 = min(min(f, g), min(j, k));
++	float3 max4 = max(max(f, g), max(j, k));
++
++	float3 aC = float3(0.0, 0.0, 0.0);
++	float aW = 0.0;
++	FsrEasuTap(aC, aW, float2(0.0, -1.0) - pp, dir, len2, lob, clp, b);
++	FsrEasuTap(aC, aW, float2(1.0, -1.0) - pp, dir, len2, lob, clp, c);
++	FsrEasuTap(aC, aW, float2(-1.0, 1.0) - pp, dir, len2, lob, clp, i);
++	FsrEasuTap(aC, aW, float2(0.0, 1.0) - pp, dir, len2, lob, clp, j);
++	FsrEasuTap(aC, aW, float2(0.0, 0.0) - pp, dir, len2, lob, clp, f);
++	FsrEasuTap(aC, aW, float2(-1.0, 0.0) - pp, dir, len2, lob, clp, e);
++	FsrEasuTap(aC, aW, float2(1.0, 1.0) - pp, dir, len2, lob, clp, k);
++	FsrEasuTap(aC, aW, float2(2.0, 1.0) - pp, dir, len2, lob, clp, l);
++	FsrEasuTap(aC, aW, float2(2.0, 0.0) - pp, dir, len2, lob, clp, h);
++	FsrEasuTap(aC, aW, float2(1.0, 0.0) - pp, dir, len2, lob, clp, g);
++	FsrEasuTap(aC, aW, float2(1.0, 2.0) - pp, dir, len2, lob, clp, o);
++	FsrEasuTap(aC, aW, float2(0.0, 2.0) - pp, dir, len2, lob, clp, n);
++
++	float3 color = min(max4, max(min4, aC / aW));
++	SetOutput(float4(color, 1.0));
++}
 diff --git a/Source/Core/Common/PS4NetFS.cpp b/Source/Core/Common/PS4NetFS.cpp
 new file mode 100755
 index 0000000..75bac96
@@ -51267,7 +51588,7 @@ index 0000000..e234d2b
 +}  // namespace Common::NetFS
 diff --git a/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 new file mode 100755
-index 0000000..e72971d
+index 0000000..3ddab9c
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/CodeCache.cpp
 @@ -0,0 +1,1259 @@
@@ -51314,7 +51635,7 @@ index 0000000..e72971d
 +    ps4_jit_round_operands, ps4_jit_fcmp_merge, ps4_jit_msr_link, ps4_jit_gp_dynamic,
 +    ps4_fifo_batch, ps4_fifo_defer;
 +extern "C" int ps4_jit_unroll, ps4_jit_join, ps4_jit_trace, ps4_jit_lazy_fprf, ps4_game_fprf,
-+    ps4_jit_fcmp_merge_fprf;  // Core/PowerPC/PPCAnalyst.cpp
++    ps4_jit_fcmp_merge_fprf, ps4_jit_cross_dead;  // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_pin[4];
 +extern "C" int ps4_jit_verify;  // JitPS4/Verify.cpp
 +
@@ -51653,7 +51974,7 @@ index 0000000..e72971d
 +                ps4_jit_tlb_inline, ps4_lfs_forward, ps4_jit_accurate_singles,
 +                ps4_jit_round_results, ps4_jit_round_operands, ps4_jit_fcmp_merge,
 +                ps4_jit_msr_link, ps4_jit_gp_dynamic, ps4_fifo_batch, ps4_fifo_defer, ps4_jit_verify,
-+                ps4_jit_unroll, ps4_jit_join, ps4_jit_trace, ps4_jit_lazy_fprf, ps4_jit_fcmp_merge_fprf, ps4_jit_pin[0], ps4_jit_pin[1], ps4_jit_pin[2], ps4_jit_pin[3]})
++                ps4_jit_unroll, ps4_jit_join, ps4_jit_trace, ps4_jit_lazy_fprf, ps4_jit_fcmp_merge_fprf, ps4_jit_cross_dead, ps4_jit_pin[0], ps4_jit_pin[1], ps4_jit_pin[2], ps4_jit_pin[3]})
 +  {
 +    h = Mix(h, v);
 +  }
@@ -52664,10 +52985,10 @@ index 0000000..63d7a7a
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Verify.cpp b/Source/Core/Core/PowerPC/JitPS4/Verify.cpp
 new file mode 100755
-index 0000000..9fa8c37
+index 0000000..5f354b0
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Verify.cpp
-@@ -0,0 +1,473 @@
+@@ -0,0 +1,476 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -52984,6 +53305,7 @@ index 0000000..9fa8c37
 +  PowerPC::ps4_fprf_materialize(&jit.m_ppc_state);  // compared with the replay's FPRF
 +  now.Capture(jit.m_ppc_state);
 +  auto& mmu = jit.m_system.GetMMU();
++  const BitSet32 dead = jit.PS4DeadForCheck(destination);
 +  const auto differences = [&](const Checkpoint& c, std::vector<std::string>* out) {
 +    const auto add = [&](const char* text) {
 +      if (out)
@@ -52993,6 +53315,8 @@ index 0000000..9fa8c37
 +    const Regs& want = c.regs;
 +    for (int i = 0; i < 32; i++)
 +    {
++      if (dead[i])
++        continue;  // jit_cross_dead: overwritten at `destination` before it's read, not stored
 +      if (now.gpr[i] != want.gpr[i])
 +      {
 +        count++;
