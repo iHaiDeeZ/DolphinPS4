@@ -38,3 +38,22 @@ index dd0352c..8ec4146 100644
  #define __bswap64 __bswap_64
  #endif
  
+diff --git a/lib/sync.c b/lib/sync.c
+index 4467226..4655758 100644
+--- a/lib/sync.c
++++ b/lib/sync.c
+@@ -114,8 +114,12 @@ static int wait_for_reply(struct smb2_context *smb2,
+ 		pfd.events = smb2_which_events(smb2);
+ 
+ 		if (poll(&pfd, 1, 1000) < 0) {
+-			smb2_set_error(smb2, "Poll failed");
+-			return -1;
++			/* DolphinPS4: a signal is not a failure; retry via the checks below */
++			if (errno != EINTR) {
++				smb2_set_error(smb2, "Poll failed");
++				return -1;
++			}
++			pfd.revents = 0;
+ 		}
+                 if (smb2->timeout) {
+                         smb2_timeout_pdus(smb2);

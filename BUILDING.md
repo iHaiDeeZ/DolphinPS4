@@ -76,6 +76,14 @@ The build tree lives in WSL, at `~/dolphinps4-build` (`PSB` in
 
 Each script's comments explain its steps and options.
 
+Network shares (NFS/SMB) use libnfs and libsmb2, built with `scripts/build-netlibs.sh` from
+`~/dolphinps4-build/src/libnfs` and `src/libsmb2` (GitHub `sahlberg/`). libsmb2 must be checked out
+at the pinned revision `4cce7691d2281dc9ecf0e5fa4d8d2f4860031df2`; the script refuses any other.
+[`patches/libsmb2-ps4.patch`](patches/libsmb2-ps4.patch) is applied to it and, besides the PS4
+build fixes, makes the synchronous wait loop retry `poll()` when a signal interrupts it (`EINTR`)
+instead of failing the SMB call.
+
+
 ## What's in this repository
 
 | Path | What |

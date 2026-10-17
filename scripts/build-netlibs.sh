@@ -7,6 +7,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/ps4-env.sh"
 SYSROOT="${PS4_SYSROOT:-$PS4_BUILD_ROOT/sysroot}"
 TOOLCHAIN="$HERE/../toolchain/ps4-love-modern.cmake"
+# libsmb2 is pinned: patches/libsmb2-ps4.patch is made against this revision.
+LIBSMB2_REV=4cce7691d2281dc9ecf0e5fa4d8d2f4860031df2
 build() {
     local name="$1"; shift
     local build="$PS4_BUILD_ROOT/build/$name"
@@ -20,6 +22,10 @@ build() {
     ninja -C "$build" install > "$build.build.log" 2>&1 || { grep -B2 -A8 "error" "$build.build.log" | head -60; exit 1; }
     echo "$name: built"
 }
+if [ "$(git -C "$PS4_BUILD_ROOT/src/libsmb2" rev-parse HEAD)" != "$LIBSMB2_REV" ]; then
+    echo "libsmb2 must be checked out at $LIBSMB2_REV (git -C $PS4_BUILD_ROOT/src/libsmb2 checkout $LIBSMB2_REV)" >&2
+    exit 1
+fi
 for lib in libnfs libsmb2; do
     git -C "$PS4_BUILD_ROOT/src/$lib" apply --check "$HERE/../patches/$lib-ps4.patch" 2>/dev/null &&
         git -C "$PS4_BUILD_ROOT/src/$lib" apply "$HERE/../patches/$lib-ps4.patch"
