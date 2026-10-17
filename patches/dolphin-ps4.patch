@@ -31135,10 +31135,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..069fa4c
+index 0000000..99edff5
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1056 @@
+@@ -0,0 +1,1061 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -31286,6 +31286,9 @@ index 0000000..069fa4c
 +    {"speed_mode", "Speed Features", "Performance",
 +     {{"fast", "Fast"}, {"compatible", "Compatible"}}, "fast", false,
 +     "Compatible turns off the port's command-stream shortcuts if a game glitches or freezes."},
++    {"vbi_skip", "VBI Skip", "Performance", {{"off", "Off"}, {"on", "On"}}, "off", true,
++     "When the game runs below full speed, skips some vertical blank interrupts so its audio and "
++     "timing keep up (smoother sound, choppier picture). Some games freeze with it: set it back."},
 +    {"fprf", "Float Result Flags", "Performance", {{"game", "Game's Choice"}, {"off", "Off"}},
 +     "game", false,
 +     "Some games (F-Zero GX among them) have Dolphin compute the CPU's floating-point result "
@@ -31898,6 +31901,8 @@ index 0000000..069fa4c
 +    Config::SetBase(Config::GFX_HACK_EFB_ACCESS_ENABLE, on);
 +  else if (key == "manual_texture_sampling")
 +    Config::SetBase(Config::GFX_HACK_FAST_TEXTURE_SAMPLING, !on);
++  else if (key == "vbi_skip")
++    Config::SetBase(Config::GFX_HACK_VI_SKIP, on);
 +  else if (key == "hires_textures")
 +    Config::SetBase(Config::GFX_HIRES_TEXTURES, on);
 +  else if (key == "cpu_clock")
@@ -51032,6 +51037,167 @@ index c56f32c..64e5240 100644
  
    customDriverLibraryName = Config::Get(Config::GFX_DRIVER_LIB_NAME);
  
+diff --git a/Data/Sys/Shaders/FSR1.glsl b/Data/Sys/Shaders/FSR1.glsl
+new file mode 100644
+index 0000000..cbb6290
+--- /dev/null
++++ b/Data/Sys/Shaders/FSR1.glsl
+@@ -0,0 +1,155 @@
++// AMD FidelityFX Super Resolution 1.0 - EASU (Edge Adaptive Spatial Upsampling), one pass.
++// Ported to Dolphin's post-processing shader API for Dolphin for PS4 (Settings -> Video ->
++// Upscaling). Upscales the game's picture to the TV with sharp edges and no extra blur; when the
++// picture is already as large as the screen it falls back to plain bilinear.
++//
++// Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.
++// Permission is hereby granted, free of charge, to any person obtaining a copy of this software
++// and associated documentation files (the "Software"), to deal in the Software without
++// restriction, including without limitation the rights to use, copy, modify, merge, publish,
++// distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
++// Software is furnished to do so, subject to the following conditions:
++// The above copyright notice and this permission notice shall be included in all copies or
++// substantial portions of the Software.
++// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
++// BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
++// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
++// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++
++float3 FsrTap(float2 px)
++{
++	// Point sample at a source pixel centre, kept inside the game picture (src_rect).
++	float2 lo = src_rect.xy * GetResolution();
++	float2 hi = lo + src_rect.zw * GetResolution() - 1.0;
++	px = clamp(px, lo, hi);
++	return texture(samp1, float3((px + 0.5) * GetInvResolution(), GetLayer())).rgb;
++}
++
++float FsrLuma(float3 c)
++{
++	return c.b * 0.5 + (c.r * 0.5 + c.g);
++}
++
++void FsrEasuSet(inout float2 dir, inout float len, float w,
++                float lA, float lB, float lC, float lD, float lE)
++{
++	// Horizontal: B C D around C.
++	float dc = lD - lC;
++	float cb = lC - lB;
++	float lenX = max(abs(dc), abs(cb));
++	lenX = lenX > 0.0 ? 1.0 / lenX : 0.0;
++	float dirX = lD - lB;
++	dir.x += dirX * w;
++	lenX = clamp(abs(dirX) * lenX, 0.0, 1.0);
++	lenX *= lenX;
++	len += lenX * w;
++	// Vertical: A C E around C.
++	float ec = lE - lC;
++	float ca = lC - lA;
++	float lenY = max(abs(ec), abs(ca));
++	lenY = lenY > 0.0 ? 1.0 / lenY : 0.0;
++	float dirY = lE - lA;
++	dir.y += dirY * w;
++	lenY = clamp(abs(dirY) * lenY, 0.0, 1.0);
++	lenY *= lenY;
++	len += lenY * w;
++}
++
++void FsrEasuTap(inout float3 aC, inout float aW, float2 off, float2 dir, float2 len, float lob,
++                float clp, float3 c)
++{
++	// Rotate the offset into the edge's direction, then stretch it.
++	float2 v = float2(off.x * dir.x + off.y * dir.y, off.x * (-dir.y) + off.y * dir.x);
++	v *= len;
++	float d2 = min(v.x * v.x + v.y * v.y, clp);
++	// Lanczos-2 approximation: (25/16 * (2/5 * x^2 - 1)^2 - (25/16 - 1)) * (lob * x^2 - 1)^2
++	float wB = 0.4 * d2 - 1.0;
++	float wA = lob * d2 - 1.0;
++	wB *= wB;
++	wA *= wA;
++	wB = 1.5625 * wB - 0.5625;
++	float w = wB * wA;
++	aC += c * w;
++	aW += w;
++}
++
++void main()
++{
++	float2 source = src_rect.zw * GetResolution();
++	float2 target = GetWindowResolution();
++	// Not upscaling: EASU isn't a downscaler.
++	if (target.x <= source.x * 1.01 && target.y <= source.y * 1.01)
++	{
++		SetOutput(Sample());
++		return;
++	}
++
++	float2 pp = GetCoordinates() * GetResolution() - 0.5;
++	float2 fp = floor(pp);
++	pp -= fp;
++
++	//    b c
++	//  e f g h
++	//  i j k l
++	//    n o
++	float3 b = FsrTap(fp + float2(0.0, -1.0));
++	float3 c = FsrTap(fp + float2(1.0, -1.0));
++	float3 e = FsrTap(fp + float2(-1.0, 0.0));
++	float3 f = FsrTap(fp + float2(0.0, 0.0));
++	float3 g = FsrTap(fp + float2(1.0, 0.0));
++	float3 h = FsrTap(fp + float2(2.0, 0.0));
++	float3 i = FsrTap(fp + float2(-1.0, 1.0));
++	float3 j = FsrTap(fp + float2(0.0, 1.0));
++	float3 k = FsrTap(fp + float2(1.0, 1.0));
++	float3 l = FsrTap(fp + float2(2.0, 1.0));
++	float3 n = FsrTap(fp + float2(0.0, 2.0));
++	float3 o = FsrTap(fp + float2(1.0, 2.0));
++
++	float bL = FsrLuma(b), cL = FsrLuma(c), eL = FsrLuma(e), fL = FsrLuma(f);
++	float gL = FsrLuma(g), hL = FsrLuma(h), iL = FsrLuma(i), jL = FsrLuma(j);
++	float kL = FsrLuma(k), lL = FsrLuma(l), nL = FsrLuma(n), oL = FsrLuma(o);
++
++	// Edge direction and length, bilinearly weighted from the 4 nearest pixels.
++	float2 dir = float2(0.0, 0.0);
++	float len = 0.0;
++	FsrEasuSet(dir, len, (1.0 - pp.x) * (1.0 - pp.y), bL, eL, fL, gL, jL);
++	FsrEasuSet(dir, len, pp.x * (1.0 - pp.y), cL, fL, gL, hL, kL);
++	FsrEasuSet(dir, len, (1.0 - pp.x) * pp.y, fL, iL, jL, kL, nL);
++	FsrEasuSet(dir, len, pp.x * pp.y, gL, jL, kL, lL, oL);
++
++	float2 dir2 = dir * dir;
++	float dirR = dir2.x + dir2.y;
++	bool zro = dirR < (1.0 / 32768.0);
++	dirR = zro ? 1.0 : inversesqrt(dirR);
++	dir.x = zro ? 1.0 : dir.x;
++	dir *= dirR;
++	len = len * 0.5;
++	len *= len;
++	float stretch = (dir.x * dir.x + dir.y * dir.y) / max(abs(dir.x), abs(dir.y));
++	float2 len2 = float2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);
++	float lob = 0.5 + ((1.0 / 4.0 - 0.04) - 0.5) * len;
++	float clp = 1.0 / lob;
++
++	// No ringing: the result stays within the 4 nearest pixels' range.
++	float3 min4 = min(min(f, g), min(j, k));
++	float3 max4 = max(max(f, g), max(j, k));
++
++	float3 aC = float3(0.0, 0.0, 0.0);
++	float aW = 0.0;
++	FsrEasuTap(aC, aW, float2(0.0, -1.0) - pp, dir, len2, lob, clp, b);
++	FsrEasuTap(aC, aW, float2(1.0, -1.0) - pp, dir, len2, lob, clp, c);
++	FsrEasuTap(aC, aW, float2(-1.0, 1.0) - pp, dir, len2, lob, clp, i);
++	FsrEasuTap(aC, aW, float2(0.0, 1.0) - pp, dir, len2, lob, clp, j);
++	FsrEasuTap(aC, aW, float2(0.0, 0.0) - pp, dir, len2, lob, clp, f);
++	FsrEasuTap(aC, aW, float2(-1.0, 0.0) - pp, dir, len2, lob, clp, e);
++	FsrEasuTap(aC, aW, float2(1.0, 1.0) - pp, dir, len2, lob, clp, k);
++	FsrEasuTap(aC, aW, float2(2.0, 1.0) - pp, dir, len2, lob, clp, l);
++	FsrEasuTap(aC, aW, float2(2.0, 0.0) - pp, dir, len2, lob, clp, h);
++	FsrEasuTap(aC, aW, float2(1.0, 0.0) - pp, dir, len2, lob, clp, g);
++	FsrEasuTap(aC, aW, float2(1.0, 2.0) - pp, dir, len2, lob, clp, o);
++	FsrEasuTap(aC, aW, float2(0.0, 2.0) - pp, dir, len2, lob, clp, n);
++
++	float3 color = min(max4, max(min4, aC / aW));
++	SetOutput(float4(color, 1.0));
++}
 diff --git a/Source/Core/Common/PS4NetFS.cpp b/Source/Core/Common/PS4NetFS.cpp
 new file mode 100755
 index 0000000..75bac96
