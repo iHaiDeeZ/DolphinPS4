@@ -49686,7 +49686,7 @@ index 92f7c1f..3378a49 100644
      m_default_pixel_shader = g_gfx->CreateShaderFromSource(
          ShaderStage::Pixel, GetHeader(false) + default_pixel_shader_code + GetFooter(), nullptr,
 diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
-index 41d05f3..667610f 100644
+index 41d05f3..f06689b 100644
 --- a/Source/Core/VideoCommon/Present.cpp
 +++ b/Source/Core/VideoCommon/Present.cpp
 @@ -2,7 +2,16 @@
@@ -49771,7 +49771,7 @@ index 41d05f3..667610f 100644
    ReleaseXFBContentLock();
    u64 old_xfb_id = m_last_xfb_id;
  
-@@ -165,10 +205,88 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
+@@ -165,10 +205,87 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
    return old_xfb_id == m_last_xfb_id;
  }
  
@@ -49802,8 +49802,7 @@ index 41d05f3..667610f 100644
 +    s_fg_interval = static_cast<int>(s_fg_vi - s_fg_last_new);
 +    s_fg_last_new = s_fg_vi;
 +  }
-+  // Frame generation shows a picture at every interrupt: no frame rate limit then.
-+  if (ps4_fps_limit != 0 && !ps4_frame_gen)
++  if (ps4_fps_limit != 0)
 +  {
 +    const auto now = Clock::now();
 +    int limit = ps4_fps_limit;
@@ -49860,20 +49859,26 @@ index 41d05f3..667610f 100644
  
    PresentInfo present_info{
        .present_count = m_present_count++,
-@@ -212,7 +330,11 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
- 
-   video_events.before_present_event.Trigger(present_info);
- 
--  if (!is_duplicate || !g_ActiveConfig.bSkipPresentingDuplicateXFBs)
-+  bool present = !is_duplicate || !g_ActiveConfig.bSkipPresentingDuplicateXFBs;
-+#ifdef __ORBIS__
-+  present |= ps4_frame_gen != 0;  // the interrupt after an in-between picture shows the real one
-+#endif
-+  if (present)
+@@ -215,6 +332,18 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
+   if (!is_duplicate || !g_ActiveConfig.bSkipPresentingDuplicateXFBs)
    {
      Present(&present_info);
++#ifdef __ORBIS__
++    // Frame generation: the in-between picture went first; the real one follows at once and the
++    // flip queue shows it one refresh later. (Presenting the real picture at the next, repeat
++    // interrupt instead froze The Hulk: it drew almost nothing while those presents ran - JIT
++    // Lab v60.34-36.)
++    if (ps4_frame_gen && PS4FrameGen::PendingReal())
++    {
++      PresentInfo real = present_info;
++      real.reason = PresentInfo::PresentReason::VideoInterfaceDuplicate;
++      Present(&real);
++    }
++#endif
      ProcessFrameDumping(ticks);
-@@ -431,8 +553,23 @@ Presenter::ConvertStereoRectangle(const MathUtil::Rectangle<int>& rc) const
+ 
+     video_events.after_present_event.Trigger(present_info);
+@@ -431,8 +560,23 @@ Presenter::ConvertStereoRectangle(const MathUtil::Rectangle<int>& rc) const
    return std::make_tuple(left_rc, right_rc);
  }
  
@@ -49897,7 +49902,7 @@ index 41d05f3..667610f 100644
    if (!g_ActiveConfig.bCropCustom)
      return MathUtil::Rectangle<int>(0, 0, 0, 0);
  
-@@ -464,7 +601,11 @@ MathUtil::Rectangle<int> Presenter::AdjustForCustomCrop(const MathUtil::Rectangl
+@@ -464,7 +608,11 @@ MathUtil::Rectangle<int> Presenter::AdjustForCustomCrop(const MathUtil::Rectangl
  
  float Presenter::AdjustAspectRatioForCustomCrop(float input_aspect_ratio) const
  {
@@ -49909,7 +49914,7 @@ index 41d05f3..667610f 100644
      return input_aspect_ratio;
  
    const MathUtil::Rectangle<int> rect = m_xfb_rect;
-@@ -903,9 +1044,306 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
+@@ -903,9 +1051,306 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
    }
  }
  
@@ -50216,7 +50221,7 @@ index 41d05f3..667610f 100644
  
    if (g_gfx->IsHeadless() || (!m_onscreen_ui && !m_xfb_entry))
      return;
-@@ -934,7 +1372,235 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -934,7 +1379,235 @@ void Presenter::Present(PresentInfo* present_info)
    UpdateDrawRectangle();
  
    g_gfx->BeginUtilityDrawing();
@@ -50452,7 +50457,7 @@ index 41d05f3..667610f 100644
  
    // Render the XFB to the screen.
    if (backbuffer_bound && m_xfb_entry)
-@@ -944,8 +1610,67 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -944,8 +1617,67 @@ void Presenter::Present(PresentInfo* present_info)
      MathUtil::Rectangle<int> render_source_rc = AdjustForCustomCrop(m_xfb_rect);
      AdjustRectanglesToFitBounds(&render_target_rc, &render_source_rc, m_backbuffer_width,
                                  m_backbuffer_height);
@@ -50520,16 +50525,14 @@ index 41d05f3..667610f 100644
  
    if (m_onscreen_ui)
    {
-@@ -962,6 +1687,13 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -962,6 +1694,11 @@ void Presenter::Present(PresentInfo* present_info)
      {
        const auto present_time = GetUpdatedPresentationTime(present_info->intended_present_time);
  
 +#ifdef __ORBIS__
-+      // Frame generation presents every video interrupt: no pacing sleep then (the interrupts
-+      // come at 60 Hz, the flip waits for vsync). With it, the video thread slept in the repeat
-+      // presents while the CPU thread waited for it at an idle sync - The Hulk drew 0-3 new
-+      // pictures every 2 s (JIT Lab v60.34-35).
-+      if (!ps4_frame_gen)
++      // Frame generation: the real picture right after the in-between one, no second wait.
++      if (!(ps4_frame_gen &&
++            present_info->reason == PresentInfo::PresentReason::VideoInterfaceDuplicate))
 +#endif
        Core::System::GetInstance().GetCoreTiming().SleepUntil(present_time);
  
@@ -54179,10 +54182,10 @@ index 0000000..3317422
 +}  // namespace PS4Jit
 diff --git a/Source/Core/VideoCommon/PS4FrameGen.cpp b/Source/Core/VideoCommon/PS4FrameGen.cpp
 new file mode 100644
-index 0000000..77ee1ba
+index 0000000..55a4f37
 --- /dev/null
 +++ b/Source/Core/VideoCommon/PS4FrameGen.cpp
-@@ -0,0 +1,417 @@
+@@ -0,0 +1,422 @@
 +// Copyright 2026 Dolphin for PS4
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -54595,6 +54598,11 @@ index 0000000..77ee1ba
 +  return s.middle.texture.get();
 +}
 +
++bool PendingReal()
++{
++  return s.pending_real;
++}
++
 +void Release()
 +{
 +  s = State{};
@@ -54602,10 +54610,10 @@ index 0000000..77ee1ba
 +}  // namespace PS4FrameGen
 diff --git a/Source/Core/VideoCommon/PS4FrameGen.h b/Source/Core/VideoCommon/PS4FrameGen.h
 new file mode 100644
-index 0000000..4b7f77d
+index 0000000..bb5fba0
 --- /dev/null
 +++ b/Source/Core/VideoCommon/PS4FrameGen.h
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,33 @@
 +// Copyright 2026 Dolphin for PS4
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -54624,16 +54632,18 @@ index 0000000..4b7f77d
 +// nearest blocks' motions and no motion, weighted by distance and match. Checked on PS4 captures
 +// (Mario Kart Wii, Sonic the Fighters) against the real in-between frames before it was written.
 +//
-+// Presenter::ViSwap presents every video interrupt while it is on; Present calls Process with the
-+// XFB before the backbuffer is bound: on a new picture (two interrupts after the last) the result
-+// is the picture between the last one and it, on the interrupt after, the new picture itself -
-+// one interrupt (1/60 s) later than without frame generation.
++// Present calls Process with the XFB before the backbuffer is bound: on a new picture (two
++// interrupts after the last) the result is the picture between the last one and it; then
++// Presenter::ViSwap presents again at once (PendingReal) for the new picture itself, which the
++// flip queue shows one refresh later - 1/60 s later than without frame generation.
 +namespace PS4FrameGen
 +{
 +// The picture to show instead of the XFB's `crop` (in the returned texture: `out_rect`), or
 +// nullptr to show the XFB as usual. `interval`: video interrupts since the previous new picture.
 +const AbstractTexture* Process(const AbstractTexture* xfb, const MathUtil::Rectangle<int>& crop,
 +                               bool new_picture, int interval, MathUtil::Rectangle<int>* out_rect);
++// An in-between picture was just shown: the real picture is to be presented next.
++bool PendingReal();
 +// Textures and pipelines freed (the setting turned off, the renderer going away).
 +void Release();
 +}  // namespace PS4FrameGen
