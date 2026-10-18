@@ -31135,10 +31135,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..99edff5
+index 0000000..654a70c
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1061 @@
+@@ -0,0 +1,1069 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -31168,6 +31168,7 @@ index 0000000..99edff5
 +extern "C" int ps4_bezel_mode;      // VideoCommon/Present.cpp
 +extern "C" int ps4_zoom_letterbox;  // VideoCommon/Present.cpp
 +extern "C" int ps4_fps_limit;       // VideoCommon/Present.cpp
++extern "C" int ps4_frame_gen;       // VideoCommon/Present.cpp
 +extern "C" int ps4_auto_clock;      // DolphinNoGUI/PlatformPS4.cpp
 +extern "C" int ps4_perf_log;        // VideoCommon/Present.cpp
 +extern "C" int ps4_freeze_reports;  // DolphinNoGUI/PlatformPS4.cpp
@@ -31194,6 +31195,11 @@ index 0000000..99edff5
 +    {"resolution", "Internal Resolution", "Video",
 +     {{"1", "Native (480p)"}, {"2", "2x (720p)"}, {"3", "3x (1080p)"}}, "1", true,
 +     "Sharper pictures at higher settings; costs GPU time."},
++    {"frame_gen", "Frame Generation", "Video", {{"off", "Off"}, {"on", "On (experimental)"}}, "off",
++     true,
++     "Games running at 30 FPS are shown at 60: a picture is made between each two of the game's "
++     "own from their motion. Only smoother, not faster - a slow game stays slow. Adds 1/60 s of "
++     "delay; text and fast edges can smear."},
 +    {"upscaling", "Upscaling", "Video", {{"bilinear", "Bilinear"}, {"fsr", "FSR 1"}}, "bilinear",
 +     true,
 +     "How the picture is enlarged to the TV. FSR 1 (AMD FidelityFX Super Resolution): sharp "
@@ -31858,6 +31864,8 @@ index 0000000..99edff5
 +    Config::SetBase(Config::GFX_CROP_TO_ASPECT_RATIO, on);
 +  else if (key == "resolution")
 +    Config::SetBase(Config::GFX_EFB_SCALE, std::clamp(std::atoi(value.c_str()), 1, 4));
++  else if (key == "frame_gen")
++    ps4_frame_gen = on ? 1 : 0;
 +  else if (key == "upscaling")
 +    Config::SetBase(Config::GFX_ENHANCE_POST_SHADER, value == "fsr" ? "FSR1" : "");
 +  else if (key == "fps_limit")
@@ -48477,6 +48485,19 @@ index 180bc86..e55ccfc 100644
          float num_xfb_lines = 1.0f + bpmem.copyTexSrcWH.y * yScale;
  
          u32 height = static_cast<u32>(num_xfb_lines);
+diff --git a/Source/Core/VideoCommon/CMakeLists.txt b/Source/Core/VideoCommon/CMakeLists.txt
+index 69a0968..64b0b75 100644
+--- a/Source/Core/VideoCommon/CMakeLists.txt
++++ b/Source/Core/VideoCommon/CMakeLists.txt
+@@ -145,6 +145,8 @@ add_library(videocommon
+   PostProcessing.cpp
+   PostProcessing.h
+   Present.cpp
++  PS4FrameGen.cpp
++  PS4FrameGen.h
+   Present.h
+   RenderState.cpp
+   RenderState.h
 diff --git a/Source/Core/VideoCommon/CommandProcessor.cpp b/Source/Core/VideoCommon/CommandProcessor.cpp
 index 1dbf466..37270a2 100644
 --- a/Source/Core/VideoCommon/CommandProcessor.cpp
@@ -49665,13 +49686,14 @@ index 92f7c1f..3378a49 100644
      m_default_pixel_shader = g_gfx->CreateShaderFromSource(
          ShaderStage::Pixel, GetHeader(false) + default_pixel_shader_code + GetFooter(), nullptr,
 diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
-index 41d05f3..f43eba8 100644
+index 41d05f3..b3143ad 100644
 --- a/Source/Core/VideoCommon/Present.cpp
 +++ b/Source/Core/VideoCommon/Present.cpp
-@@ -2,7 +2,15 @@
+@@ -2,7 +2,16 @@
  // SPDX-License-Identifier: GPL-2.0-or-later
  
  #include "VideoCommon/Present.h"
++#include "VideoCommon/PS4FrameGen.h"
 +#include "VideoCommon/AbstractStagingTexture.h"
 +#include <thread>
 +#include <mutex>
@@ -49684,7 +49706,7 @@ index 41d05f3..f43eba8 100644
  #include "Common/ChunkFile.h"
  #include "Core/Config/GraphicsSettings.h"
  #include "Core/Config/MainSettings.h"
-@@ -10,11 +18,26 @@
+@@ -10,11 +19,26 @@
  #include "Core/HW/VideoInterface.h"
  #include "Core/Host.h"
  #include "Core/System.h"
@@ -49711,7 +49733,7 @@ index 41d05f3..f43eba8 100644
  #include "VideoCommon/FrameDumper.h"
  #include "VideoCommon/FramebufferManager.h"
  #include "VideoCommon/OnScreenUI.h"
-@@ -124,9 +147,16 @@ bool Presenter::Initialize()
+@@ -124,9 +148,16 @@ bool Presenter::Initialize()
      if (!m_post_processor->Initialize(m_backbuffer_format))
        return false;
  
@@ -49731,7 +49753,7 @@ index 41d05f3..f43eba8 100644
  
      // Draw a blank frame (and complete OnScreenUI initialization)
      g_gfx->BindBackbuffer({{0.0f, 0.0f, 0.0f, 1.0f}});
-@@ -136,8 +166,17 @@ bool Presenter::Initialize()
+@@ -136,8 +167,17 @@ bool Presenter::Initialize()
    return true;
  }
  
@@ -49749,7 +49771,7 @@ index 41d05f3..f43eba8 100644
    ReleaseXFBContentLock();
    u64 old_xfb_id = m_last_xfb_id;
  
-@@ -165,10 +204,73 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
+@@ -165,10 +205,86 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
    return old_xfb_id == m_last_xfb_id;
  }
  
@@ -49758,6 +49780,12 @@ index 41d05f3..f43eba8 100644
 +// 1/limit after the last shown one are not presented (0 = no limit).
 +extern "C" int ps4_fps_limit;
 +int ps4_fps_limit = 0;  // -1: Auto (60/30)
++// Menu setting frame_gen (DolphinNoGUI/PS4Settings.cpp; VideoCommon/PS4FrameGen.h): every video
++// interrupt is presented, and a game showing a new picture every other one gets in-between ones.
++extern "C" int ps4_frame_gen;
++int ps4_frame_gen = 0;
++static u64 s_fg_vi = 0, s_fg_last_new = 0;
++static int s_fg_interval = 0;  // video interrupts between the last two new pictures
 +extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
 +#endif
 +
@@ -49766,7 +49794,14 @@ index 41d05f3..f43eba8 100644
  {
    bool is_duplicate = FetchXFB(xfb_addr, fb_width, fb_stride, fb_height, ticks);
 +#ifdef __ORBIS__
-+  if (ps4_fps_limit != 0)
++  s_fg_vi++;
++  if (!is_duplicate)
++  {
++    s_fg_interval = static_cast<int>(s_fg_vi - s_fg_last_new);
++    s_fg_last_new = s_fg_vi;
++  }
++  // Frame generation shows a picture at every interrupt: no frame rate limit then.
++  if (ps4_fps_limit != 0 && !ps4_frame_gen)
 +  {
 +    const auto now = Clock::now();
 +    int limit = ps4_fps_limit;
@@ -49823,7 +49858,20 @@ index 41d05f3..f43eba8 100644
  
    PresentInfo present_info{
        .present_count = m_present_count++,
-@@ -431,8 +533,23 @@ Presenter::ConvertStereoRectangle(const MathUtil::Rectangle<int>& rc) const
+@@ -212,7 +328,11 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
+ 
+   video_events.before_present_event.Trigger(present_info);
+ 
+-  if (!is_duplicate || !g_ActiveConfig.bSkipPresentingDuplicateXFBs)
++  bool present = !is_duplicate || !g_ActiveConfig.bSkipPresentingDuplicateXFBs;
++#ifdef __ORBIS__
++  present |= ps4_frame_gen != 0;  // the interrupt after an in-between picture shows the real one
++#endif
++  if (present)
+   {
+     Present(&present_info);
+     ProcessFrameDumping(ticks);
+@@ -431,8 +551,23 @@ Presenter::ConvertStereoRectangle(const MathUtil::Rectangle<int>& rc) const
    return std::make_tuple(left_rc, right_rc);
  }
  
@@ -49847,7 +49895,7 @@ index 41d05f3..f43eba8 100644
    if (!g_ActiveConfig.bCropCustom)
      return MathUtil::Rectangle<int>(0, 0, 0, 0);
  
-@@ -464,7 +581,11 @@ MathUtil::Rectangle<int> Presenter::AdjustForCustomCrop(const MathUtil::Rectangl
+@@ -464,7 +599,11 @@ MathUtil::Rectangle<int> Presenter::AdjustForCustomCrop(const MathUtil::Rectangl
  
  float Presenter::AdjustAspectRatioForCustomCrop(float input_aspect_ratio) const
  {
@@ -49859,7 +49907,7 @@ index 41d05f3..f43eba8 100644
      return input_aspect_ratio;
  
    const MathUtil::Rectangle<int> rect = m_xfb_rect;
-@@ -903,9 +1024,306 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
+@@ -903,9 +1042,306 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
    }
  }
  
@@ -50166,7 +50214,7 @@ index 41d05f3..f43eba8 100644
  
    if (g_gfx->IsHeadless() || (!m_onscreen_ui && !m_xfb_entry))
      return;
-@@ -934,7 +1352,177 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -934,7 +1370,197 @@ void Presenter::Present(PresentInfo* present_info)
    UpdateDrawRectangle();
  
    g_gfx->BeginUtilityDrawing();
@@ -50319,6 +50367,26 @@ index 41d05f3..f43eba8 100644
 +      }
 +    }
 +  }
++  // Frame generation: the in-between picture, or the real one held back by an interrupt.
++  const AbstractTexture* fg_texture = nullptr;
++  MathUtil::Rectangle<int> fg_rect;
++  static bool s_fg_active = false;  // its textures exist (freed when the setting goes off)
++  if (ps4_frame_gen)
++    s_fg_active = true;
++  if (ps4_frame_gen && m_xfb_entry && present_info &&
++      (present_info->reason == PresentInfo::PresentReason::VideoInterface ||
++       present_info->reason == PresentInfo::PresentReason::VideoInterfaceDuplicate))
++  {
++    fg_texture = PS4FrameGen::Process(
++        m_xfb_entry->texture.get(), AdjustForCustomCrop(m_xfb_rect),
++        present_info->reason == PresentInfo::PresentReason::VideoInterface, s_fg_interval,
++        &fg_rect);
++  }
++  else if (!ps4_frame_gen && s_fg_active)
++  {
++    PS4FrameGen::Release();
++    s_fg_active = false;
++  }
 +  // Port diagnostics are done: black around the game image, as on other platforms.
    const bool backbuffer_bound = g_gfx->BindBackbuffer({{0.0f, 0.0f, 0.0f, 1.0f}});
 +  if (backbuffer_bound && bezel_texture)
@@ -50344,9 +50412,24 @@ index 41d05f3..f43eba8 100644
  
    // Render the XFB to the screen.
    if (backbuffer_bound && m_xfb_entry)
-@@ -945,7 +1533,52 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -944,8 +1570,67 @@ void Presenter::Present(PresentInfo* present_info)
+     MathUtil::Rectangle<int> render_source_rc = AdjustForCustomCrop(m_xfb_rect);
      AdjustRectanglesToFitBounds(&render_target_rc, &render_source_rc, m_backbuffer_width,
                                  m_backbuffer_height);
++#ifdef __ORBIS__
++    if (fg_texture)
++    {
++      // The frame generation picture holds the crop at (0, 0).
++      const MathUtil::Rectangle<int> crop = AdjustForCustomCrop(m_xfb_rect);
++      MathUtil::Rectangle<int> source = render_source_rc;
++      source.left -= crop.left;
++      source.right -= crop.left;
++      source.top -= crop.top;
++      source.bottom -= crop.top;
++      RenderXFBToScreen(render_target_rc, fg_texture, source);
++    }
++    else
++#endif
      RenderXFBToScreen(render_target_rc, m_xfb_entry->texture.get(), render_source_rc);
 +#ifdef __ORBIS__
 +    // Port diagnostics: where does the picture turn black? Game frame (EFB), its copy (XFB),
@@ -54040,3 +54123,463 @@ index 0000000..3317422
 +void VerifyBeginFromJit(JitPS4* jit, u32 pc);
 +void VerifyExitFromJit(JitPS4* jit, u32 destination);
 +}  // namespace PS4Jit
+diff --git a/Source/Core/VideoCommon/PS4FrameGen.cpp b/Source/Core/VideoCommon/PS4FrameGen.cpp
+new file mode 100644
+index 0000000..77ee1ba
+--- /dev/null
++++ b/Source/Core/VideoCommon/PS4FrameGen.cpp
+@@ -0,0 +1,417 @@
++// Copyright 2026 Dolphin for PS4
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "VideoCommon/PS4FrameGen.h"
++
++#include <algorithm>
++#include <array>
++#include <initializer_list>
++#include <cmath>
++#include <cstdio>
++#include <memory>
++#include <string>
++
++#include "Common/CommonTypes.h"
++#include "VideoCommon/AbstractFramebuffer.h"
++#include "VideoCommon/AbstractGfx.h"
++#include "VideoCommon/AbstractPipeline.h"
++#include "VideoCommon/AbstractShader.h"
++#include "VideoCommon/AbstractTexture.h"
++#include "VideoCommon/RenderState.h"
++#include "VideoCommon/ShaderCache.h"
++#include "VideoCommon/VertexManagerBase.h"
++#include "VideoCommon/VideoConfig.h"
++
++extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
++
++namespace PS4FrameGen
++{
++namespace
++{
++// The pyramid's smaller levels and the motion grid have fixed sizes (at any internal
++// resolution); motion is kept in texture coordinates. Tuning as checked on the captures.
++constexpr int LEVEL1_WIDTH = 320, LEVEL2_WIDTH = 160, GRID_WIDTH = 80;
++constexpr float BASE_WIDTH = 640.0f;  // "pixels" for the penalties and the finest step
++
++struct Target
++{
++  std::unique_ptr<AbstractTexture> texture;
++  std::unique_ptr<AbstractFramebuffer> framebuffer;
++};
++
++struct Uniforms
++{
++  float a[4];
++  float b[4];
++  float c[4];
++  float d[4];
++};
++
++struct State
++{
++  int w0 = 0, h0 = 0, w1 = 0, h1 = 0, w2 = 0, h2 = 0, gw = 0, gh = 0;
++  std::array<std::array<Target, 3>, 2> pyramid;  // [picture][level]: 0 full, 1 320, 2 160 wide
++  int current = 0;
++  bool have_previous = false;
++  bool pending_real = false;
++  std::array<Target, 3> motion;  // per pyramid level, all GRID_WIDTH wide
++  Target middle;
++  std::unique_ptr<AbstractShader> ps_copy, ps_wide, ps_refine, ps_finest, ps_middle;
++  std::unique_ptr<AbstractPipeline> copy, wide, refine, finest, middle_pipeline;
++  bool failed = false;
++  bool reported = false;
++};
++State s;
++
++std::string Header()
++{
++  std::string h = "UBO_BINDING(std140, 1) uniform PSBlock {\n"
++                  "  float4 u_a;\n  float4 u_b;\n  float4 u_c;\n  float4 u_d;\n};\n"
++                  "SAMPLER_BINDING(0) uniform sampler2DArray samp0;\n"
++                  "SAMPLER_BINDING(1) uniform sampler2DArray samp1;\n"
++                  "SAMPLER_BINDING(2) uniform sampler2DArray samp2;\n";
++  h += g_backend_info.bSupportsGeometryShaders ?
++           "VARYING_LOCATION(0) in VertexData {\n  float3 v_tex0;\n};\n" :
++           "VARYING_LOCATION(0) in float3 v_tex0;\n";
++  h += "FRAGMENT_OUTPUT_LOCATION(0) out float4 ocol0;\n"
++       "float3 P(float2 uv) { return texture(samp0, float3(clamp(uv, 0.0, 1.0), 0.0)).rgb; }\n"
++       "float3 C(float2 uv) { return texture(samp1, float3(clamp(uv, 0.0, 1.0), 0.0)).rgb; }\n"
++       // Colour SAD over a 4x4 grid of taps spread over the block (half its size each way),
++       // the older picture at c - v/2 and the newer at c + v/2; in levels of 255 per tap.
++       "float Cost(float2 c, float2 v, float2 hs) {\n"
++       "  float t = 0.0;\n"
++       "  for (int iy = 0; iy < 4; iy++) {\n"
++       "    for (int ix = 0; ix < 4; ix++) {\n"
++       "      float2 o = (float2(float(ix), float(iy)) * 0.5 - 0.75) * hs;\n"
++       "      float3 d = abs(P(c + o - v * 0.5) - C(c + o + v * 0.5));\n"
++       "      t += d.r + d.g + d.b;\n"
++       "    }\n"
++       "  }\n"
++       "  return t * (255.0 / 48.0);\n"
++       "}\n"
++       // The coarser level's motion around a grid cell: its own and the 3x3 median.
++       "float Median9(float v[9]) {\n"
++       "  for (int i = 0; i < 9; i++) {\n"
++       "    for (int j = i + 1; j < 9; j++) {\n"
++       "      float lo = min(v[i], v[j]);\n"
++       "      v[j] = max(v[i], v[j]);\n"
++       "      v[i] = lo;\n"
++       "    }\n"
++       "  }\n"
++       "  return v[4];\n"
++       "}\n";
++  return h;
++}
++
++// u_a: (grid w, grid h, step x, step y) in texture coordinates; u_b: (block half x, y, penalty
++// per base pixel, zero margin); u_c: (base pixels per texture coordinate x, y).
++const char* WIDE = R"(
++void main() {
++  float2 grid = u_a.xy;
++  float2 c = (floor(v_tex0.xy * grid) + 0.5) / grid;
++  float best = 1e9;
++  float2 bv = float2(0.0, 0.0);
++  for (int dy = -10; dy <= 10; dy++) {
++    for (int dx = -10; dx <= 10; dx++) {
++      float2 v = float2(float(dx), float(dy)) * u_a.zw;
++      float k = Cost(c, v, u_b.xy);
++      if (k < best) { best = k; bv = v; }
++    }
++  }
++  ocol0 = float4(bv, best, 1.0);
++}
++)";
++
++// Refine around the coarser level's motion (samp2), +-RADIUS steps, keeping close to the
++// neighbours' median; the finest level also keeps no motion where it is nearly as good.
++std::string Refine(int radius, bool finest)
++{
++  std::string code = R"(
++void main() {
++  float2 grid = u_a.xy;
++  int2 g = int2(floor(v_tex0.xy * grid));
++  float2 c = (float2(g) + 0.5) / grid;
++  float vx[9];
++  float vy[9];
++  int n = 0;
++  for (int oy = -1; oy <= 1; oy++) {
++    for (int ox = -1; ox <= 1; ox++) {
++      int2 q = clamp(g + int2(ox, oy), int2(0, 0), int2(grid) - 1);
++      float2 m = texelFetch(samp2, int3(q, 0), 0).xy;
++      vx[n] = m.x;
++      vy[n] = m.y;
++      n++;
++    }
++  }
++  float2 v0 = float2(vx[4], vy[4]);
++  float2 med = float2(Median9(vx), Median9(vy));
++  float best = 1e9;
++  float2 bv = v0;
++  for (int dy = -RADIUS; dy <= RADIUS; dy++) {
++    for (int dx = -RADIUS; dx <= RADIUS; dx++) {
++      float2 v = v0 + float2(float(dx), float(dy)) * u_a.zw;
++      float2 off = abs(v - med) * u_c.xy;
++      float k = Cost(c, v, u_b.xy) + u_b.z * (off.x + off.y);
++      if (k < best) { best = k; bv = v; }
++    }
++  }
++)";
++  if (finest)
++  {
++    code += R"(
++  float zero = Cost(c, float2(0.0, 0.0), u_b.xy);
++  if (zero - best < u_b.w) { bv = float2(0.0, 0.0); best = zero; }
++)";
++  }
++  code += R"(
++  ocol0 = float4(bv, best, 1.0);
++}
++)";
++  const std::string key = "RADIUS";
++  for (size_t at = code.find(key); at != std::string::npos; at = code.find(key))
++    code.replace(at, key.size(), std::to_string(radius));
++  return code;
++}
++
++// The in-between picture: the 4 nearest blocks' motions and no motion, weighted by distance and
++// by how well the two pictures agree along each.
++const char* MIDDLE = R"(
++void main() {
++  float2 grid = u_a.xy;
++  float2 uv = v_tex0.xy;
++  float2 gf = uv * grid - 0.5;
++  int2 g0 = int2(floor(gf));
++  float3 acc = float3(0.0, 0.0, 0.0);
++  float wsum = 0.0;
++  for (int ky = 0; ky <= 1; ky++) {
++    for (int kx = 0; kx <= 1; kx++) {
++      int2 q = g0 + int2(kx, ky);
++      float2 wd2 = clamp(1.0 - abs(gf - float2(q)), 0.0, 1.0);
++      q = clamp(q, int2(0, 0), int2(grid) - 1);
++      float2 v = texelFetch(samp2, int3(q, 0), 0).xy;
++      float3 a = P(uv - v * 0.5);
++      float3 b = C(uv + v * 0.5);
++      float3 d = abs(a - b);
++      float e = (d.r + d.g + d.b) * (255.0 / 3.0);
++      float w = wd2.x * wd2.y * exp(-e / 10.0) + 1e-6;
++      acc += w * (a + b) * 0.5;
++      wsum += w;
++    }
++  }
++  float3 a = P(uv);
++  float3 b = C(uv);
++  float3 d = abs(a - b);
++  float w = 0.25 * exp(-(d.r + d.g + d.b) * (255.0 / 3.0) / 10.0) + 1e-6;
++  acc += w * (a + b) * 0.5;
++  wsum += w;
++  ocol0 = float4(acc / wsum, 1.0);
++}
++)";
++
++// A picture copied (and scaled): u_a = source rectangle (offset, size) in texture coordinates.
++const char* COPY = R"(
++void main() {
++  ocol0 = float4(texture(samp0, float3(u_a.xy + v_tex0.xy * u_a.zw, 0.0)).rgb, 1.0);
++}
++)";
++
++std::unique_ptr<AbstractPipeline> MakePipeline(const AbstractShader* ps, AbstractTextureFormat format)
++{
++  if (!ps)
++    return nullptr;
++  AbstractPipelineConfig config = {};
++  config.vertex_shader = g_shader_cache->GetScreenQuadVertexShader();
++  config.geometry_shader = nullptr;
++  config.pixel_shader = ps;
++  config.rasterization_state = RenderState::GetNoCullRasterizationState(PrimitiveType::Triangles);
++  config.depth_state = RenderState::GetNoDepthTestingDepthState();
++  config.blending_state = RenderState::GetNoBlendingBlendState();
++  config.framebuffer_state = RenderState::GetColorFramebufferState(format);
++  config.usage = AbstractPipelineUsage::Utility;
++  return g_gfx->CreatePipeline(config);
++}
++
++bool EnsurePipelines()
++{
++  if (s.copy && s.wide && s.refine && s.finest && s.middle_pipeline)
++    return true;
++  const std::string header = Header();
++  const auto shader = [&](const std::string& body, const char* name) {
++    return g_gfx->CreateShaderFromSource(ShaderStage::Pixel, header + body, nullptr, name);
++  };
++  s.ps_copy = shader(COPY, "PS4 frame gen copy");
++  s.ps_wide = shader(WIDE, "PS4 frame gen motion (wide)");
++  s.ps_refine = shader(Refine(2, false), "PS4 frame gen motion (refine)");
++  s.ps_finest = shader(Refine(1, true), "PS4 frame gen motion (finest)");
++  s.ps_middle = shader(MIDDLE, "PS4 frame gen middle");
++  s.copy = MakePipeline(s.ps_copy.get(), AbstractTextureFormat::RGBA8);
++  s.wide = MakePipeline(s.ps_wide.get(), AbstractTextureFormat::RGBA16F);
++  s.refine = MakePipeline(s.ps_refine.get(), AbstractTextureFormat::RGBA16F);
++  s.finest = MakePipeline(s.ps_finest.get(), AbstractTextureFormat::RGBA16F);
++  s.middle_pipeline = MakePipeline(s.ps_middle.get(), AbstractTextureFormat::RGBA8);
++  return s.copy && s.wide && s.refine && s.finest && s.middle_pipeline;
++}
++
++bool MakeTarget(Target* t, int w, int h, AbstractTextureFormat format, const char* name)
++{
++  const TextureConfig config(static_cast<u32>(w), static_cast<u32>(h), 1, 1, 1, format,
++                             AbstractTextureFlag_RenderTarget, AbstractTextureType::Texture_2DArray);
++  t->framebuffer.reset();
++  t->texture = g_gfx->CreateTexture(config, name);
++  if (t->texture)
++    t->framebuffer = g_gfx->CreateFramebuffer(t->texture.get(), nullptr);
++  return t->framebuffer != nullptr;
++}
++
++bool Allocate(int w0, int h0)
++{
++  s.w0 = w0;
++  s.h0 = h0;
++  s.w1 = LEVEL1_WIDTH;
++  s.h1 = std::max(1, static_cast<int>(std::lround(double(LEVEL1_WIDTH) * h0 / w0)));
++  s.w2 = LEVEL2_WIDTH;
++  s.h2 = std::max(1, static_cast<int>(std::lround(double(LEVEL2_WIDTH) * h0 / w0)));
++  s.gw = GRID_WIDTH;
++  s.gh = std::max(1, static_cast<int>(std::lround(double(GRID_WIDTH) * h0 / w0)));
++  bool ok = true;
++  for (auto& picture : s.pyramid)
++  {
++    ok &= MakeTarget(&picture[0], s.w0, s.h0, AbstractTextureFormat::RGBA8, "PS4 frame gen picture");
++    ok &= MakeTarget(&picture[1], s.w1, s.h1, AbstractTextureFormat::RGBA8, "PS4 frame gen 1/2");
++    ok &= MakeTarget(&picture[2], s.w2, s.h2, AbstractTextureFormat::RGBA8, "PS4 frame gen 1/4");
++  }
++  for (auto& m : s.motion)
++    ok &= MakeTarget(&m, s.gw, s.gh, AbstractTextureFormat::RGBA16F, "PS4 frame gen motion");
++  ok &= MakeTarget(&s.middle, s.w0, s.h0, AbstractTextureFormat::RGBA8, "PS4 frame gen middle");
++  return ok;
++}
++
++void Pass(Target& out, AbstractPipeline* pipeline, std::initializer_list<const AbstractTexture*> in,
++          bool linear, const Uniforms& u)
++{
++  g_gfx->SetFramebuffer(out.framebuffer.get());
++  g_gfx->SetViewportAndScissor(out.framebuffer->GetRect());
++  g_gfx->SetPipeline(pipeline);
++  u32 index = 0;
++  for (const AbstractTexture* texture : in)
++  {
++    g_gfx->SetTexture(index, texture);
++    // The motion fields are read texel by texel; the pictures are sampled between pixels.
++    g_gfx->SetSamplerState(index, (linear && index < 2) ? RenderState::GetLinearSamplerState() :
++                                                          RenderState::GetPointSamplerState());
++    index++;
++  }
++  g_vertex_manager->UploadUtilityUniforms(&u, sizeof(u));
++  g_gfx->Draw(0, 3);
++  out.texture->FinishedRendering();
++}
++}  // namespace
++
++const AbstractTexture* Process(const AbstractTexture* xfb, const MathUtil::Rectangle<int>& crop,
++                               bool new_picture, int interval, MathUtil::Rectangle<int>* out_rect)
++{
++  if (s.failed || !xfb || crop.GetWidth() <= 0 || crop.GetHeight() <= 0)
++    return nullptr;
++  if (!EnsurePipelines())
++  {
++    s.failed = true;
++    ps4_boot_trace("frame gen: shaders could not be made - off");
++    return nullptr;
++  }
++  if (crop.GetWidth() != s.w0 || crop.GetHeight() != s.h0)
++  {
++    if (!Allocate(crop.GetWidth(), crop.GetHeight()))
++    {
++      s.failed = true;
++      ps4_boot_trace("frame gen: textures could not be made - off");
++      return nullptr;
++    }
++    s.have_previous = false;
++    s.pending_real = false;
++    char line[160];
++    snprintf(line, sizeof(line), "frame gen: pictures %dx%d, motion grid %dx%d", s.w0, s.h0,
++             s.gw, s.gh);
++    ps4_boot_trace(line);
++  }
++  *out_rect = MathUtil::Rectangle<int>(0, 0, s.w0, s.h0);
++
++  if (!new_picture)
++  {
++    // The interrupt after an in-between picture: the new picture itself.
++    if (!s.pending_real)
++      return nullptr;
++    s.pending_real = false;
++    return s.pyramid[s.current][0].texture.get();
++  }
++
++  s.current ^= 1;
++  auto& now = s.pyramid[s.current];
++  const float tw = static_cast<float>(xfb->GetWidth()), th = static_cast<float>(xfb->GetHeight());
++  Uniforms u{};
++  u.a[0] = crop.left / tw;
++  u.a[1] = crop.top / th;
++  u.a[2] = crop.GetWidth() / tw;
++  u.a[3] = crop.GetHeight() / th;
++  Pass(now[0], s.copy.get(), {xfb}, true, u);
++  u.a[0] = u.a[1] = 0.0f;
++  u.a[2] = u.a[3] = 1.0f;
++  Pass(now[1], s.copy.get(), {now[0].texture.get()}, true, u);
++  Pass(now[2], s.copy.get(), {now[1].texture.get()}, true, u);
++
++  const bool interpolate = s.have_previous && interval == 2;
++  s.have_previous = true;
++  s.pending_real = false;
++  if (!interpolate)
++    return nullptr;
++
++  auto& before = s.pyramid[s.current ^ 1];
++  const float gw = static_cast<float>(s.gw), gh = static_cast<float>(s.gh);
++  const float base_h = BASE_WIDTH * s.h0 / s.w0;
++  // Coarse: +-10 steps of a 160-wide pixel; taps over 4 such pixels each way.
++  u = {};
++  u.a[0] = gw;
++  u.a[1] = gh;
++  u.a[2] = 1.0f / s.w2;
++  u.a[3] = 1.0f / s.h2;
++  u.b[0] = 4.0f / s.w2;
++  u.b[1] = 4.0f / s.h2;
++  Pass(s.motion[2], s.wide.get(), {before[2].texture.get(), now[2].texture.get()}, true, u);
++  // Refine: +-2 steps of a 320-wide pixel, penalty 0.075 a base pixel from the median.
++  u.a[2] = 1.0f / s.w1;
++  u.a[3] = 1.0f / s.h1;
++  u.b[0] = 4.0f / s.w1;
++  u.b[1] = 4.0f / s.h1;
++  u.b[2] = 0.075f;
++  u.c[0] = BASE_WIDTH;
++  u.c[1] = base_h;
++  Pass(s.motion[1], s.refine.get(),
++       {before[1].texture.get(), now[1].texture.get(), s.motion[2].texture.get()}, true, u);
++  // Finest: +-1 base pixel, penalty 0.15, no motion unless 2 levels better.
++  u.a[2] = 1.0f / BASE_WIDTH;
++  u.a[3] = 1.0f / base_h;
++  u.b[0] = 4.0f / BASE_WIDTH;
++  u.b[1] = 4.0f / base_h;
++  u.b[2] = 0.15f;
++  u.b[3] = 2.0f;
++  Pass(s.motion[0], s.finest.get(),
++       {before[0].texture.get(), now[0].texture.get(), s.motion[1].texture.get()}, true, u);
++  // The in-between picture.
++  u = {};
++  u.a[0] = gw;
++  u.a[1] = gh;
++  Pass(s.middle, s.middle_pipeline.get(),
++       {before[0].texture.get(), now[0].texture.get(), s.motion[0].texture.get()}, true, u);
++  s.pending_real = true;
++  if (!s.reported)
++  {
++    s.reported = true;
++    ps4_boot_trace("frame gen: first in-between picture shown");
++  }
++  return s.middle.texture.get();
++}
++
++void Release()
++{
++  s = State{};
++}
++}  // namespace PS4FrameGen
+diff --git a/Source/Core/VideoCommon/PS4FrameGen.h b/Source/Core/VideoCommon/PS4FrameGen.h
+new file mode 100644
+index 0000000..4b7f77d
+--- /dev/null
++++ b/Source/Core/VideoCommon/PS4FrameGen.h
+@@ -0,0 +1,31 @@
++// Copyright 2026 Dolphin for PS4
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "Common/MathUtil.h"
++
++class AbstractTexture;
++
++// Frame generation (setting frame_gen, Settings -> Video): a game that shows a new picture every
++// other video interrupt (30 FPS) gets a picture between each two of its own, so it is shown at
++// 60. From the pictures alone - the game gives no motion vectors: motion is found by block
++// matching on the in-between picture's grid (symmetric: the older picture at p - v/2 and the
++// newer at p + v/2), coarse to fine over a 3-level pyramid (160, 320 wide, full size), matched
++// on colour, with a penalty for disagreeing with the neighbours; then each pixel blends the 4
++// nearest blocks' motions and no motion, weighted by distance and match. Checked on PS4 captures
++// (Mario Kart Wii, Sonic the Fighters) against the real in-between frames before it was written.
++//
++// Presenter::ViSwap presents every video interrupt while it is on; Present calls Process with the
++// XFB before the backbuffer is bound: on a new picture (two interrupts after the last) the result
++// is the picture between the last one and it, on the interrupt after, the new picture itself -
++// one interrupt (1/60 s) later than without frame generation.
++namespace PS4FrameGen
++{
++// The picture to show instead of the XFB's `crop` (in the returned texture: `out_rect`), or
++// nullptr to show the XFB as usual. `interval`: video interrupts since the previous new picture.
++const AbstractTexture* Process(const AbstractTexture* xfb, const MathUtil::Rectangle<int>& crop,
++                               bool new_picture, int interval, MathUtil::Rectangle<int>* out_rect);
++// Textures and pipelines freed (the setting turned off, the renderer going away).
++void Release();
++}  // namespace PS4FrameGen
