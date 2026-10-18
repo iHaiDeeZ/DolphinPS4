@@ -49686,7 +49686,7 @@ index 92f7c1f..3378a49 100644
      m_default_pixel_shader = g_gfx->CreateShaderFromSource(
          ShaderStage::Pixel, GetHeader(false) + default_pixel_shader_code + GetFooter(), nullptr,
 diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
-index 41d05f3..b3143ad 100644
+index 41d05f3..667610f 100644
 --- a/Source/Core/VideoCommon/Present.cpp
 +++ b/Source/Core/VideoCommon/Present.cpp
 @@ -2,7 +2,16 @@
@@ -49771,7 +49771,7 @@ index 41d05f3..b3143ad 100644
    ReleaseXFBContentLock();
    u64 old_xfb_id = m_last_xfb_id;
  
-@@ -165,10 +205,86 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
+@@ -165,10 +205,88 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
    return old_xfb_id == m_last_xfb_id;
  }
  
@@ -49786,6 +49786,8 @@ index 41d05f3..b3143ad 100644
 +int ps4_frame_gen = 0;
 +static u64 s_fg_vi = 0, s_fg_last_new = 0;
 +static int s_fg_interval = 0;  // video interrupts between the last two new pictures
++static double s_fg_ms = 0;  // time in PS4FrameGen::Process this window
++extern "C" void ps4_dump_thread_stacks(const char* path, const char* reason);  // port/ps4_sampler.cpp
 +extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
 +#endif
 +
@@ -49858,7 +49860,7 @@ index 41d05f3..b3143ad 100644
  
    PresentInfo present_info{
        .present_count = m_present_count++,
-@@ -212,7 +328,11 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
+@@ -212,7 +330,11 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
  
    video_events.before_present_event.Trigger(present_info);
  
@@ -49871,7 +49873,7 @@ index 41d05f3..b3143ad 100644
    {
      Present(&present_info);
      ProcessFrameDumping(ticks);
-@@ -431,8 +551,23 @@ Presenter::ConvertStereoRectangle(const MathUtil::Rectangle<int>& rc) const
+@@ -431,8 +553,23 @@ Presenter::ConvertStereoRectangle(const MathUtil::Rectangle<int>& rc) const
    return std::make_tuple(left_rc, right_rc);
  }
  
@@ -49895,7 +49897,7 @@ index 41d05f3..b3143ad 100644
    if (!g_ActiveConfig.bCropCustom)
      return MathUtil::Rectangle<int>(0, 0, 0, 0);
  
-@@ -464,7 +599,11 @@ MathUtil::Rectangle<int> Presenter::AdjustForCustomCrop(const MathUtil::Rectangl
+@@ -464,7 +601,11 @@ MathUtil::Rectangle<int> Presenter::AdjustForCustomCrop(const MathUtil::Rectangl
  
  float Presenter::AdjustAspectRatioForCustomCrop(float input_aspect_ratio) const
  {
@@ -49907,7 +49909,7 @@ index 41d05f3..b3143ad 100644
      return input_aspect_ratio;
  
    const MathUtil::Rectangle<int> rect = m_xfb_rect;
-@@ -903,9 +1042,306 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
+@@ -903,9 +1044,306 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
    }
  }
  
@@ -50214,7 +50216,7 @@ index 41d05f3..b3143ad 100644
  
    if (g_gfx->IsHeadless() || (!m_onscreen_ui && !m_xfb_entry))
      return;
-@@ -934,7 +1370,197 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -934,7 +1372,235 @@ void Presenter::Present(PresentInfo* present_info)
    UpdateDrawRectangle();
  
    g_gfx->BeginUtilityDrawing();
@@ -50370,6 +50372,42 @@ index 41d05f3..b3143ad 100644
 +  // Frame generation: the in-between picture, or the real one held back by an interrupt.
 +  const AbstractTexture* fg_texture = nullptr;
 +  MathUtil::Rectangle<int> fg_rect;
++  // Frame generation diagnostics: presents (new / repeat) and the time in Process, every 10 s.
++  {
++    static auto s_fg_window = std::chrono::steady_clock::now();
++    static auto s_fg_on_since = std::chrono::steady_clock::time_point{};
++    static bool s_fg_dumped = false;
++    static u32 s_fg_new = 0, s_fg_dup = 0;
++    const auto now = std::chrono::steady_clock::now();
++    if (ps4_frame_gen)
++    {
++      if (s_fg_on_since == std::chrono::steady_clock::time_point{})
++        s_fg_on_since = now;
++      if (present_info && present_info->reason == PresentInfo::PresentReason::VideoInterface)
++        s_fg_new++;
++      else
++        s_fg_dup++;
++      (void)s_fg_dumped;
++      if (now - s_fg_window >= std::chrono::seconds(10))
++      {
++        char line[200];
++        snprintf(line, sizeof(line),
++                 "frame gen: %u new + %u repeat presents in %.1f s, interval %d, %.2f ms a present in it",
++                 s_fg_new, s_fg_dup, std::chrono::duration<double>(now - s_fg_window).count(),
++                 s_fg_interval, s_fg_ms / std::max(1u, s_fg_new + s_fg_dup));
++        ps4_boot_trace(line);
++        s_fg_window = now;
++        s_fg_new = s_fg_dup = 0;
++        s_fg_ms = 0;
++      }
++    }
++    else
++    {
++      s_fg_on_since = {};
++      s_fg_window = now;
++    }
++  }
++  const auto fg_start = std::chrono::steady_clock::now();
 +  static bool s_fg_active = false;  // its textures exist (freed when the setting goes off)
 +  if (ps4_frame_gen)
 +    s_fg_active = true;
@@ -50381,6 +50419,8 @@ index 41d05f3..b3143ad 100644
 +        m_xfb_entry->texture.get(), AdjustForCustomCrop(m_xfb_rect),
 +        present_info->reason == PresentInfo::PresentReason::VideoInterface, s_fg_interval,
 +        &fg_rect);
++    s_fg_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - fg_start)
++                   .count();
 +  }
 +  else if (!ps4_frame_gen && s_fg_active)
 +  {
@@ -50412,7 +50452,7 @@ index 41d05f3..b3143ad 100644
  
    // Render the XFB to the screen.
    if (backbuffer_bound && m_xfb_entry)
-@@ -944,8 +1570,67 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -944,8 +1610,67 @@ void Presenter::Present(PresentInfo* present_info)
      MathUtil::Rectangle<int> render_source_rc = AdjustForCustomCrop(m_xfb_rect);
      AdjustRectanglesToFitBounds(&render_target_rc, &render_source_rc, m_backbuffer_width,
                                  m_backbuffer_height);
@@ -50480,6 +50520,20 @@ index 41d05f3..b3143ad 100644
  
    if (m_onscreen_ui)
    {
+@@ -962,6 +1687,13 @@ void Presenter::Present(PresentInfo* present_info)
+     {
+       const auto present_time = GetUpdatedPresentationTime(present_info->intended_present_time);
+ 
++#ifdef __ORBIS__
++      // Frame generation presents every video interrupt: no pacing sleep then (the interrupts
++      // come at 60 Hz, the flip waits for vsync). With it, the video thread slept in the repeat
++      // presents while the CPU thread waited for it at an idle sync - The Hulk drew 0-3 new
++      // pictures every 2 s (JIT Lab v60.34-35).
++      if (!ps4_frame_gen)
++#endif
+       Core::System::GetInstance().GetCoreTiming().SleepUntil(present_time);
+ 
+       // Perhaps in the future a more accurate time can be acquired from the various backends.
 diff --git a/Source/Core/VideoCommon/Resources/CustomResourceManager.cpp b/Source/Core/VideoCommon/Resources/CustomResourceManager.cpp
 index 29e215b..9993418 100644
 --- a/Source/Core/VideoCommon/Resources/CustomResourceManager.cpp
