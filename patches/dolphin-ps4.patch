@@ -23564,7 +23564,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..f0ac19d 100644
+index 3bf40ea..9befe1d 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -23909,7 +23909,7 @@ index 3bf40ea..f0ac19d 100644
  #endif
        });
  
-@@ -270,7 +555,503 @@ int main(const int argc, char* argv[])
+@@ -270,7 +555,511 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -24136,6 +24136,14 @@ index 3bf40ea..f0ac19d 100644
 +    // jit_hot (PS4 JIT; on in the JIT Lab to measure it): the CPU thread's busiest code moved
 +    // together into a hot code area (fewer code TLB and cache misses on the Jaguar).
 +    ps4_jit_hot = Platform::GetPS4Option("jit_hot", "on") == "on";
++    // efb_cache (Settings -> Graphics): Dolphin's EFB access cache. Exact = its defaults (64-pixel
++    // tiles thrown away at every draw); Deferred keeps them until a GPU sync; Whole Frame reads the
++    // whole EFB at once (tile size 0). Before the video backend starts (the tiles are made then).
++    {
++      const std::string efb_cache = Platform::GetPS4Option("efb_cache", "exact");
++      Config::SetBase(Config::GFX_HACK_EFB_DEFER_INVALIDATION, efb_cache != "exact");
++      Config::SetBase(Config::GFX_HACK_EFB_ACCESS_TILE_SIZE, efb_cache == "frame" ? 0 : 64);
++    }
 +#ifdef __ORBIS__
 +    // Started here, on the main thread: the sampler thread takes its creator's core and
 +    // priority, and started from the CPU thread it shared the CPU thread's core - it only ran
@@ -24413,7 +24421,7 @@ index 3bf40ea..f0ac19d 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +1065,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +1073,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -24429,7 +24437,7 @@ index 3bf40ea..f0ac19d 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +1093,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +1101,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -31139,10 +31147,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..29d0f6a
+index 0000000..6310f51
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1070 @@
+@@ -0,0 +1,1077 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -31246,6 +31254,13 @@ index 0000000..29d0f6a
 +    {"efb_copies", "EFB Copies", "Graphics",
 +     {{"texture", "To Texture (fast)"}, {"ram", "To RAM (accurate)"}}, "texture", true,
 +     "Some effects need RAM copies; Texture is faster."},
++    {"efb_cache", "EFB Access Cache", "Graphics",
++     {{"exact", "Exact"}, {"deferred", "Deferred"}, {"frame", "Deferred, Whole Frame"}}, "exact",
++     false,
++     "Games that read the picture back from the GPU (Super Mario Galaxy: ~120 times a second) "
++     "wait for each read. Deferred keeps what was read until the GPU next syncs, so most reads "
++     "need no new readback; Whole Frame reads it all at once. Slightly old pixels for effects "
++     "that read what they just drew. Applies at the next game start."},
 +    {"efb_access", "CPU Access to EFB", "Graphics", {{"on", "On"}, {"off", "Off"}}, "on", true,
 +     "Needed by some games (lens flares, cursors); Off is faster."},
 +    {"manual_texture_sampling", "Manual Texture Sampling", "Graphics",
@@ -40766,10 +40781,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..38896a1
+index 0000000..11eb833
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,2179 @@
+@@ -0,0 +1,2185 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -40846,7 +40861,8 @@ index 0000000..38896a1
 +extern "C" unsigned long long ps4_scene_stats[8];       // VideoCommon/Statistics.cpp
 +extern "C" long long ps4_wait_total(int slot);            // port/ps4_sampler.cpp
 +extern "C" unsigned long long ps4_present_counter;        // VideoCommon/Present.cpp
-+extern "C" unsigned long long ps4_clock_reads;            // port/ps4_runtime.cpp
++extern "C" unsigned long long ps4_clock_reads;
++extern "C" unsigned long long ps4_efb_readbacks;  // VideoCommon/FramebufferManager.cpp            // port/ps4_runtime.cpp
 +extern "C" size_t ps4_heap_footprint();                   // port/ps4_runtime.cpp
 +extern "C" unsigned long long ps4_soft_tlb_hits, ps4_soft_tlb_misses;           // MMU.cpp
 +extern "C" unsigned long long ps4_soft_tlb_flushes, ps4_soft_tlb_sr_flushes, ps4_soft_tlb_page_inv,
@@ -41637,10 +41653,15 @@ index 0000000..38896a1
 +          s_last_reads = reads;
 +        }
 +        const size_t used2 = strlen(line);
++        static unsigned long long s_last_readbacks = 0;
++        const unsigned long long readbacks = ps4_efb_readbacks;
 +        snprintf(line + used2, sizeof(line) - used2,
 +                 ", per s: draws %llu prims %llu vertices %llu efb copies %llu peeks %llu "
-+                 "pokes %llu reg loads %llu tex uploads %llu",
-+                 rate[0], rate[1], rate[2], rate[6], rate[3], rate[4], rate[5], rate[7]);
++                 "(readbacks %llu) pokes %llu reg loads %llu tex uploads %llu",
++                 rate[0], rate[1], rate[2], rate[6], rate[3],
++                 static_cast<unsigned long long>((readbacks - s_last_readbacks) / period), rate[4],
++                 rate[5], rate[7]);
++        s_last_readbacks = readbacks;
 +      }
 +      if (ps4_perf_log)
 +      {
@@ -49170,7 +49191,7 @@ index 2afa110..1a54903 100644
    CoreTiming::EventType* m_event_sync_gpu = nullptr;
  
 diff --git a/Source/Core/VideoCommon/FramebufferManager.cpp b/Source/Core/VideoCommon/FramebufferManager.cpp
-index 6277598..f1455dc 100644
+index 6277598..f69475c 100644
 --- a/Source/Core/VideoCommon/FramebufferManager.cpp
 +++ b/Source/Core/VideoCommon/FramebufferManager.cpp
 @@ -2,6 +2,7 @@
@@ -49197,6 +49218,21 @@ index 6277598..f1455dc 100644
    // The y coordinate here assumes upper-left origin, but the readback texture is lower-left in GL.
    if (g_backend_info.bUsesLowerLeftOrigin)
      y = EFB_HEIGHT - 1 - y;
+@@ -783,8 +786,14 @@ void FramebufferManager::DestroyReadbackFramebuffer()
+   DestroyCache(m_efb_depth_cache);
+ }
+ 
++// EFB readbacks (a tile or the whole EFB copied back for CPU access), for the monitor line.
++extern "C" {
++unsigned long long ps4_efb_readbacks = 0;
++}
++
+ void FramebufferManager::PopulateEFBCache(bool depth, u32 tile_index, bool async)
+ {
++  ps4_efb_readbacks++;
+   FlushEFBPokes();
+   g_vertex_manager->OnCPUEFBAccess();
+ 
 diff --git a/Source/Core/VideoCommon/IndexGenerator.cpp b/Source/Core/VideoCommon/IndexGenerator.cpp
 index 4decd2b..245d9ea 100644
 --- a/Source/Core/VideoCommon/IndexGenerator.cpp
