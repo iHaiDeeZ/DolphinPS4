@@ -23564,7 +23564,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..08d8763 100644
+index 3bf40ea..fa66c11 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -23909,7 +23909,7 @@ index 3bf40ea..08d8763 100644
  #endif
        });
  
-@@ -270,7 +555,499 @@ int main(const int argc, char* argv[])
+@@ -270,7 +555,503 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -24241,6 +24241,10 @@ index 3bf40ea..08d8763 100644
 +    // display_buffers=2..8: VideoOut buffers in rotation; flip_async=on: the flip runs on the
 +    // Vulkan recorder thread behind the frame's submit (needs vk_thread=on).
 +    ps4_display_buffers = std::atoi(Platform::GetPS4Option("display_buffers", "3").c_str());
++    // Frame generation queues up to 3 pictures at once (two in-between ones and the real one):
++    // one buffer more, so the video thread doesn't wait for one to come off the screen.
++    if (Platform::GetPS4Option("frame_gen", "off") == "on")
++      ps4_display_buffers = std::max(ps4_display_buffers, 4);
 +    ps4_flip_async = Platform::GetPS4Option("flip_thread", "off") == "on" ? 2 :
 +                     Platform::GetPS4Option("flip_async", "off") == "on"  ? 1 :
 +                                                                             0;
@@ -24409,7 +24413,7 @@ index 3bf40ea..08d8763 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +1061,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +1065,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -24425,7 +24429,7 @@ index 3bf40ea..08d8763 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +1089,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +1093,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -49686,7 +49690,7 @@ index 92f7c1f..3378a49 100644
      m_default_pixel_shader = g_gfx->CreateShaderFromSource(
          ShaderStage::Pixel, GetHeader(false) + default_pixel_shader_code + GetFooter(), nullptr,
 diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
-index 41d05f3..f06689b 100644
+index 41d05f3..708fa80 100644
 --- a/Source/Core/VideoCommon/Present.cpp
 +++ b/Source/Core/VideoCommon/Present.cpp
 @@ -2,7 +2,16 @@
@@ -49859,7 +49863,7 @@ index 41d05f3..f06689b 100644
  
    PresentInfo present_info{
        .present_count = m_present_count++,
-@@ -215,6 +332,18 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
+@@ -215,6 +332,19 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
    if (!is_duplicate || !g_ActiveConfig.bSkipPresentingDuplicateXFBs)
    {
      Present(&present_info);
@@ -49868,17 +49872,18 @@ index 41d05f3..f06689b 100644
 +    // flip queue shows it one refresh later. (Presenting the real picture at the next, repeat
 +    // interrupt instead froze The Hulk: it drew almost nothing while those presents ran - JIT
 +    // Lab v60.34-36.)
-+    if (ps4_frame_gen && PS4FrameGen::PendingReal())
++    // (A picture that lasted 3 interrupts: a second in-between picture first.)
++    for (int extra = 0; extra < 2 && ps4_frame_gen && PS4FrameGen::PendingReal(); extra++)
 +    {
-+      PresentInfo real = present_info;
-+      real.reason = PresentInfo::PresentReason::VideoInterfaceDuplicate;
-+      Present(&real);
++      PresentInfo next = present_info;
++      next.reason = PresentInfo::PresentReason::VideoInterfaceDuplicate;
++      Present(&next);
 +    }
 +#endif
      ProcessFrameDumping(ticks);
  
      video_events.after_present_event.Trigger(present_info);
-@@ -431,8 +560,23 @@ Presenter::ConvertStereoRectangle(const MathUtil::Rectangle<int>& rc) const
+@@ -431,8 +561,23 @@ Presenter::ConvertStereoRectangle(const MathUtil::Rectangle<int>& rc) const
    return std::make_tuple(left_rc, right_rc);
  }
  
@@ -49902,7 +49907,7 @@ index 41d05f3..f06689b 100644
    if (!g_ActiveConfig.bCropCustom)
      return MathUtil::Rectangle<int>(0, 0, 0, 0);
  
-@@ -464,7 +608,11 @@ MathUtil::Rectangle<int> Presenter::AdjustForCustomCrop(const MathUtil::Rectangl
+@@ -464,7 +609,11 @@ MathUtil::Rectangle<int> Presenter::AdjustForCustomCrop(const MathUtil::Rectangl
  
  float Presenter::AdjustAspectRatioForCustomCrop(float input_aspect_ratio) const
  {
@@ -49914,7 +49919,7 @@ index 41d05f3..f06689b 100644
      return input_aspect_ratio;
  
    const MathUtil::Rectangle<int> rect = m_xfb_rect;
-@@ -903,9 +1051,306 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
+@@ -903,9 +1052,306 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
    }
  }
  
@@ -50221,7 +50226,7 @@ index 41d05f3..f06689b 100644
  
    if (g_gfx->IsHeadless() || (!m_onscreen_ui && !m_xfb_entry))
      return;
-@@ -934,7 +1379,235 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -934,7 +1380,235 @@ void Presenter::Present(PresentInfo* present_info)
    UpdateDrawRectangle();
  
    g_gfx->BeginUtilityDrawing();
@@ -50457,7 +50462,7 @@ index 41d05f3..f06689b 100644
  
    // Render the XFB to the screen.
    if (backbuffer_bound && m_xfb_entry)
-@@ -944,8 +1617,67 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -944,8 +1618,67 @@ void Presenter::Present(PresentInfo* present_info)
      MathUtil::Rectangle<int> render_source_rc = AdjustForCustomCrop(m_xfb_rect);
      AdjustRectanglesToFitBounds(&render_target_rc, &render_source_rc, m_backbuffer_width,
                                  m_backbuffer_height);
@@ -50525,7 +50530,7 @@ index 41d05f3..f06689b 100644
  
    if (m_onscreen_ui)
    {
-@@ -962,6 +1694,11 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -962,6 +1695,11 @@ void Presenter::Present(PresentInfo* present_info)
      {
        const auto present_time = GetUpdatedPresentationTime(present_info->intended_present_time);
  
@@ -54182,10 +54187,10 @@ index 0000000..3317422
 +}  // namespace PS4Jit
 diff --git a/Source/Core/VideoCommon/PS4FrameGen.cpp b/Source/Core/VideoCommon/PS4FrameGen.cpp
 new file mode 100644
-index 0000000..55a4f37
+index 0000000..26099f3
 --- /dev/null
 +++ b/Source/Core/VideoCommon/PS4FrameGen.cpp
-@@ -0,0 +1,422 @@
+@@ -0,0 +1,442 @@
 +// Copyright 2026 Dolphin for PS4
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -54242,8 +54247,12 @@ index 0000000..55a4f37
 +  int current = 0;
 +  bool have_previous = false;
 +  bool pending_real = false;
++  // Pictures still to present after the first in-between one: the second in-between one (a
++  // picture that lasted 3 interrupts) and the real one.
++  std::array<const AbstractTexture*, 2> queue{};
++  int queue_len = 0, queue_pos = 0;
 +  std::array<Target, 3> motion;  // per pyramid level, all GRID_WIDTH wide
-+  Target middle;
++  Target middle, middle2;
 +  std::unique_ptr<AbstractShader> ps_copy, ps_wide, ps_refine, ps_finest, ps_middle;
 +  std::unique_ptr<AbstractPipeline> copy, wide, refine, finest, middle_pipeline;
 +  bool failed = false;
@@ -54361,11 +54370,13 @@ index 0000000..55a4f37
 +  return code;
 +}
 +
-+// The in-between picture: the 4 nearest blocks' motions and no motion, weighted by distance and
-+// by how well the two pictures agree along each.
++// The in-between picture at t (u_a.z: 0.5 halfway, 1/3 and 2/3 for a picture that lasted 3
++// interrupts): the 4 nearest blocks' motions and no motion, weighted by distance and by how well
++// the two pictures agree along each. (The motion was found halfway; used as it is at 1/3, 2/3.)
 +const char* MIDDLE = R"(
 +void main() {
 +  float2 grid = u_a.xy;
++  float t = u_a.z;
 +  float2 uv = v_tex0.xy;
 +  float2 gf = uv * grid - 0.5;
 +  int2 g0 = int2(floor(gf));
@@ -54377,12 +54388,12 @@ index 0000000..55a4f37
 +      float2 wd2 = clamp(1.0 - abs(gf - float2(q)), 0.0, 1.0);
 +      q = clamp(q, int2(0, 0), int2(grid) - 1);
 +      float2 v = texelFetch(samp2, int3(q, 0), 0).xy;
-+      float3 a = P(uv - v * 0.5);
-+      float3 b = C(uv + v * 0.5);
++      float3 a = P(uv - v * t);
++      float3 b = C(uv + v * (1.0 - t));
 +      float3 d = abs(a - b);
 +      float e = (d.r + d.g + d.b) * (255.0 / 3.0);
 +      float w = wd2.x * wd2.y * exp(-e / 10.0) + 1e-6;
-+      acc += w * (a + b) * 0.5;
++      acc += w * mix(a, b, t);
 +      wsum += w;
 +    }
 +  }
@@ -54390,7 +54401,7 @@ index 0000000..55a4f37
 +  float3 b = C(uv);
 +  float3 d = abs(a - b);
 +  float w = 0.25 * exp(-(d.r + d.g + d.b) * (255.0 / 3.0) / 10.0) + 1e-6;
-+  acc += w * (a + b) * 0.5;
++  acc += w * mix(a, b, t);
 +  wsum += w;
 +  ocol0 = float4(acc / wsum, 1.0);
 +}
@@ -54471,6 +54482,7 @@ index 0000000..55a4f37
 +  for (auto& m : s.motion)
 +    ok &= MakeTarget(&m, s.gw, s.gh, AbstractTextureFormat::RGBA16F, "PS4 frame gen motion");
 +  ok &= MakeTarget(&s.middle, s.w0, s.h0, AbstractTextureFormat::RGBA8, "PS4 frame gen middle");
++  ok &= MakeTarget(&s.middle2, s.w0, s.h0, AbstractTextureFormat::RGBA8, "PS4 frame gen middle 2");
 +  return ok;
 +}
 +
@@ -54525,11 +54537,13 @@ index 0000000..55a4f37
 +
 +  if (!new_picture)
 +  {
-+    // The interrupt after an in-between picture: the new picture itself.
-+    if (!s.pending_real)
++    // Presented right after an in-between picture: the next one queued (the second in-between
++    // picture, then the new picture itself).
++    if (s.queue_pos >= s.queue_len)
 +      return nullptr;
-+    s.pending_real = false;
-+    return s.pyramid[s.current][0].texture.get();
++    const AbstractTexture* next = s.queue[s.queue_pos++];
++    s.pending_real = s.queue_pos < s.queue_len;
++    return next;
 +  }
 +
 +  s.current ^= 1;
@@ -54546,9 +54560,11 @@ index 0000000..55a4f37
 +  Pass(now[1], s.copy.get(), {now[0].texture.get()}, true, u);
 +  Pass(now[2], s.copy.get(), {now[1].texture.get()}, true, u);
 +
-+  const bool interpolate = s.have_previous && interval == 2;
++  // Every 2nd interrupt (30 FPS): one in-between picture; every 3rd (20 FPS): two.
++  const bool interpolate = s.have_previous && (interval == 2 || interval == 3);
 +  s.have_previous = true;
 +  s.pending_real = false;
++  s.queue_len = s.queue_pos = 0;
 +  if (!interpolate)
 +    return nullptr;
 +
@@ -54583,12 +54599,21 @@ index 0000000..55a4f37
 +  u.b[3] = 2.0f;
 +  Pass(s.motion[0], s.finest.get(),
 +       {before[0].texture.get(), now[0].texture.get(), s.motion[1].texture.get()}, true, u);
-+  // The in-between picture.
++  // The in-between picture(s).
 +  u = {};
 +  u.a[0] = gw;
 +  u.a[1] = gh;
++  u.a[2] = interval == 3 ? 1.0f / 3.0f : 0.5f;
 +  Pass(s.middle, s.middle_pipeline.get(),
 +       {before[0].texture.get(), now[0].texture.get(), s.motion[0].texture.get()}, true, u);
++  if (interval == 3)
++  {
++    u.a[2] = 2.0f / 3.0f;
++    Pass(s.middle2, s.middle_pipeline.get(),
++         {before[0].texture.get(), now[0].texture.get(), s.motion[0].texture.get()}, true, u);
++    s.queue[s.queue_len++] = s.middle2.texture.get();
++  }
++  s.queue[s.queue_len++] = now[0].texture.get();
 +  s.pending_real = true;
 +  if (!s.reported)
 +  {
@@ -54610,10 +54635,10 @@ index 0000000..55a4f37
 +}  // namespace PS4FrameGen
 diff --git a/Source/Core/VideoCommon/PS4FrameGen.h b/Source/Core/VideoCommon/PS4FrameGen.h
 new file mode 100644
-index 0000000..bb5fba0
+index 0000000..01ac37c
 --- /dev/null
 +++ b/Source/Core/VideoCommon/PS4FrameGen.h
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,34 @@
 +// Copyright 2026 Dolphin for PS4
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -54642,7 +54667,8 @@ index 0000000..bb5fba0
 +// nullptr to show the XFB as usual. `interval`: video interrupts since the previous new picture.
 +const AbstractTexture* Process(const AbstractTexture* xfb, const MathUtil::Rectangle<int>& crop,
 +                               bool new_picture, int interval, MathUtil::Rectangle<int>* out_rect);
-+// An in-between picture was just shown: the real picture is to be presented next.
++// An in-between picture was just shown: more are to be presented right after it (a second
++// in-between picture for a picture that lasted 3 interrupts, then the real one).
 +bool PendingReal();
 +// Textures and pipelines freed (the setting turned off, the renderer going away).
 +void Release();
