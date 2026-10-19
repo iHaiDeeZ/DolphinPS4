@@ -269,9 +269,37 @@ A range means the frame rate depends on what's on screen. *Recommended settings*
 
 | Status | Game | System | Console | Resolution | Result |
 |---|---|---|---|---|---|
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | 007: Agent Under Fire | GameCube | – | – | Smooth cutscenes, menus at 60 FPS; small drops in busy scenes, audio crackles at times |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | 007: Everything or Nothing | GameCube | – | – | 27–30 FPS, stable, runs really well |
+| ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | 007: NightFire | GameCube | – | – | 20 FPS, 49% speed |
+| ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | 1080° Avalanche | GameCube | – | – | 20–35 FPS |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | 18 Wheeler: American Pro Trucker | GameCube | – | – | Works perfectly |
+| ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | 2002 FIFA World Cup | GameCube | – | – | 40 FPS, ~70% speed |
+| ![Intro](https://img.shields.io/badge/Intro-e08a1e?style=flat-square) | 4x4 Evo 2 | GameCube | – | – | Stuck at the “Licensed by Nintendo” screen |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Aggressive Inline | GameCube | – | – | 45–60 FPS depending on the scene |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Alien Hominid | GameCube | – | – | Works perfectly |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | All-Star Baseball 2002 | GameCube | – | – | Works perfectly |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | All-Star Baseball 2003 | GameCube | – | – | Works perfectly |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | All-Star Baseball 2004 | GameCube | – | – | Works perfectly |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Amazing Island | GameCube | – | – | Works perfectly |
+| ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | American Chopper 2: Full Throttle | GameCube | – | – | Works, but can slow down a lot |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Animal Crossing | GameCube | – | – | Works perfectly |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Animaniacs: The Great Edgar Hunt | GameCube | – | – | Works perfectly |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Aquaman: Battle for Atlantis | GameCube | – | – | Works perfectly |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Army Men: Air Combat – The Elite Missions | GameCube | – | – | Works perfectly |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Army Men: RTS | GameCube | – | – | Works perfectly |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Army Men: Sarge's War | GameCube | – | – | Runs well; drops to 15 FPS in heavy fights, still playable |
+| ![Nothing](https://img.shields.io/badge/Nothing-455556?style=flat-square) | Astérix & Obélix XXL | GameCube | – | – | Doesn't launch |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | ATV: Quad Power Racing 2 | GameCube | – | – | Works perfectly |
+| ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | Auto Modellista | GameCube | – | – | Runs, but slows down and drops to 20 FPS |
+| ![Intro](https://img.shields.io/badge/Intro-e08a1e?style=flat-square) | Avatar: The Last Airbender | GameCube | – | – | Stuck at the “Licensed by Nintendo” screen |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Backyard Baseball | GameCube | – | – | Works perfectly |
+| ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | Backyard Baseball 2007 | GameCube | – | – | 18 FPS, 60% speed |
+| ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | Backyard Football | GameCube | – | – | 30 FPS, 60% speed |
+| ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | Bad Boys: Miami Takedown | GameCube | – | – | 25–30 FPS, ~70% speed |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Dead to Rights | GameCube | PS4 Slim, 12.52 | 720p | 45–50 FPS, speed dips, some stutters, no crashes |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Dragon Ball Z: Budokai | GameCube | PS4 Slim, 12.52 | 1080p | 60 FPS, stable, no stutters or crashes |
+| ![Ingame](https://img.shields.io/badge/Ingame-f9b32f?style=flat-square) | GoldenEye: Rogue Agent | GameCube | – | – | Cutscenes 15 FPS (up to 60% speed); unplayable in game |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | The Incredible Hulk: Ultimate Destruction | GameCube | – | – | 97–100% speed, some noticeable FPS drops, playable |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | The Legend of Zelda: Four Swords Adventures | GameCube | PS4 Slim, 11.02 | 1080p | Steady 60 FPS most of the time |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | The Legend of Zelda: Twilight Princess | GameCube | PS4 Slim, 12.52 | 1080p | 28 FPS, stable, no stutters or freezes |
