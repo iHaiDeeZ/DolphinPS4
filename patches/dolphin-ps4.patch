@@ -41186,10 +41186,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..c7d88b9
+index 0000000..3acbb1d
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,2193 @@
+@@ -0,0 +1,2201 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -41267,6 +41267,7 @@ index 0000000..c7d88b9
 +extern "C" long long ps4_wait_total(int slot);            // port/ps4_sampler.cpp
 +extern "C" unsigned long long ps4_present_counter;        // VideoCommon/Present.cpp
 +extern "C" unsigned long long ps4_clock_reads;
++extern "C" unsigned long long ps4_vtx_queued, ps4_vtx_here;  // VideoCommon/PS4VertexWorker.cpp
 +extern "C" unsigned long long ps4_efb_readbacks;  // VideoCommon/FramebufferManager.cpp            // port/ps4_runtime.cpp
 +extern "C" size_t ps4_heap_footprint();                   // port/ps4_runtime.cpp
 +extern "C" unsigned long long ps4_soft_tlb_hits, ps4_soft_tlb_misses;           // MMU.cpp
@@ -42066,15 +42067,22 @@ index 0000000..c7d88b9
 +          s_last_reads = reads;
 +        }
 +        const size_t used2 = strlen(line);
-+        static unsigned long long s_last_readbacks = 0;
++        static unsigned long long s_last_readbacks = 0, s_last_queued = 0, s_last_here = 0;
 +        const unsigned long long readbacks = ps4_efb_readbacks;
++        const unsigned long long queued = ps4_vtx_queued, here = ps4_vtx_here;
++        // Vertex runs: the video thread's vertex loader calls (vertex_thread: queued for the
++        // worker, converted on the video thread).
 +        snprintf(line + used2, sizeof(line) - used2,
-+                 ", per s: draws %llu prims %llu vertices %llu efb copies %llu peeks %llu "
-+                 "(readbacks %llu) pokes %llu reg loads %llu tex uploads %llu",
-+                 rate[0], rate[1], rate[2], rate[6], rate[3],
++                 ", per s: draws %llu vertices %llu runs %llu (worker %llu here %llu) efb copies "
++                 "%llu peeks %llu (readbacks %llu) pokes %llu reg loads %llu tex uploads %llu",
++                 rate[0], rate[1], rate[2],
++                 static_cast<unsigned long long>((queued - s_last_queued) / period),
++                 static_cast<unsigned long long>((here - s_last_here) / period), rate[6], rate[3],
 +                 static_cast<unsigned long long>((readbacks - s_last_readbacks) / period), rate[4],
 +                 rate[5], rate[7]);
 +        s_last_readbacks = readbacks;
++        s_last_queued = queued;
++        s_last_here = here;
 +      }
 +      if (ps4_perf_log)
 +      {
@@ -51740,7 +51748,7 @@ index c76f7da..f8afd04 100644
    static constexpr size_t NUM_PALETTE_CONVERSION_SHADERS = 3;
  
 diff --git a/Source/Core/VideoCommon/Statistics.cpp b/Source/Core/VideoCommon/Statistics.cpp
-index 4a58c6f..1493495 100644
+index 4a58c6f..c006641 100644
 --- a/Source/Core/VideoCommon/Statistics.cpp
 +++ b/Source/Core/VideoCommon/Statistics.cpp
 @@ -25,8 +25,27 @@ static Common::EventHook s_after_frame_event;
@@ -51762,7 +51770,7 @@ index 4a58c6f..1493495 100644
 +  ps4_tex_hash_epoch++;  // texture hash memo (TextureCacheBase.cpp) lasts one frame
 +  ps4_scene_stats[0] += this_frame.num_draw_calls;
 +  ps4_scene_stats[1] += this_frame.num_prims + this_frame.num_dl_prims;
-+  ps4_scene_stats[2] += this_frame.num_vertices_loaded;
++  ps4_scene_stats[2] += this_frame.num_primitive_joins;  // vertex runs (RunVertices calls)
 +  ps4_scene_stats[3] += this_frame.num_efb_peeks;
 +  ps4_scene_stats[4] += this_frame.num_efb_pokes;
 +  ps4_scene_stats[5] += this_frame.num_xf_loads + this_frame.num_bp_loads + this_frame.num_cp_loads;
@@ -52011,7 +52019,7 @@ index 785afc8..f2584dc 100644
    // per loader public state
    PortableVertexDeclaration m_native_vtx_decl{};
 diff --git a/Source/Core/VideoCommon/VertexLoaderManager.cpp b/Source/Core/VideoCommon/VertexLoaderManager.cpp
-index e3d3b9f..084c1f4 100644
+index e3d3b9f..b76cd18 100644
 --- a/Source/Core/VideoCommon/VertexLoaderManager.cpp
 +++ b/Source/Core/VideoCommon/VertexLoaderManager.cpp
 @@ -3,9 +3,17 @@
@@ -52043,7 +52051,7 @@ index e3d3b9f..084c1f4 100644
  #include "VideoCommon/VertexManagerBase.h"
  #include "VideoCommon/VertexShaderManager.h"
  #include "VideoCommon/VideoConfig.h"
-@@ -61,8 +72,122 @@ std::array<VertexLoaderBase*, CP_NUM_VAT_REG> g_main_vertex_loaders;
+@@ -61,8 +72,183 @@ std::array<VertexLoaderBase*, CP_NUM_VAT_REG> g_main_vertex_loaders;
  std::array<VertexLoaderBase*, CP_NUM_VAT_REG> g_preprocess_vertex_loaders;
  bool g_needs_cp_xf_consistency_check;
  
@@ -52146,12 +52154,73 @@ index e3d3b9f..084c1f4 100644
 +      }
 +    }
 +  }
++  // The vertex thread's flush caches (PS4VertexWorker.cpp): batches of short draws of one
++  // format - points and lines among them, culled draws, skipped vertices, array bases and strides
++  // changing between draws - converted for real, and from the last vertices at the flush.
++  setenv("PS4VTX_TAIL", "1", 1);
++  PS4VertexWorker::HostResync();
++  unsigned long long tail_draws = 0;
++  for (int f = 0; f < 3000; f++)
++  {
++    TVtxDesc desc;
++    VAT vat;
++    desc.low.Hex = rng() & 0x1FFFF;
++    desc.low.Position = static_cast<VertexComponentFormat>(1 + rng() % 3);
++    desc.high.Hex = rng() & 0xFFFF;
++    vat.g0.Hex = rng();
++    vat.g1.Hex = rng();
++    vat.g2.Hex = rng();
++    vat.g0.PosFormat = component();
++    vat.g0.NormalFormat = component();
++    vat.g0.Color0Comp = static_cast<ColorFormat>(rng() % 6);
++    vat.g0.Color1Comp = static_cast<ColorFormat>(rng() % 6);
++    vat.g0.Tex0CoordFormat = component();
++    vat.g1.Tex1CoordFormat = component();
++    vat.g1.Tex2CoordFormat = component();
++    vat.g1.Tex3CoordFormat = component();
++    vat.g1.Tex4CoordFormat = component();
++    vat.g1.VCacheEnhance = true;
++    vat.g2.Tex5CoordFormat = component();
++    vat.g2.Tex6CoordFormat = component();
++    vat.g2.Tex7CoordFormat = component();
++    VertexLoaderX64 loader(desc, vat);
++    VertexLoaderBase& base = loader;
++    const int stride = loader.m_native_vtx_decl.stride;
++    std::vector<std::vector<u8>> sources;  // alive until the flush (the tail points into them)
++    const int batch = 1 + static_cast<int>(rng() % 10);
++    for (int d = 0; d < batch; d++)
++    {
++      const u32 r = rng() % 8;
++      const int count = r < 3 ? 1 + static_cast<int>(rng() % 2) : 1 + static_cast<int>(rng() % 9);
++      sources.emplace_back(static_cast<size_t>(count) * loader.m_vertex_size + 16);
++      for (auto& b : sources.back())
++        b = static_cast<u8>(rng() % 16 == 0 ? 0xFF : rng());
++      if (d == 0 || rng() % 3 == 0)
++      {
++        for (u32 i = 0; i < 12; i++)
++        {
++          const CPArray array = static_cast<CPArray>(i);
++          cached_arraybases[array] = arrays[(i + rng()) % 12].data();
++          g_main_cp_state.array_strides[array] = rng() % 4;
++        }
++      }
++      const bool culled = rng() % 6 == 0;
++      out_a.assign(static_cast<size_t>(count) * stride + 64, 0);
++      PS4VertexWorker::HostBeforeDraw();
++      base.RunVertices(sources.back().data(), out_a.data(), count);
++      PS4VertexWorker::HostAfterDraw(&loader, sources.back().data(), count, culled);
++      tail_draws++;
++    }
++    PS4VertexWorker::OnFlush();
++  }
++  const unsigned long long tail_bad = PS4VertexWorker::HostTailMismatches();
++  bad += tail_bad;
 +  cached_arraybases = saved_bases;
 +  g_main_cp_state.array_strides = saved_strides;
 +  fprintf(stderr,
 +          "[vtxselftest] %llu formats, %llu draws compared, %llu with skipped vertices, %llu "
-+          "bad\n",
-+          formats, draws, skipped, bad);
++          "bad; flush caches: %llu draws in 3000 flushes, %llu different\n",
++          formats, draws, skipped, bad, tail_draws, tail_bad);
 +  fflush(stderr);
 +  _exit(bad ? 1 : 0);
 +}
@@ -52166,7 +52235,7 @@ index e3d3b9f..084c1f4 100644
    MarkAllDirty();
    g_main_vertex_loaders.fill(nullptr);
    g_preprocess_vertex_loaders.fill(nullptr);
-@@ -71,6 +196,8 @@ void Init()
+@@ -71,6 +257,8 @@ void Init()
  
  void Clear()
  {
@@ -52175,7 +52244,7 @@ index e3d3b9f..084c1f4 100644
    std::lock_guard<std::mutex> lk(s_vertex_loader_map_lock);
    s_vertex_loader_map.clear();
    s_native_vertex_map.clear();
-@@ -379,6 +506,72 @@ static void CheckCPConfiguration(int vtx_attr_group)
+@@ -379,6 +567,72 @@ static void CheckCPConfiguration(int vtx_attr_group)
    }
  }
  
@@ -52248,23 +52317,20 @@ index e3d3b9f..084c1f4 100644
  static bool CanSplit(OpcodeDecoder::Primitive primitive)
  {
    // Splitting is currently only implemented for the easy cases (individual lines/points/triangles)
-@@ -444,6 +637,15 @@ int RunVertices(int vtx_attr_group, OpcodeDecoder::Primitive primitive, int coun
+@@ -444,6 +698,12 @@ int RunVertices(int vtx_attr_group, OpcodeDecoder::Primitive primitive, int coun
                            primitive < OpcodeDecoder::Primitive::GX_DRAW_LINES);
  
      const int stride = loader->m_native_vtx_decl.stride;
-+    // vertex_thread (PS4VertexWorker.cpp): the vertex worker converts the draw; this thread only
-+    // converts its last three vertices, for what the flush reads from them (the position, normal,
-+    // tangent and binormal caches: zfreeze slopes, cached normals). Draws with skipped vertices
-+    // (their count isn't known before converting) and CPU culling stay here.
++    // vertex_thread (PS4VertexWorker.cpp): the vertex worker converts the draw. Draws with skipped
++    // vertices (their count isn't known before converting) and CPU culling stay here.
++    const bool worker = PS4VertexWorker::Active() &&
++                        !Core::System::GetInstance().GetFifo().UseDeterministicGPUThread();
 +    VertexLoaderX64* const bulk_loader =
-+        PS4VertexWorker::Active() && !can_cpu_cull &&
-+                !Core::System::GetInstance().GetFifo().UseDeterministicGPUThread() ?
-+            loader->PS4BulkLoader() :
-+            nullptr;
++        worker && !can_cpu_cull ? loader->PS4BulkLoader() : nullptr;
      do
      {
        const int max_vertices = 16380;  // Max is 16383, but 16380 is divisible by both 4 and 3
-@@ -452,7 +654,28 @@ int RunVertices(int vtx_attr_group, OpcodeDecoder::Primitive primitive, int coun
+@@ -452,7 +712,35 @@ int RunVertices(int vtx_attr_group, OpcodeDecoder::Primitive primitive, int coun
        DataReader dst = g_vertex_manager->PrepareForAdditionalData(primitive, run, stride,
                                                                    cullall || can_cpu_cull);
  
@@ -52272,22 +52338,29 @@ index e3d3b9f..084c1f4 100644
 +      int num_loaded;
 +      if (bulk_loader && !bulk_loader->HasSkippedVertex(src, run))
 +      {
-+        const int last = std::min(run, 3);
-+        alignas(16) static u8 s_last_vertices[3 * 256 + 64];
-+        loader->RunVertices(src + loader->m_vertex_size * (run - last), s_last_vertices, last);
-+        loader->m_numLoadedVertices += run - last;
-+        // Culled draws only needed the caches.
-+        if (!cullall)
++        // Culled draws only need what the flush reads from their last vertices.
++        if (cullall)
++          PS4VertexWorker::ConvertCaches(bulk_loader, src, run);
++        else
 +          PS4VertexWorker::Push(bulk_loader, src, dst.GetPointer(), run);
 +        num_loaded = run;
 +      }
 +      else
 +      {
-+        // In order with the worker's writes (each loader writes up to 4 bytes past its vertices).
-+        if (bulk_loader)
++        // In order with the worker's writes (each loader writes up to 4 bytes past its vertices)
++        // and the caches of the draws it converts.
++        if (worker)
++        {
 +          PS4VertexWorker::Sync();
++          ps4_vtx_here++;
++        }
++#ifdef DOLPHIN_PS4_HOST
++        PS4VertexWorker::HostBeforeDraw();
++#endif
 +        num_loaded = loader->RunVertices(src, dst.GetPointer(), run);
 +#ifdef DOLPHIN_PS4_HOST
++        PS4VertexWorker::HostAfterDraw(can_cpu_cull ? nullptr : loader->PS4BulkLoader(), src, run,
++                                       cullall);
 +        PS4CheckBulk(loader, src, dst.GetPointer(), run, num_loaded, stride);
 +#endif
 +      }
@@ -52494,7 +52567,7 @@ index 377d47d..d76ee17 100644
    Gen::OpArg GetVertexAddr(CPArray array, VertexComponentFormat attribute);
    void ReadVertex(Gen::OpArg data, VertexComponentFormat attribute, ComponentFormat format,
 diff --git a/Source/Core/VideoCommon/VertexManagerBase.cpp b/Source/Core/VideoCommon/VertexManagerBase.cpp
-index 2bc6d58..fa46c72 100644
+index 2bc6d58..551a3f2 100644
 --- a/Source/Core/VideoCommon/VertexManagerBase.cpp
 +++ b/Source/Core/VideoCommon/VertexManagerBase.cpp
 @@ -2,6 +2,22 @@
@@ -52552,15 +52625,18 @@ index 2bc6d58..fa46c72 100644
  
    // Copy into the buffers usually used for GX drawing.
    ResetBuffer(std::max(vertex_stride, 1u));
-@@ -434,6 +460,7 @@ BitSet32 VertexManagerBase::UsedTextures() const
+@@ -434,6 +460,10 @@ BitSet32 VertexManagerBase::UsedTextures() const
  
  void VertexManagerBase::Flush()
  {
 +  PS4_PROFILE(PS4_PROF_FLUSH);
++  // vertex_thread: the caches read below, from the last vertices of the queued draws, and the
++  // worker told of them (PS4VertexWorker.cpp).
++  PS4VertexWorker::OnFlush();
    if (m_is_flushed)
      return;
  
-@@ -680,6 +707,7 @@ void VertexManagerBase::Flush()
+@@ -680,6 +710,7 @@ void VertexManagerBase::Flush()
  
  void VertexManagerBase::DoState(PointerWrap& p)
  {
@@ -52568,6 +52644,17 @@ index 2bc6d58..fa46c72 100644
    if (p.IsReadMode())
    {
      // Flush old vertex data before loading state.
+@@ -690,6 +721,10 @@ void VertexManagerBase::DoState(PointerWrap& p)
+   p.Do(VertexLoaderManager::normal_cache);
+   p.Do(VertexLoaderManager::tangent_cache);
+   p.Do(VertexLoaderManager::binormal_cache);
++#ifdef DOLPHIN_PS4_HOST
++  if (p.IsReadMode())
++    PS4VertexWorker::HostResync();
++#endif
+ }
+ 
+ void VertexManagerBase::CalculateZSlope(NativeVertexFormat* format)
 diff --git a/Source/Core/VideoCommon/VertexManagerBase.h b/Source/Core/VideoCommon/VertexManagerBase.h
 index 715dbee..91ca7de 100644
 --- a/Source/Core/VideoCommon/VertexManagerBase.h
@@ -56257,19 +56344,20 @@ index 0000000..01ac37c
 +}  // namespace PS4FrameGen
 diff --git a/Source/Core/VideoCommon/PS4VertexWorker.cpp b/Source/Core/VideoCommon/PS4VertexWorker.cpp
 new file mode 100755
-index 0000000..21cb129
+index 0000000..86cfb1d
 --- /dev/null
 +++ b/Source/Core/VideoCommon/PS4VertexWorker.cpp
-@@ -0,0 +1,266 @@
+@@ -0,0 +1,606 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
 +// PS4 port (Dolphin Lab, vertex_thread): the vertex conversion of draws runs on a core of its own.
 +//
 +// Super Mario Galaxy's video thread - the bottleneck of its busiest scenes, 96-99% busy - spent
-+// ~29% of its time converting vertices (Dolphin's vertex loaders, JIT Lab v60.46 profile). The
-+// video thread still reserves the space in the stream buffer and generates the indices; it queues
-+// the conversion, and this worker writes the vertices, in order. Everything that reads them waits
++// ~22% of its time converting vertices (Dolphin's vertex loaders, JIT Lab v60.46 profile), most
++// of it in short draws (~5.5 million vertices a second, a handful per draw). The video thread
++// still reserves the space in the stream buffer and generates the indices; it queues the
++// conversion, and this worker writes the vertices, in order. Everything that reads them waits
 +// for it first:
 +// - the GPU: the Vulkan recording thread waits before it submits a command buffer
 +//   (PS4CommandRecorder.cpp, OP_QueueSubmit);
@@ -56279,17 +56367,24 @@ index 0000000..21cb129
 +//   buffer on the video thread (each loader writes up to 4 bytes past its last vertex), save
 +//   states, a new set of vertex loaders, shutdown.
 +// What the video thread itself reads from converted vertices - the last three positions and the
-+// last normal, tangent and binormal (zfreeze slopes, cached normals) - it gets by converting the
-+// last three vertices of each draw itself (VertexLoaderManager.cpp).
++// last normal, tangent and binormal (zfreeze slopes, cached normals) - only the vertex manager's
++// flush reads. The video thread converts the last three vertices of the latest draws itself, at
++// the flush: a vertex format change always flushes, so the draws in between write the same caches.
++//
++// With draws this short the hand-over is the cost (JIT Lab v60.47 told the worker of each draw
++// with a locked exchange, and that cost the video thread more than the conversions it moved): the
++// worker hears of new draws in batches, through plain stores, and reports its progress in batches.
 +
 +#include "VideoCommon/PS4VertexWorker.h"
 +
 +extern "C" {
 +int ps4_vertex_thread = 1;       // ps4.ini / settings vertex_thread=on
 +int ps4_vertex_thread_core = 1;  // vertex_thread_core
++unsigned long long ps4_vtx_queued = 0;
++unsigned long long ps4_vtx_here = 0;
 +}
 +
-+#ifndef __ORBIS__
++#if !defined(__ORBIS__) && !defined(DOLPHIN_PS4_HOST)
 +
 +namespace PS4VertexWorker
 +{
@@ -56301,6 +56396,12 @@ index 0000000..21cb129
 +  return false;
 +}
 +void Push(VertexLoaderX64*, const u8*, u8*, int)
++{
++}
++void ConvertCaches(VertexLoaderX64*, const u8*, int)
++{
++}
++void OnFlush()
 +{
 +}
 +void Sync()
@@ -56320,10 +56421,114 @@ index 0000000..21cb129
 +
 +#else
 +
++#include <algorithm>
++#include <array>
++#include <cstdio>
++
++#include "VideoCommon/CPMemory.h"
++#include "VideoCommon/VertexLoaderManager.h"
++#include "VideoCommon/VertexLoaderX64.h"
++
++namespace PS4VertexWorker
++{
++namespace
++{
++// The queued draws the caches come from. Entry k of the position caches is written by the last
++// draw of more than k vertices (the loaders store the last three vertices counted from the end),
++// the normal, tangent and binormal by the last draw: the latest draw of three or more vertices,
++// then a later one of two, then a later one of one.
++struct TailDraw
++{
++  VertexLoaderX64* loader;
++  const u8* src;
++  int count;
++  const ArrayState* state;  // the draw's job, until a newer draw keeps this one: then `own`
++  ArrayState own;
++};
++TailDraw s_tail[3];
++int s_tail_count = 0;
++
++void AddTail(VertexLoaderX64* loader, const u8* src, int count, const ArrayState* state)
++{
++  const int size = std::min(count, 3);
++  int keep = 0;
++  while (keep < s_tail_count && std::min(s_tail[keep].count, 3) > size)
++  {
++    // Kept past newer draws (points and lines): its job may be reused before the flush.
++    TailDraw& kept = s_tail[keep++];
++    if (kept.state != &kept.own)
++    {
++      kept.own = *kept.state;
++      kept.state = &kept.own;
++    }
++  }
++  TailDraw& draw = s_tail[keep];
++  draw.loader = loader;
++  draw.src = src;
++  draw.count = count;
++  draw.state = state;
++  s_tail_count = keep + 1;
++}
++
++// The normal loader on the last (up to) three vertices of a draw: it writes the caches the same
++// as the whole draw would (they hold the vertices counted from the end).
++void ConvertLast(VertexLoaderX64* loader, const u8* src, int count)
++{
++  alignas(16) static u8 s_scratch[3 * 256 + 64];
++  const int n = std::min(count, 3);
++  static_cast<VertexLoaderBase*>(loader)->RunVertices(src + loader->m_vertex_size * (count - n),
++                                                      s_scratch, n);
++}
++
++void FlushCaches()
++{
++  if (s_tail_count == 0)
++    return;
++  // The normal loader reads the array bases and strides from the globals: those of each draw.
++  const auto bases = VertexLoaderManager::cached_arraybases;
++  const auto strides = g_main_cp_state.array_strides;
++  for (int i = 0; i < s_tail_count; i++)
++  {
++    const TailDraw& draw = s_tail[i];
++    for (u32 a = 0; a < 12; a++)
++    {
++      const CPArray array = static_cast<CPArray>(a);
++      VertexLoaderManager::cached_arraybases[array] = draw.state->bases[a];
++      g_main_cp_state.array_strides[array] = draw.state->strides[a];
++    }
++    ConvertLast(draw.loader, draw.src, draw.count);
++    draw.loader->m_numLoadedVertices -= std::min(draw.count, 3);
++  }
++  VertexLoaderManager::cached_arraybases = bases;
++  g_main_cp_state.array_strides = strides;
++  s_tail_count = 0;
++}
++
++void SnapshotArrays(ArrayState& state)
++{
++  for (u32 i = 0; i < 12; i++)
++  {
++    const CPArray array = static_cast<CPArray>(i);
++    state.bases[i] = VertexLoaderManager::cached_arraybases[array];
++    state.strides[i] = g_main_cp_state.array_strides[array];
++  }
++}
++}  // namespace
++
++void ConvertCaches(VertexLoaderX64* loader, const u8* src, int count)
++{
++  FlushCaches();
++  ConvertLast(loader, src, count);
++  loader->m_numLoadedVertices += count - std::min(count, 3);
++  ps4_vtx_here++;
++}
++}  // namespace PS4VertexWorker
++
++#ifdef __ORBIS__
++
 +#include <atomic>
 +#include <chrono>
 +#include <condition_variable>
-+#include <cstdio>
 +#include <mutex>
 +#include <thread>
 +
@@ -56331,14 +56536,11 @@ index 0000000..21cb129
 +#include <x86intrin.h>
 +
 +#include "Common/Thread.h"
-+#include "VideoCommon/CPMemory.h"
-+#include "VideoCommon/VertexLoaderManager.h"
-+#include "VideoCommon/VertexLoaderX64.h"
 +
-+extern "C" void ps4_boot_trace(const char* line);                 // port/ps4_crashlog.cpp
-+extern "C" void ps4_wait_add(int slot, long long ns);              // port/ps4_sampler.cpp
-+extern "C" void ps4_sampler_register_thread(const char* name);     // port/ps4_sampler.cpp
-+extern "C" void ps4_thread_cpu_sample(int slot);                   // port/ps4_sampler.cpp
++extern "C" void ps4_boot_trace(const char* line);              // port/ps4_crashlog.cpp
++extern "C" void ps4_wait_add(int slot, long long ns);           // port/ps4_sampler.cpp
++extern "C" void ps4_sampler_register_thread(const char* name);  // port/ps4_sampler.cpp
++extern "C" void ps4_thread_cpu_sample(int slot);                // port/ps4_sampler.cpp
 +
 +namespace PS4VertexWorker
 +{
@@ -56353,7 +56555,13 @@ index 0000000..21cb129
 +  ArrayState state;
 +};
 +
-+constexpr u64 RING_SIZE = 2048;  // conversions queued at most (a power of two)
++constexpr u64 RING_SIZE = 2048;    // conversions queued at most (a power of two)
++constexpr u64 PUBLISH_BATCH = 16;  // draws queued before the worker hears of them
++constexpr u64 DONE_BATCH = 16;     // draws converted before the worker reports them (a power of 2)
++// Time stamp counter ticks (1.6 GHz on the Jaguar) the worker spins for new draws before it
++// sleeps: waking it costs the video thread a system call.
++constexpr u64 SPIN_TICKS = 1000 * 1600;
++
 +Job s_jobs[RING_SIZE];
 +alignas(64) std::atomic<u64> s_issued{0};  // written by the video thread
 +alignas(64) std::atomic<u64> s_done{0};    // written by the worker
@@ -56365,13 +56573,29 @@ index 0000000..21cb129
 +bool s_started = false;
 +bool s_allowed = false;
 +
++// The video thread's side.
++alignas(64) u64 s_written = 0;  // conversions written into the ring
++u64 s_published = 0;            // ... the worker was told of (s_issued)
++u64 s_done_seen = 0;            // s_done when last read
++
 +void WakeWorker()
 +{
-+  if (s_sleeping.load(std::memory_order_seq_cst))
++  // A plain load: a worker falling asleep this instant is woken by the next publish or waiter, or
++  // by its 1 ms timeout.
++  if (s_sleeping.load(std::memory_order_relaxed))
 +  {
 +    std::lock_guard lk(s_wake_mutex);
 +    s_wake.notify_one();
 +  }
++}
++
++void Publish()
++{
++  if (s_published == s_written)
++    return;
++  s_published = s_written;
++  s_issued.store(s_written, std::memory_order_release);
++  WakeWorker();
 +}
 +
 +void Pause(u32& spins)
@@ -56402,6 +56626,13 @@ index 0000000..21cb129
 +    ps4_wait_add(count_slot, 1);
 +}
 +
++// The stream buffer may be write-combined memory: its stores before the count that releases them.
++void Report(u64 done)
++{
++  _mm_sfence();
++  s_done.store(done, std::memory_order_release);
++}
++
 +void WorkerLoop()
 +{
 +  Common::SetCurrentThreadName("Vertex thread");
@@ -56425,9 +56656,7 @@ index 0000000..21cb129
 +    {
 +      if (s_stop.load(std::memory_order_acquire))
 +        break;
-+      // Spin ~100 us for the next draw (the Jaguar's TSC runs at 1.6 GHz), then sleep: each
-+      // sleep costs the video thread a wake-up call.
-+      const u64 spin_until = __rdtsc() + 100 * 1600;
++      const u64 spin_until = __rdtsc() + SPIN_TICKS;
 +      u32 spins = 0;
 +      while (s_issued.load(std::memory_order_acquire) == done)
 +      {
@@ -56450,11 +56679,10 @@ index 0000000..21cb129
 +      const Job& job = s_jobs[done & (RING_SIZE - 1)];
 +      job.loader->RunVerticesBulk(job.src, job.dst, job.count, &job.state);
 +      done++;
-+      // The stream buffer may be write-combined memory: its stores before the count that
-+      // releases them.
-+      _mm_sfence();
-+      s_done.store(done, std::memory_order_release);
++      if ((done & (DONE_BATCH - 1)) == 0 && done != issued)
++        Report(done);
 +    }
++    Report(done);
 +  }
 +}
 +}  // namespace
@@ -56477,33 +56705,51 @@ index 0000000..21cb129
 +    s_thread = std::thread(WorkerLoop);
 +    s_started = true;
 +  }
-+  const u64 seq = s_issued.load(std::memory_order_relaxed);
-+  if (seq - s_done.load(std::memory_order_acquire) >= RING_SIZE)
-+    WaitFor(seq - RING_SIZE + 1, 16, 17);
++  const u64 seq = s_written;
++  if (seq - s_done_seen >= RING_SIZE)
++  {
++    s_done_seen = s_done.load(std::memory_order_acquire);
++    if (seq - s_done_seen >= RING_SIZE)
++    {
++      Publish();
++      WaitFor(seq - RING_SIZE + 1, 16, 17);
++      s_done_seen = s_done.load(std::memory_order_acquire);
++    }
++  }
 +  Job& job = s_jobs[seq & (RING_SIZE - 1)];
 +  job.loader = loader;
 +  job.src = src;
 +  job.dst = dst;
 +  job.count = count;
-+  for (u32 i = 0; i < 12; i++)
-+  {
-+    const CPArray array = static_cast<CPArray>(i);
-+    job.state.bases[i] = VertexLoaderManager::cached_arraybases[array];
-+    job.state.strides[i] = g_main_cp_state.array_strides[array];
-+  }
-+  s_issued.store(seq + 1, std::memory_order_seq_cst);
-+  WakeWorker();
++  SnapshotArrays(job.state);
++  s_written = seq + 1;
++  loader->m_numLoadedVertices += count;
++  ps4_vtx_queued++;
++  AddTail(loader, src, count, &job.state);
++  if (s_written - s_published >= PUBLISH_BATCH)
++    Publish();
++}
++
++void OnFlush()
++{
++  FlushCaches();
++  Publish();
 +}
 +
 +void Sync()
 +{
-+  if (s_started)
-+    WaitFor(s_issued.load(std::memory_order_relaxed), 16, 17);
++  FlushCaches();
++  if (!s_started)
++    return;
++  Publish();
++  WaitFor(s_written, 16, 17);
++  s_done_seen = s_written;
 +}
 +
 +u64 Issued()
 +{
-+  return s_issued.load(std::memory_order_relaxed);
++  Publish();
++  return s_written;
 +}
 +
 +void WaitDone(u64 issued)
@@ -56513,9 +56759,11 @@ index 0000000..21cb129
 +
 +void Shutdown()
 +{
++  s_tail_count = 0;  // nothing reads the caches any more
 +  if (!s_started)
 +    return;
-+  Sync();
++  Publish();
++  WaitFor(s_written, 16, 17);
 +  {
 +    std::lock_guard lk(s_wake_mutex);
 +    s_stop.store(true, std::memory_order_seq_cst);
@@ -56526,13 +56774,192 @@ index 0000000..21cb129
 +}
 +}  // namespace PS4VertexWorker
 +
++#else  // DOLPHIN_PS4_HOST
++
++// PC test bench: no worker (Active() is false, the video thread converts every draw), but with
++// PS4VTX_TAIL=1 the caches the vertex thread's flushes would read are kept alongside - the same
++// tail of draws, converted at the flush - and compared with the real ones at every flush.
++
++#include <cstdlib>
++#include <cstring>
++#include <utility>
++#include <vector>
++
++namespace PS4VertexWorker
++{
++namespace
++{
++struct CacheSet
++{
++  std::array<u32, 3> posmtx{};
++  std::array<std::array<float, 4>, 3> position{};
++  std::array<float, 4> normal{}, tangent{}, binormal{};
++};
++
++// The real caches while the vertex thread's are in the globals.
++CacheSet s_real;
++bool s_check = false;
++ArrayState s_states[4];  // the tail's array states (the PS4 keeps them in the job ring)
++u32 s_next_state = 0;
++unsigned long long s_flushes = 0, s_draws = 0, s_culled = 0, s_slow = 0, s_bad = 0;
++
++void SwapCaches()
++{
++  std::swap(s_real.posmtx, VertexLoaderManager::position_matrix_index_cache);
++  std::swap(s_real.position, VertexLoaderManager::position_cache);
++  std::swap(s_real.normal, VertexLoaderManager::normal_cache);
++  std::swap(s_real.tangent, VertexLoaderManager::tangent_cache);
++  std::swap(s_real.binormal, VertexLoaderManager::binormal_cache);
++}
++
++// The flush zeroes some lanes of the real caches (2D positions' z, the 4th lane of normals):
++// those are left out.
++bool SameLanes(const float* a, const float* b, int lanes)
++{
++  return std::memcmp(a, b, sizeof(float) * lanes) == 0;
++}
++
++void Compare()
++{
++  using namespace VertexLoaderManager;
++  bool same = s_real.posmtx == position_matrix_index_cache;
++  for (int i = 0; i < 3; i++)
++    same &= SameLanes(s_real.position[i].data(), position_cache[i].data(), 2);
++  same &= SameLanes(s_real.normal.data(), normal_cache.data(), 3);
++  same &= SameLanes(s_real.tangent.data(), tangent_cache.data(), 3);
++  same &= SameLanes(s_real.binormal.data(), binormal_cache.data(), 3);
++  if (!same && s_bad++ < 10)
++  {
++    fprintf(stderr,
++            "[vtxtail] flush %llu MISMATCH: posmtx %u %u %u / %u %u %u, pos0 %g %g / %g %g, pos2 "
++            "%g %g / %g %g, normal %g %g %g / %g %g %g\n",
++            s_flushes, s_real.posmtx[0], s_real.posmtx[1], s_real.posmtx[2],
++            position_matrix_index_cache[0], position_matrix_index_cache[1],
++            position_matrix_index_cache[2], s_real.position[0][0], s_real.position[0][1],
++            position_cache[0][0], position_cache[0][1], s_real.position[2][0],
++            s_real.position[2][1], position_cache[2][0], position_cache[2][1], s_real.normal[0],
++            s_real.normal[1], s_real.normal[2], normal_cache[0], normal_cache[1],
++            normal_cache[2]);
++  }
++  if (++s_flushes % 20000 == 0)
++  {
++    fprintf(stderr,
++            "[vtxtail] %llu flushes, %llu draws queued, %llu culled, %llu converted here, %llu "
++            "mismatches\n",
++            s_flushes, s_draws, s_culled, s_slow, s_bad);
++  }
++}
++}  // namespace
++
++void SetAllowed(bool)
++{
++}
++
++bool Active()
++{
++  return false;
++}
++
++void Push(VertexLoaderX64*, const u8*, u8*, int)
++{
++}
++
++void OnFlush()
++{
++  if (!s_check)
++    return;
++  // Both sets as the flush reads them: compared, then each flush starts from the real ones.
++  FlushCaches();
++  Compare();
++  VertexLoaderManager::position_matrix_index_cache = s_real.posmtx;
++  VertexLoaderManager::position_cache = s_real.position;
++  VertexLoaderManager::normal_cache = s_real.normal;
++  VertexLoaderManager::tangent_cache = s_real.tangent;
++  VertexLoaderManager::binormal_cache = s_real.binormal;
++}
++
++unsigned long long HostTailMismatches()
++{
++  return s_bad;
++}
++
++void HostResync()
++{
++  // A loaded save state: both sets from it.
++  s_real.posmtx = VertexLoaderManager::position_matrix_index_cache;
++  s_real.position = VertexLoaderManager::position_cache;
++  s_real.normal = VertexLoaderManager::normal_cache;
++  s_real.tangent = VertexLoaderManager::tangent_cache;
++  s_real.binormal = VertexLoaderManager::binormal_cache;
++}
++
++void Sync()
++{
++  if (s_check)
++    FlushCaches();
++}
++
++u64 Issued()
++{
++  return 0;
++}
++
++void WaitDone(u64)
++{
++}
++
++void Shutdown()
++{
++  s_tail_count = 0;
++}
++
++void HostBeforeDraw()
++{
++  static const bool check = getenv("PS4VTX_TAIL") != nullptr;
++  s_check = check;
++  if (s_check)
++    SwapCaches();  // the real caches into the globals, for the real conversion
++}
++
++void HostAfterDraw(VertexLoaderX64* loader, const u8* src, int count, bool culled)
++{
++  if (!s_check)
++    return;
++  SwapCaches();  // the vertex thread's caches back
++  if (!loader)
++    return;
++  if (loader->HasSkippedVertex(src, count))
++  {
++    // Converted on the video thread (after the tail): the whole draw writes the caches.
++    FlushCaches();
++    static std::vector<u8> scratch;
++    scratch.resize(static_cast<size_t>(count) * 256 + 64);
++    static_cast<VertexLoaderBase*>(loader)->RunVertices(src, scratch.data(), count);
++    s_slow++;
++  }
++  else if (culled)
++  {
++    ConvertCaches(loader, src, count);
++    s_culled++;
++  }
++  else
++  {
++    ArrayState& state = s_states[s_next_state++ & 3];
++    SnapshotArrays(state);
++    AddTail(loader, src, count, &state);
++    s_draws++;
++  }
++}
++}  // namespace PS4VertexWorker
++
++#endif
 +#endif
 diff --git a/Source/Core/VideoCommon/PS4VertexWorker.h b/Source/Core/VideoCommon/PS4VertexWorker.h
 new file mode 100755
-index 0000000..27f4bbe
+index 0000000..a491bad
 --- /dev/null
 +++ b/Source/Core/VideoCommon/PS4VertexWorker.h
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,57 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -56548,6 +56975,8 @@ index 0000000..27f4bbe
 +class VertexLoaderX64;
 +
 +extern "C" int ps4_vertex_thread, ps4_vertex_thread_core;
++// Monitor counters (video thread): draws queued for the worker, draws converted here.
++extern "C" unsigned long long ps4_vtx_queued, ps4_vtx_here;
 +
 +namespace PS4VertexWorker
 +{
@@ -56565,9 +56994,13 @@ index 0000000..27f4bbe
 +// vertex_thread=on and allowed: the worker is (or will be) used.
 +bool Active();
 +// Queues the conversion of `count` vertices from `src` into `dst` (the stream buffer, space
-+// already reserved). The video thread is the only caller.
++// already reserved). The video thread is the only caller of everything below but WaitDone.
 +void Push(VertexLoaderX64* loader, const u8* src, u8* dst, int count);
-+// Waits until every queued conversion has been written (video thread).
++// A culled draw: only what the vertex manager's flush reads from its last vertices.
++void ConvertCaches(VertexLoaderX64* loader, const u8* src, int count);
++// The vertex manager flushes: the caches of the queued draws, and the worker told of them.
++void OnFlush();
++// Waits until every queued conversion has been written.
 +void Sync();
 +// The number of conversions queued so far, and a wait until that many are written (the Vulkan
 +// recording thread, before it submits the command buffer that reads them).
@@ -56575,4 +57008,12 @@ index 0000000..27f4bbe
 +void WaitDone(u64 issued);
 +// Stops the worker thread (video backend shutdown).
 +void Shutdown();
++#ifdef DOLPHIN_PS4_HOST
++// PC test bench, PS4VTX_TAIL=1: around each draw the video thread converts (VertexLoaderManager)
++// and after a save state (VertexManagerBase::DoState).
++void HostBeforeDraw();
++void HostAfterDraw(VertexLoaderX64* loader, const u8* src, int count, bool culled);
++void HostResync();
++unsigned long long HostTailMismatches();
++#endif
 +}  // namespace PS4VertexWorker
