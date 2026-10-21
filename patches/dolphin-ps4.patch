@@ -23933,7 +23933,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..a7c8fa9 100644
+index 3bf40ea..d124e87 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -23986,7 +23986,7 @@ index 3bf40ea..a7c8fa9 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +55,252 @@
+@@ -31,6 +55,253 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -24011,6 +24011,7 @@ index 3bf40ea..a7c8fa9 100644
 +extern "C" int ps4_jit_lazy_pc;          // Core/PowerPC/Jit64/Jit.cpp
 +extern "C" int ps4_jit_unroll;           // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_idle_stack;       // Core/PowerPC/PPCAnalyst.cpp
++extern "C" int ps4_efb_nowait;  // VideoCommon/FramebufferManager.cpp
 +extern "C" int ps4_jit_join;             // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_trace;            // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_lazy_fprf;        // Core/PowerPC/JitPS4/Jit.cpp
@@ -24239,7 +24240,7 @@ index 3bf40ea..a7c8fa9 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +443,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +444,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -24250,7 +24251,7 @@ index 3bf40ea..a7c8fa9 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +458,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +459,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -24269,7 +24270,7 @@ index 3bf40ea..a7c8fa9 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +490,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +491,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -24280,7 +24281,7 @@ index 3bf40ea..a7c8fa9 100644
  #endif
        });
  
-@@ -270,7 +557,520 @@ int main(const int argc, char* argv[])
+@@ -270,7 +558,524 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -24513,10 +24514,14 @@ index 3bf40ea..a7c8fa9 100644
 +    // efb_cache (Settings -> Graphics): Dolphin's EFB access cache. Exact = its defaults (64-pixel
 +    // tiles thrown away at every draw); Deferred keeps them until a GPU sync; Whole Frame reads the
 +    // whole EFB at once (tile size 0). Before the video backend starts (the tiles are made then).
++    // No Wait (nowait): Whole Frame, and peeks read the newest copy the GPU has finished
++    // instead of waiting for the one just made (VideoCommon/FramebufferManager.cpp).
 +    {
 +      const std::string efb_cache = Platform::GetPS4Option("efb_cache", "exact");
++      const bool whole_frame = efb_cache == "frame" || efb_cache == "nowait";
 +      Config::SetBase(Config::GFX_HACK_EFB_DEFER_INVALIDATION, efb_cache != "exact");
-+      Config::SetBase(Config::GFX_HACK_EFB_ACCESS_TILE_SIZE, efb_cache == "frame" ? 0 : 64);
++      Config::SetBase(Config::GFX_HACK_EFB_ACCESS_TILE_SIZE, whole_frame ? 0 : 64);
++      ps4_efb_nowait = efb_cache == "nowait";
 +    }
 +#ifdef __ORBIS__
 +    // Started here, on the main thread: the sampler thread takes its creator's core and
@@ -24801,7 +24806,7 @@ index 3bf40ea..a7c8fa9 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +1084,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +1089,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -24817,7 +24822,7 @@ index 3bf40ea..a7c8fa9 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +1112,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +1117,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -31527,10 +31532,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..55e29d6
+index 0000000..b0a8d5e
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1084 @@
+@@ -0,0 +1,1088 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -31635,12 +31640,16 @@ index 0000000..55e29d6
 +     {{"texture", "To Texture (fast)"}, {"ram", "To RAM (accurate)"}}, "texture", true,
 +     "Some effects need RAM copies; Texture is faster."},
 +    {"efb_cache", "EFB Access Cache", "Graphics",
-+     {{"exact", "Exact"}, {"deferred", "Deferred"}, {"frame", "Deferred, Whole Frame"}}, "exact",
-+     false,
++     {{"exact", "Exact"},
++      {"deferred", "Deferred"},
++      {"frame", "Deferred, Whole Frame"},
++      {"nowait", "Whole Frame, No Wait"}},
++     "exact", false,
 +     "Games that read the picture back from the GPU (Super Mario Galaxy: ~120 times a second) "
 +     "wait for each read. Deferred keeps what was read until the GPU next syncs, so most reads "
-+     "need no new readback; Whole Frame reads it all at once. Slightly old pixels for effects "
-+     "that read what they just drew. Applies at the next game start."},
++     "need no new readback; Whole Frame reads it all at once. No Wait reads the last copy the "
++     "GPU has finished (usually a frame old) instead of waiting for a new one. Slightly old "
++     "pixels for effects that read what they just drew. Applies at the next game start."},
 +    {"efb_access", "CPU Access to EFB", "Graphics", {{"on", "On"}, {"off", "Off"}}, "on", true,
 +     "Needed by some games (lens flares, cursors); Off is faster."},
 +    {"manual_texture_sampling", "Manual Texture Sampling", "Graphics",
@@ -48713,6 +48722,38 @@ index 17334db..0d1a712 100644
    };
  
    WindowSystemInfo m_wsi;
+diff --git a/Source/Core/VideoBackends/Vulkan/VKTexture.cpp b/Source/Core/VideoBackends/Vulkan/VKTexture.cpp
+index ee6a1b7..d52ea17 100644
+--- a/Source/Core/VideoBackends/Vulkan/VKTexture.cpp
++++ b/Source/Core/VideoBackends/Vulkan/VKTexture.cpp
+@@ -1032,6 +1032,15 @@ void VKStagingTexture::Unmap()
+   // Always mapped.
+ }
+ 
++bool VKStagingTexture::IsCopyFinished() const
++{
++  // The completed counter is what the last fence wait saw (no Vulkan call): it trails the GPU,
++  // so this answers "finished" a little late, never early.
++  return !m_needs_flush ||
++         (m_flush_fence_counter != g_command_buffer_mgr->GetCurrentFenceCounter() &&
++          g_command_buffer_mgr->GetCompletedFenceCounter() >= m_flush_fence_counter);
++}
++
+ void VKStagingTexture::Flush()
+ {
+   if (!m_needs_flush)
+diff --git a/Source/Core/VideoBackends/Vulkan/VKTexture.h b/Source/Core/VideoBackends/Vulkan/VKTexture.h
+index 456b4fc..3fda665 100644
+--- a/Source/Core/VideoBackends/Vulkan/VKTexture.h
++++ b/Source/Core/VideoBackends/Vulkan/VKTexture.h
+@@ -107,6 +107,7 @@ public:
+   bool Map() override;
+   void Unmap() override;
+   void Flush() override;
++  bool IsCopyFinished() const override;
+ 
+   static std::unique_ptr<VKStagingTexture> Create(StagingTextureType type,
+                                                   const TextureConfig& config);
 diff --git a/Source/Core/VideoBackends/Vulkan/VulkanContext.cpp b/Source/Core/VideoBackends/Vulkan/VulkanContext.cpp
 index d388300..4494c11 100644
 --- a/Source/Core/VideoBackends/Vulkan/VulkanContext.cpp
@@ -48885,6 +48926,22 @@ index a761a81..22dd606 100644
    return !required_functions_missing;
  }
  
+diff --git a/Source/Core/VideoCommon/AbstractStagingTexture.h b/Source/Core/VideoCommon/AbstractStagingTexture.h
+index 0baf65c..823fd48 100644
+--- a/Source/Core/VideoCommon/AbstractStagingTexture.h
++++ b/Source/Core/VideoCommon/AbstractStagingTexture.h
+@@ -67,6 +67,11 @@ public:
+   // call to CopyFromTexture()/CopyToTexture() and the Flush() call.
+   virtual void Flush() = 0;
+ 
++  // Dolphin Lab (efb_cache=nowait): true when Flush() won't have to wait for the GPU - the last
++  // CopyFromTexture is known to be finished. Backends that can't tell cheaply say so only once
++  // flushed.
++  virtual bool IsCopyFinished() const { return !m_needs_flush; }
++
+   // Reads the specified rectangle from the staging texture to out_ptr, with the specified stride
+   // (length in bytes of each row). CopyFromTexture must be called first. The contents of any
+   // texels outside of the rectangle used for CopyFromTexture is undefined.
 diff --git a/Source/Core/VideoCommon/AsyncShaderCompiler.cpp b/Source/Core/VideoCommon/AsyncShaderCompiler.cpp
 index 83eaa2e..a3988e0 100644
 --- a/Source/Core/VideoCommon/AsyncShaderCompiler.cpp
@@ -49680,7 +49737,7 @@ index 2afa110..1a54903 100644
    CoreTiming::EventType* m_event_sync_gpu = nullptr;
  
 diff --git a/Source/Core/VideoCommon/FramebufferManager.cpp b/Source/Core/VideoCommon/FramebufferManager.cpp
-index 6277598..f69475c 100644
+index 6277598..01927a9 100644
 --- a/Source/Core/VideoCommon/FramebufferManager.cpp
 +++ b/Source/Core/VideoCommon/FramebufferManager.cpp
 @@ -2,6 +2,7 @@
@@ -49691,7 +49748,22 @@ index 6277598..f69475c 100644
  
  #include <fmt/format.h>
  #include <memory>
-@@ -477,6 +478,7 @@ MathUtil::Rectangle<int> FramebufferManager::GetEFBCacheTileRect(u32 tile_index)
+@@ -26,6 +27,14 @@
+ #include "VideoCommon/VideoCommon.h"
+ #include "VideoCommon/VideoConfig.h"
+ 
++// EFB readbacks (a tile or the whole EFB copied back for CPU access), for the monitor line.
++// ps4_efb_nowait: efb_cache=nowait (Settings -> Graphics -> EFB Access Cache: Whole Frame, No
++// Wait; DolphinNoGUI/MainNoGUI.cpp).
++extern "C" {
++unsigned long long ps4_efb_readbacks = 0;
++int ps4_efb_nowait = 0;
++}
++
+ // Maximum number of pixels poked in one batch * 6
+ constexpr size_t MAX_POKE_VERTICES = 32768;
+ 
+@@ -477,16 +486,21 @@ MathUtil::Rectangle<int> FramebufferManager::GetEFBCacheTileRect(u32 tile_index)
  
  u32 FramebufferManager::PeekEFBColor(u32 x, u32 y)
  {
@@ -49699,7 +49771,22 @@ index 6277598..f69475c 100644
    // The y coordinate here assumes upper-left origin, but the readback texture is lower-left in GL.
    if (g_backend_info.bUsesLowerLeftOrigin)
      y = EFB_HEIGHT - 1 - y;
-@@ -500,6 +502,7 @@ u32 FramebufferManager::PeekEFBColor(u32 x, u32 y)
+ 
+   u32 tile_index;
++  EFBCacheData& data = m_efb_color_cache;
+   if (!IsEFBCacheTilePresent(false, x, y, &tile_index))
+-    PopulateEFBCache(false, tile_index);
++    PopulateEFBCache(false, tile_index, data.readback_next && data.front_valid);
+ 
+   m_efb_color_cache.tiles[tile_index].frame_access_mask |= 1;
+ 
++  if (data.readback_next)
++    PS4UseNewerCopy(data, !data.front_valid);
++
+   if (m_efb_color_cache.needs_flush)
+   {
+     m_efb_color_cache.readback_texture->Flush();
+@@ -500,16 +514,21 @@ u32 FramebufferManager::PeekEFBColor(u32 x, u32 y)
  
  float FramebufferManager::PeekEFBDepth(u32 x, u32 y)
  {
@@ -49707,13 +49794,85 @@ index 6277598..f69475c 100644
    // The y coordinate here assumes upper-left origin, but the readback texture is lower-left in GL.
    if (g_backend_info.bUsesLowerLeftOrigin)
      y = EFB_HEIGHT - 1 - y;
-@@ -783,8 +786,14 @@ void FramebufferManager::DestroyReadbackFramebuffer()
+ 
+   u32 tile_index;
++  EFBCacheData& data = m_efb_depth_cache;
+   if (!IsEFBCacheTilePresent(true, x, y, &tile_index))
+-    PopulateEFBCache(true, tile_index);
++    PopulateEFBCache(true, tile_index, data.readback_next && data.front_valid);
+ 
+   m_efb_depth_cache.tiles[tile_index].frame_access_mask |= 1;
+ 
++  if (data.readback_next)
++    PS4UseNewerCopy(data, !data.front_valid);
++
+   if (m_efb_depth_cache.needs_flush)
+   {
+     m_efb_depth_cache.readback_texture->Flush();
+@@ -567,6 +586,15 @@ void FramebufferManager::RefreshPeekCache()
+ 
+ void FramebufferManager::InvalidatePeekCache(bool forced)
+ {
++  if (forced)
++  {
++    for (EFBCacheData* data : {&m_efb_color_cache, &m_efb_depth_cache})
++    {
++      data->next_pending = false;
++      data->front_valid = false;
++      data->front_age = 0;
++    }
++  }
+   if (forced || m_efb_color_cache.out_of_date)
+   {
+     if (m_efb_color_cache.has_active_tiles)
+@@ -748,6 +776,19 @@ bool FramebufferManager::CreateReadbackFramebuffer()
+                     AbstractTextureType::Texture_2DArray));
+   if (!m_efb_color_cache.readback_texture || !m_efb_depth_cache.readback_texture)
+     return false;
++  if (ps4_efb_nowait && !IsUsingTiledEFBCache())
++  {
++    m_efb_color_cache.readback_next = g_gfx->CreateStagingTexture(
++        StagingTextureType::Mutable,
++        TextureConfig(EFB_WIDTH, EFB_HEIGHT, 1, 1, 1, GetEFBColorFormat(), 0,
++                      AbstractTextureType::Texture_2DArray));
++    m_efb_depth_cache.readback_next = g_gfx->CreateStagingTexture(
++        StagingTextureType::Mutable,
++        TextureConfig(EFB_WIDTH, EFB_HEIGHT, 1, 1, 1, GetEFBDepthCopyFormat(), 0,
++                      AbstractTextureType::Texture_2DArray));
++    if (!m_efb_color_cache.readback_next || !m_efb_depth_cache.readback_next)
++      return false;
++  }
+ 
+   u32 total_tiles = 1;
+   if (IsUsingTiledEFBCache())
+@@ -774,6 +815,10 @@ void FramebufferManager::DestroyReadbackFramebuffer()
+ {
+   auto DestroyCache = [](EFBCacheData& data) {
+     data.readback_texture.reset();
++    data.readback_next.reset();
++    data.next_pending = false;
++    data.front_valid = false;
++    data.front_age = 0;
+     data.framebuffer.reset();
+     data.texture.reset();
+     data.needs_refresh = false;
+@@ -783,8 +828,24 @@ void FramebufferManager::DestroyReadbackFramebuffer()
    DestroyCache(m_efb_depth_cache);
  }
  
-+// EFB readbacks (a tile or the whole EFB copied back for CPU access), for the monitor line.
-+extern "C" {
-+unsigned long long ps4_efb_readbacks = 0;
++// Peeks read the newest copy of the EFB the GPU has finished - normally the one made at the
++// game's previous GPU sync - instead of waiting for the one just queued (Super Mario Galaxy:
++// ~60 waits a second, 12% of the video thread, JIT Lab v60.44). The front copy is never more
++// than two copies behind: then the newer one is read even if that means waiting.
++void FramebufferManager::PS4UseNewerCopy(EFBCacheData& data, bool force)
++{
++  if (!data.next_pending || (!force && !data.readback_next->IsCopyFinished()))
++    return;
++  std::swap(data.readback_texture, data.readback_next);
++  data.next_pending = false;
++  data.front_valid = true;
++  data.front_age = 0;
++  data.needs_flush = true;
 +}
 +
  void FramebufferManager::PopulateEFBCache(bool depth, u32 tile_index, bool async)
@@ -49721,6 +49880,80 @@ index 6277598..f69475c 100644
 +  ps4_efb_readbacks++;
    FlushEFBPokes();
    g_vertex_manager->OnCPUEFBAccess();
+ 
+@@ -798,6 +859,14 @@ void FramebufferManager::PopulateEFBCache(bool depth, u32 tile_index, bool async
+ 
+   // Issue a copy from framebuffer -> copy texture if we have >1xIR or MSAA on.
+   EFBCacheData& data = depth ? m_efb_depth_cache : m_efb_color_cache;
++  // efb_cache=nowait: keep the copy peeks read now; this one goes to readback_next.
++  AbstractStagingTexture* target = data.readback_texture.get();
++  if (data.readback_next)
++  {
++    if (data.next_pending)
++      PS4UseNewerCopy(data, data.front_age >= 2);
++    target = data.readback_next.get();
++  }
+   const MathUtil::Rectangle<int> rect = GetEFBCacheTileRect(tile_index);
+   const MathUtil::Rectangle<int> native_rect = ConvertEFBRectangle(rect);
+   AbstractTexture* src_texture =
+@@ -829,7 +898,7 @@ void FramebufferManager::PopulateEFBCache(bool depth, u32 tile_index, bool async
+ 
+     // Copy from EFB or copy texture to staging texture.
+     // No need to call FinishedRendering() here because CopyFromTexture() transitions.
+-    data.readback_texture->CopyFromTexture(
++    target->CopyFromTexture(
+         data.texture.get(), MathUtil::Rectangle<int>(0, 0, rect.GetWidth(), rect.GetHeight()), 0, 0,
+         rect);
+ 
+@@ -837,11 +906,23 @@ void FramebufferManager::PopulateEFBCache(bool depth, u32 tile_index, bool async
+   }
+   else
+   {
+-    data.readback_texture->CopyFromTexture(src_texture, rect, 0, 0, rect);
++    target->CopyFromTexture(src_texture, rect, 0, 0, rect);
+   }
+ 
++  if (target != data.readback_texture.get())
++  {
++    data.next_pending = true;
++    data.front_age++;
++    // A peek that can't use an older copy waits for this one.
++    if (!async)
++    {
++      PS4UseNewerCopy(data, true);
++      data.readback_texture->Flush();
++      data.needs_flush = false;
++    }
++  }
+   // Wait until the copy is complete.
+-  if (!async)
++  else if (!async)
+   {
+     data.readback_texture->Flush();
+     data.needs_flush = false;
+diff --git a/Source/Core/VideoCommon/FramebufferManager.h b/Source/Core/VideoCommon/FramebufferManager.h
+index 9f10918..945e613 100644
+--- a/Source/Core/VideoCommon/FramebufferManager.h
++++ b/Source/Core/VideoCommon/FramebufferManager.h
+@@ -158,8 +158,19 @@ protected:
+     bool has_active_tiles;
+     bool needs_refresh;
+     bool needs_flush;
++    // Dolphin Lab, efb_cache=nowait (whole-frame cache): a second readback texture. New copies go
++    // to readback_next; peeks read readback_texture and move on to the newer copy once the GPU
++    // has finished it, so a peek doesn't wait for the GPU.
++    std::unique_ptr<AbstractStagingTexture> readback_next;
++    bool next_pending = false;  // readback_next holds a copy newer than readback_texture
++    bool front_valid = false;   // readback_texture holds a copy
++    u32 front_age = 0;          // copies made since readback_texture's
+   };
+ 
++  // efb_cache=nowait: reads the newer copy from now on - once the GPU has finished it, or anyway
++  // when `force` (Flush() then waits for it).
++  void PS4UseNewerCopy(EFBCacheData& data, bool force);
++
+   bool CreateEFBFramebuffer(int efb_scale);
+   void DestroyEFBFramebuffer();
  
 diff --git a/Source/Core/VideoCommon/IndexGenerator.cpp b/Source/Core/VideoCommon/IndexGenerator.cpp
 index 4decd2b..245d9ea 100644
