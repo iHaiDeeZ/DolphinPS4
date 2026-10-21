@@ -46731,11 +46731,11 @@ index 45a322c..b92b5c5 100644
      std::vector<std::function<void()>> cleanup_resources;
    };
 diff --git a/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp
-new file mode 100755
-index 0000000..eda60c8
+new file mode 100644
+index 0000000..51d1dc0
 --- /dev/null
 +++ b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp
-@@ -0,0 +1,1271 @@
+@@ -0,0 +1,1277 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -46929,13 +46929,19 @@ index 0000000..eda60c8
 +  }
 +}
 +
-+void Pause(u32& spins)
++// A wait for the worker spins first, by time (`start`: the time stamp counter when it began): a
++// pause is a few cycles on the Jaguar, and 64 of them before yields and 20 us sleeps (which the
++// PS4's kernel overshoots) made v60.50's waits ~4 ms per full drain while the worker waited
++// microseconds for the vertex thread. ~200 us of spinning, then yields up to ~2 ms, then sleeps.
++void Pause(u64 start)
 +{
-+  if (++spins < 64)
++  const u64 waited = __rdtsc() - start;
++  if (waited < 200 * 1600)
 +  {
-+    _mm_pause();
++    for (int i = 0; i < 8; i++)
++      _mm_pause();
 +  }
-+  else if (spins < 256)
++  else if (waited < 2000 * 1600)
 +  {
 +    std::this_thread::yield();
 +  }
@@ -46947,11 +46953,11 @@ index 0000000..eda60c8
 +
 +void WaitForSpace(size_t size)
 +{
-+  u32 spins = 0;
++  const u64 start = __rdtsc();
 +  while (s_reserve + size - s_read.load(std::memory_order_acquire) > RING_SIZE)
 +  {
 +    WakeWorker();
-+    Pause(spins);
++    Pause(start);
 +  }
 +}
 +
@@ -47919,11 +47925,11 @@ index 0000000..eda60c8
 +  if (s_read.load(std::memory_order_acquire) >= target)
 +    return;
 +  const auto t0 = std::chrono::steady_clock::now();
-+  u32 spins = 0;
++  const u64 start = __rdtsc();
 +  while (s_read.load(std::memory_order_acquire) < target)
 +  {
 +    WakeWorker();
-+    Pause(spins);
++    Pause(start);
 +  }
 +  ps4_wait_add(2, std::chrono::nanoseconds(std::chrono::steady_clock::now() - t0).count());
 +  ps4_wait_add(count_slot, 1);
@@ -51935,7 +51941,7 @@ index 4a58c6f..c006641 100644
    clear_scissors = true;
    if (scissors.size() > 1)
 diff --git a/Source/Core/VideoCommon/TextureCacheBase.cpp b/Source/Core/VideoCommon/TextureCacheBase.cpp
-index 4e4567d..70be536 100644
+index 4e4567d..c1e233a 100644
 --- a/Source/Core/VideoCommon/TextureCacheBase.cpp
 +++ b/Source/Core/VideoCommon/TextureCacheBase.cpp
 @@ -2,6 +2,7 @@
@@ -52124,7 +52130,52 @@ index 4e4567d..70be536 100644
    // Emulation methods:
    //
    // - EFB to RAM:
-@@ -3257,7 +3390,11 @@ u64 TCacheEntry::CalculateHash() const
+@@ -2621,6 +2754,32 @@ void TextureCacheBase::ReleaseEFBCopyStagingTexture(std::unique_ptr<AbstractStag
+   m_efb_copy_staging_texture_pool.push_back(std::move(tex));
+ }
+ 
++#ifdef __ORBIS__
++// PS4: whether a row is all zero already. An EFB copy made to the same place every frame finds
++// its memory as the last one left it, and reading it costs about half of zeroing it again (the
++// memset: ~2.7% of Super Mario Galaxy's video thread, ~13 copies a frame).
++static bool PS4IsZero(const u8* p, u32 size)
++{
++  u32 i = 0;
++  for (; i + 64 <= size; i += 64)
++  {
++    const __m128i a = _mm_or_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i)),
++                                   _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i + 16)));
++    const __m128i b =
++        _mm_or_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i + 32)),
++                     _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i + 48)));
++    if (_mm_movemask_epi8(_mm_cmpeq_epi8(_mm_or_si128(a, b), _mm_setzero_si128())) != 0xFFFF)
++      return false;
++  }
++  for (; i < size; i++)
++  {
++    if (p[i] != 0)
++      return false;
++  }
++  return true;
++}
++#endif
++
+ void TextureCacheBase::UninitializeEFBMemory(u8* dst, u32 stride, u32 bytes_per_row,
+                                              u32 num_blocks_y)
+ {
+@@ -2630,7 +2789,10 @@ void TextureCacheBase::UninitializeEFBMemory(u8* dst, u32 stride, u32 bytes_per_
+   u8* ptr = dst;
+   for (u32 i = 0; i < num_blocks_y; i++)
+   {
+-    std::memset(ptr, 0, bytes_per_row);
++#ifdef __ORBIS__
++    if (!PS4IsZero(ptr, bytes_per_row))
++#endif
++      std::memset(ptr, 0, bytes_per_row);
+     ptr += stride;
+   }
+ }
+@@ -3257,7 +3419,11 @@ u64 TCacheEntry::CalculateHash() const
    u8* ptr = memory.GetPointerForRange(addr, size_in_bytes);
    if (memory_stride == bytes_per_row)
    {
@@ -57004,10 +57055,10 @@ index 0000000..01ac37c
 +}  // namespace PS4FrameGen
 diff --git a/Source/Core/VideoCommon/PS4VertexWorker.cpp b/Source/Core/VideoCommon/PS4VertexWorker.cpp
 new file mode 100644
-index 0000000..4403044
+index 0000000..c60b80f
 --- /dev/null
 +++ b/Source/Core/VideoCommon/PS4VertexWorker.cpp
-@@ -0,0 +1,761 @@
+@@ -0,0 +1,797 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -57309,14 +57360,30 @@ index 0000000..4403044
 +  WakeWorker();
 +}
 +
-+void Pause(u32& spins)
++// A wait for the worker spins first, by time: the waits are mostly microseconds (the last job of
++// a submit or a flush), and a pause is a few cycles on the Jaguar - 64 of them, then yields and
++// 20 us sleeps (which the PS4's kernel overshoots) made v60.50's microsecond waits for a run cost
++// the Vulkan thread ~115 ms a second, and through it the video thread ~165. Then yields, then
++// sleeps.
++constexpr u64 WAIT_SPIN_TICKS = 200 * 1600;    // 200 us of the 1.6 GHz time stamp counter
++constexpr u64 WAIT_YIELD_TICKS = 2000 * 1600;  // then yields up to 2 ms
++
++void Pause(u64 start)
 +{
-+  if (++spins < 64)
-+    _mm_pause();
-+  else if (spins < 256)
++  const u64 waited = __rdtsc() - start;
++  if (waited < WAIT_SPIN_TICKS)
++  {
++    for (int i = 0; i < 8; i++)
++      _mm_pause();
++  }
++  else if (waited < WAIT_YIELD_TICKS)
++  {
 +    std::this_thread::yield();
++  }
 +  else
++  {
 +    std::this_thread::sleep_for(std::chrono::microseconds(20));
++  }
 +}
 +
 +// Waits until `target` conversions are written; the monitor's time and count slots.
@@ -57325,11 +57392,11 @@ index 0000000..4403044
 +  if (s_done.load(std::memory_order_acquire) >= target)
 +    return;
 +  const auto t0 = std::chrono::steady_clock::now();
-+  u32 spins = 0;
++  const u64 start = __rdtsc();
 +  while (s_done.load(std::memory_order_acquire) < target)
 +  {
 +    WakeWorker();
-+    Pause(spins);
++    Pause(start);
 +  }
 +  ps4_wait_add(ns_slot,
 +               std::chrono::nanoseconds(std::chrono::steady_clock::now() - t0).count());
@@ -57354,6 +57421,18 @@ index 0000000..4403044
 +    char line[128];
 +    snprintf(line, sizeof(line), "vertex_thread: worker on core %d (result 0x%x)",
 +             ps4_vertex_thread_core, affinity);
++    ps4_boot_trace(line);
++    // What the waits' fallbacks really cost here (Pause): a 20 us sleep and a yield.
++    const u64 t0 = __rdtsc();
++    for (int i = 0; i < 10; i++)
++      std::this_thread::sleep_for(std::chrono::microseconds(20));
++    const u64 t1 = __rdtsc();
++    for (int i = 0; i < 100; i++)
++      std::this_thread::yield();
++    const u64 t2 = __rdtsc();
++    snprintf(line, sizeof(line), "vertex_thread: a 20 us sleep takes %llu us, a yield %llu ns",
++             static_cast<unsigned long long>((t1 - t0) / 10 / 1600),
++             static_cast<unsigned long long>((t2 - t1) / 100 * 10 / 16));
 +    ps4_boot_trace(line);
 +  }
 +  u64 done = s_done.load(std::memory_order_relaxed);
@@ -57426,18 +57505,26 @@ index 0000000..4403044
 +}
 +
 +// The vertex arrays' bases and strides of now: the latest snapshot while they are unchanged
-+// (`same_arrays`: they can't have changed since the last job).
++// (`same_arrays`: they can't have changed since the last job). Compared without branches: the
++// loop that stopped at the first difference cost ~430 cycles a job (2.7% of Super Mario
++// Galaxy's video thread, ~97,000 jobs a second).
 +const ArrayState* CurrentArrays(bool same_arrays)
 +{
 +  const ArrayState* arrays = s_arrays_latest;
 +  if (!same_arrays || !arrays)
 +  {
-+    bool same = arrays != nullptr;
-+    for (u32 i = 0; i < 12 && same; i++)
++    bool same = false;
++    if (arrays)
 +    {
-+      const CPArray array = static_cast<CPArray>(i);
-+      same = arrays->bases[i] == VertexLoaderManager::cached_arraybases[array] &&
-+             arrays->strides[i] == g_main_cp_state.array_strides[array];
++      u64 diff = 0;
++      for (u32 i = 0; i < 12; i++)
++      {
++        const CPArray array = static_cast<CPArray>(i);
++        diff |= reinterpret_cast<uintptr_t>(arrays->bases[i]) ^
++                reinterpret_cast<uintptr_t>(VertexLoaderManager::cached_arraybases[array]);
++        diff |= arrays->strides[i] ^ g_main_cp_state.array_strides[array];
++      }
++      same = diff == 0;
 +    }
 +    if (!same)
 +    {
