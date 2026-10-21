@@ -23933,7 +23933,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..d124e87 100644
+index 3bf40ea..542a8ca 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -23986,7 +23986,7 @@ index 3bf40ea..d124e87 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +55,253 @@
+@@ -31,6 +55,254 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -24012,6 +24012,7 @@ index 3bf40ea..d124e87 100644
 +extern "C" int ps4_jit_unroll;           // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_idle_stack;       // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_efb_nowait;  // VideoCommon/FramebufferManager.cpp
++extern "C" int ps4_vertex_thread, ps4_vertex_thread_core;  // VideoCommon/PS4VertexWorker.cpp
 +extern "C" int ps4_jit_join;             // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_trace;            // Core/PowerPC/PPCAnalyst.cpp
 +extern "C" int ps4_jit_lazy_fprf;        // Core/PowerPC/JitPS4/Jit.cpp
@@ -24240,7 +24241,7 @@ index 3bf40ea..d124e87 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +444,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +445,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -24251,7 +24252,7 @@ index 3bf40ea..d124e87 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +459,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +460,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -24270,7 +24271,7 @@ index 3bf40ea..d124e87 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +491,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +492,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -24281,7 +24282,7 @@ index 3bf40ea..d124e87 100644
  #endif
        });
  
-@@ -270,7 +558,524 @@ int main(const int argc, char* argv[])
+@@ -270,7 +559,529 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -24704,6 +24705,11 @@ index 3bf40ea..d124e87 100644
 +      ps4_vk_thread_mode = mode == "inline" ? 2 : mode == "sync" ? 1 : 0;
 +    }
 +    ps4_vk_spin_us = std::atoi(Platform::GetPS4Option("vk_spin_us", "100").c_str());
++    // vertex_thread=off (Dolphin Lab): draws convert their vertices on the video thread again
++    // (VideoCommon/PS4VertexWorker.cpp); vertex_thread_core: the worker's core.
++    ps4_vertex_thread = Platform::GetPS4Option("vertex_thread", "on") == "on";
++    ps4_vertex_thread_core =
++        std::atoi(Platform::GetPS4Option("vertex_thread_core", "1").c_str());
 +    // fifo_defer=on (with fifo_batch): JIT blocks leave GPU commands in the gather pipe until
 +    // 128 bytes collect (flushed before any hardware register access and every timing slice).
 +    ps4_fifo_defer = ps4_fifo_batch && Platform::GetPS4Option("fifo_defer", "off") == "on";
@@ -24806,7 +24812,7 @@ index 3bf40ea..d124e87 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +1089,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +1095,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -24822,7 +24828,7 @@ index 3bf40ea..d124e87 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +1117,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +1123,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -31532,10 +31538,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100755
-index 0000000..b0a8d5e
+index 0000000..85e19fd
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1088 @@
+@@ -0,0 +1,1091 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -31725,6 +31731,9 @@ index 0000000..b0a8d5e
 +     "its own waits for the GPU, then shows it. Applies at the next game start."},
 +    {"vk_thread", "Vulkan Thread", "Performance", {{"on", "On"}, {"off", "Off"}}, "on", false,
 +     "Records graphics commands on a separate core."},
++    {"vertex_thread", "Vertex Thread", "Performance", {{"on", "On"}, {"off", "Off"}}, "on", false,
++     "Converts the game's 3D models for the GPU on a separate core (needs Vulkan Thread on). "
++     "Applies at the next game start."},
 +    {"gc_bios", "GameCube Boot Animation", "System", {{"on", "On"}, {"off", "Off"}}, "on", false,
 +     "Plays the GameCube's own start-up animation before a game, when its BIOS is on the PS4: "
 +     "/data/DolphinPS4/User/GC/USA/IPL.bin (EUR or JAP for other regions)."},
@@ -41177,7 +41186,7 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..a5dc2f8
+index 0000000..c7d88b9
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 @@ -0,0 +1,2193 @@
@@ -41973,12 +41982,12 @@ index 0000000..a5dc2f8
 +      {
 +        // How busy the CPU and video threads really are (their own CPU time per wall time):
 +        // under ~95% at full speed means room for a higher cpu_clock.
-+        static double s_last_wall = 0, s_last_cpu[3] = {};
++        static double s_last_wall = 0, s_last_cpu[4] = {};
 +        const double wall = std::chrono::duration<double>(
 +                                std::chrono::steady_clock::now().time_since_epoch())
 +                                .count();
-+        double busy[3] = {-1, -1, -1};
-+        for (int i = 0; i < 3; i++)
++        double busy[4] = {-1, -1, -1, -1};
++        for (int i = 0; i < 4; i++)
 +        {
 +          const double cpu = ps4_thread_cpu_seconds(i);
 +          if (s_last_wall > 0 && cpu > 0 && s_last_cpu[i] > 0)
@@ -41988,8 +41997,8 @@ index 0000000..a5dc2f8
 +        s_last_wall = wall;
 +        const size_t used = strlen(line);
 +        snprintf(line + used, sizeof(line) - used,
-+                 ", thread busy: cpu %.0f%% video %.0f%% vk %.0f%%, cpu clock %d%%", busy[0],
-+                 busy[1], busy[2],
++                 ", thread busy: cpu %.0f%% video %.0f%% vk %.0f%% vtx %.0f%%, cpu clock %d%%",
++                 busy[0], busy[1], busy[2], busy[3],
 +                 ps4_auto_clock > 0 ?
 +                     ps4_auto_clock :
 +                     static_cast<int>(Config::Get(Config::MAIN_OVERCLOCK_ENABLE) ?
@@ -42007,14 +42016,14 @@ index 0000000..a5dc2f8
 +        // Where the threads wait, ms per second: the CPU thread for the GPU thread (FlushGpu), the
 +        // GPU thread for work, the video thread for the Vulkan recording thread, GPU fences.
 +        {
-+          static long long s_last_waits[16] = {};
++          static long long s_last_waits[19] = {};
 +          const size_t used3 = strlen(line);
-+          long long ms[16];
-+          for (int i = 0; i < 16; i++)
++          long long ms[19];
++          for (int i = 0; i < 19; i++)
 +          {
 +            const long long total = ps4_wait_total(i);
 +            const long long delta = total - s_last_waits[i];
-+            const bool count = i == 5 || i >= 10;
++            const bool count = i == 5 || (i >= 10 && i <= 15) || i == 17;
 +            ms[i] = static_cast<long long>(count ? delta / period : delta / period / 1000000);
 +            s_last_waits[i] = total;
 +          }
@@ -42026,9 +42035,9 @@ index 0000000..a5dc2f8
 +          snprintf(line + used3, sizeof(line) - used3,
 +                   ", waits ms/s: cpu-for-gpu %lld gpu-idle %lld vk-drain %lld (full %lld/s to-submit "
 +                   "%lld/s) fences %lld (sync %lld/%lld ring %lld/%lld frame %lld/%lld other "
-+                   "%lld/%lld), compiles %lld/s %lld ms/s",
++                   "%lld/%lld), vtx-wait %lld/%lld vk-vtx %lld, compiles %lld/s %lld ms/s",
 +                   ms[0], ms[1], ms[2], ms[14], ms[15], ms[3], ms[6], ms[10], ms[7], ms[11], ms[8],
-+                   ms[12], ms[9], ms[13], ms[5], ms[4]);
++                   ms[12], ms[9], ms[13], ms[16], ms[17], ms[18], ms[5], ms[4]);
 +        }
 +#ifdef HAS_VULKAN
 +        {
@@ -46702,10 +46711,10 @@ index 45a322c..b92b5c5 100644
    };
 diff --git a/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp
 new file mode 100755
-index 0000000..ee4973f
+index 0000000..eda60c8
 --- /dev/null
 +++ b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp
-@@ -0,0 +1,1266 @@
+@@ -0,0 +1,1271 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -46745,6 +46754,7 @@ index 0000000..ee4973f
 +#include "Common/Logging/Log.h"
 +#include "Common/Thread.h"
 +#include "VideoBackends/Vulkan/VulkanLoader.h"
++#include "VideoCommon/PS4VertexWorker.h"
 +
 +extern "C" {
 +int ps4_vk_thread = 0;       // ps4.ini vk_thread=on
@@ -47068,6 +47078,8 @@ index 0000000..ee4973f
 +  {
 +    const auto queue = r.Get<VkQueue>();
 +    const auto fence = r.Get<VkFence>();
++    // The vertices it draws (VideoCommon/PS4VertexWorker.cpp).
++    PS4VertexWorker::WaitDone(r.Get<u64>());
 +    const u32 count = r.Get<u32>();
 +    VkSubmitInfo submits[4];
 +    for (u32 i = 0; i < count && i < 4; i++)
@@ -47426,7 +47438,7 @@ index 0000000..ee4973f
 +VKAPI_ATTR VkResult VKAPI_CALL Rec_vkQueueSubmit(VkQueue queue, uint32_t count,
 +                                                 const VkSubmitInfo* submits, VkFence fence)
 +{
-+  size_t size = sizeof(queue) + sizeof(fence) + 4;
++  size_t size = sizeof(queue) + sizeof(fence) + sizeof(u64) + 4;
 +  bool simple = count <= 4;
 +  for (u32 i = 0; i < count; i++)
 +  {
@@ -47440,11 +47452,13 @@ index 0000000..ee4973f
 +  {
 +    // Not expected from Dolphin: submit directly, in order.
 +    PS4CommandRecorderDrain();
++    PS4VertexWorker::WaitDone(PS4VertexWorker::Issued());
 +    return s_real.real_vkQueueSubmit(queue, count, submits, fence);
 +  }
 +  Writer w(Begin(OP_QueueSubmit, size));
 +  w.Put(queue);
 +  w.Put(fence);
++  w.Put(PS4VertexWorker::Issued());
 +  w.Put(count);
 +  for (u32 i = 0; i < count; i++)
 +  {
@@ -48309,6 +48323,44 @@ index 82bf1f2..0fb51d2 100644
  
  private:
    VkPipeline m_pipeline;
+diff --git a/Source/Core/VideoBackends/Vulkan/VKStreamBuffer.cpp b/Source/Core/VideoBackends/Vulkan/VKStreamBuffer.cpp
+index 69ce9d6..a175fc1 100644
+--- a/Source/Core/VideoBackends/Vulkan/VKStreamBuffer.cpp
++++ b/Source/Core/VideoBackends/Vulkan/VKStreamBuffer.cpp
+@@ -78,6 +78,11 @@ bool StreamBuffer::AllocateBuffer()
+   m_buffer = buffer;
+   m_alloc = alloc;
+   m_host_pointer = static_cast<u8*>(alloc_info.pMappedData);
++  {
++    VkMemoryPropertyFlags flags = 0;
++    vmaGetAllocationMemoryProperties(g_vulkan_context->GetMemoryAllocator(), alloc, &flags);
++    m_coherent = (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
++  }
+   m_current_offset = 0;
+   m_current_gpu_position = 0;
+   m_tracked_fences.clear();
+diff --git a/Source/Core/VideoBackends/Vulkan/VKStreamBuffer.h b/Source/Core/VideoBackends/Vulkan/VKStreamBuffer.h
+index 61979c6..3570641 100644
+--- a/Source/Core/VideoBackends/Vulkan/VKStreamBuffer.h
++++ b/Source/Core/VideoBackends/Vulkan/VKStreamBuffer.h
+@@ -26,6 +26,9 @@ public:
+   u32 GetCurrentOffset() const { return m_current_offset; }
+   bool ReserveMemory(u32 num_bytes, u32 alignment);
+   void CommitMemory(u32 final_num_bytes);
++  // PS4 port: host-coherent memory (CommitMemory's flush is a no-op), so vertices written after
++  // the commit (the vertex worker, VideoCommon/PS4VertexWorker.cpp) still reach the GPU.
++  bool IsCoherent() const { return m_coherent; }
+ 
+   static std::unique_ptr<StreamBuffer> Create(VkBufferUsageFlags usage, u32 size);
+ 
+@@ -49,6 +52,7 @@ private:
+ 
+   // List of fences and the corresponding positions in the buffer
+   std::deque<std::pair<u64, u32>> m_tracked_fences;
++  bool m_coherent = false;
+ };
+ 
+ }  // namespace Vulkan
 diff --git a/Source/Core/VideoBackends/Vulkan/VKSwapChain.cpp b/Source/Core/VideoBackends/Vulkan/VKSwapChain.cpp
 index 370e22d..ed9b0e8 100644
 --- a/Source/Core/VideoBackends/Vulkan/VKSwapChain.cpp
@@ -48826,6 +48878,64 @@ index 456b4fc..3fda665 100644
  
    static std::unique_ptr<VKStagingTexture> Create(StagingTextureType type,
                                                    const TextureConfig& config);
+diff --git a/Source/Core/VideoBackends/Vulkan/VKVertexManager.cpp b/Source/Core/VideoBackends/Vulkan/VKVertexManager.cpp
+index 18c5ad5..fcb9841 100644
+--- a/Source/Core/VideoBackends/Vulkan/VKVertexManager.cpp
++++ b/Source/Core/VideoBackends/Vulkan/VKVertexManager.cpp
+@@ -12,6 +12,7 @@
+ 
+ #include "Core/System.h"
+ 
++#include "VideoBackends/Vulkan/PS4CommandRecorder.h"
+ #include "VideoBackends/Vulkan/StateTracker.h"
+ #include "VideoBackends/Vulkan/VKGfx.h"
+ #include "VideoBackends/Vulkan/VKStreamBuffer.h"
+@@ -19,10 +20,13 @@
+ 
+ #include "VideoCommon/GeometryShaderManager.h"
+ #include "VideoCommon/IndexGenerator.h"
++#include "VideoCommon/PS4VertexWorker.h"
+ #include "VideoCommon/PixelShaderManager.h"
+ #include "VideoCommon/Statistics.h"
+ #include "VideoCommon/VertexShaderManager.h"
+ 
++extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
++
+ namespace Vulkan
+ {
+ static VkBufferView CreateTexelBufferView(VkBuffer buffer, VkFormat vk_format)
+@@ -53,6 +57,9 @@ VertexManager::VertexManager() = default;
+ 
+ VertexManager::~VertexManager()
+ {
++  // The vertex worker writes into the stream buffer (VideoCommon/PS4VertexWorker.cpp).
++  PS4VertexWorker::Shutdown();
++  PS4VertexWorker::SetAllowed(false);
+   DestroyTexelBufferViews();
+ }
+ 
+@@ -73,6 +80,21 @@ bool VertexManager::Initialize()
+     PanicAlertFmt("Failed to allocate streaming buffers");
+     return false;
+   }
++#ifdef __ORBIS__
++  // vertex_thread (VideoCommon/PS4VertexWorker.cpp): the recording thread's submits wait for
++  // the worker's vertices, and only host-coherent memory lets them be written after the commit.
++  {
++    const bool recorder = PS4CommandRecorderActive();
++    const bool coherent = m_vertex_stream_buffer->IsCoherent();
++    PS4VertexWorker::SetAllowed(recorder && coherent);
++    char line[160];
++    snprintf(line, sizeof(line),
++             "vertex_thread: %s (setting %s, Vulkan thread %s, stream buffer %s)",
++             PS4VertexWorker::Active() ? "on" : "off", ps4_vertex_thread ? "on" : "off",
++             recorder ? "on" : "off", coherent ? "coherent" : "not coherent");
++    ps4_boot_trace(line);
++  }
++#endif
+ 
+   // The validation layer complains if max(offsets) + max(ubo_ranges) >= ubo_size.
+   // To work around this we reserve the maximum buffer size at all times, but only commit
 diff --git a/Source/Core/VideoBackends/Vulkan/VulkanContext.cpp b/Source/Core/VideoBackends/Vulkan/VulkanContext.cpp
 index d388300..4494c11 100644
 --- a/Source/Core/VideoBackends/Vulkan/VulkanContext.cpp
@@ -49015,7 +49125,7 @@ index 0baf65c..823fd48 100644
    // (length in bytes of each row). CopyFromTexture must be called first. The contents of any
    // texels outside of the rectangle used for CopyFromTexture is undefined.
 diff --git a/Source/Core/VideoCommon/AsyncShaderCompiler.cpp b/Source/Core/VideoCommon/AsyncShaderCompiler.cpp
-index 83eaa2e..a3988e0 100644
+index 83eaa2e..c64d94a 100644
 --- a/Source/Core/VideoCommon/AsyncShaderCompiler.cpp
 +++ b/Source/Core/VideoCommon/AsyncShaderCompiler.cpp
 @@ -3,6 +3,8 @@
@@ -49027,12 +49137,13 @@ index 83eaa2e..a3988e0 100644
  #include <thread>
  
  #include "Common/Assert.h"
-@@ -12,6 +14,64 @@
+@@ -12,6 +14,66 @@
  #include "Core/Core.h"
  #include "Core/System.h"
  
 +#ifdef __ORBIS__
 +extern "C" int ps4_cpu_thread_core, ps4_gpu_thread_core;  // Core/Core.cpp
++extern "C" int ps4_vertex_thread_core;  // VideoCommon/PS4VertexWorker.cpp
 +extern "C" int ps4_vk_thread_core;     // VideoBackends/Vulkan/PS4CommandRecorder.cpp
 +extern "C" int ps4_audio_thread_core;  // AudioCommon/PS4AudioStream.cpp
 +extern "C" void ps4_boot_trace(const char* line);
@@ -49047,7 +49158,8 @@ index 83eaa2e..a3988e0 100644
 +{
 +  unsigned long long mask = 0x3F;  // the game cores, 0-5
 +  for (const int core :
-+       {ps4_cpu_thread_core, ps4_gpu_thread_core, ps4_vk_thread_core, ps4_audio_thread_core})
++       {ps4_cpu_thread_core, ps4_gpu_thread_core, ps4_vk_thread_core, ps4_audio_thread_core,
++       ps4_vertex_thread_core})
 +  {
 +    if (core >= 0 && core < 6)
 +      mask &= ~(1ULL << core);
@@ -49092,7 +49204,7 @@ index 83eaa2e..a3988e0 100644
  namespace VideoCommon
  {
  AsyncShaderCompiler::AsyncShaderCompiler()
-@@ -206,6 +266,9 @@ void AsyncShaderCompiler::WorkerThreadExit(void* param)
+@@ -206,6 +268,9 @@ void AsyncShaderCompiler::WorkerThreadExit(void* param)
  void AsyncShaderCompiler::WorkerThreadEntryPoint(void* param)
  {
    Common::SetCurrentThreadName("AsyncShaderCompiler Worker");
@@ -49103,10 +49215,18 @@ index 83eaa2e..a3988e0 100644
    // Initialize worker thread with backend-specific method.
    if (!WorkerThreadInitWorkerThread(param))
 diff --git a/Source/Core/VideoCommon/BPStructs.cpp b/Source/Core/VideoCommon/BPStructs.cpp
-index 180bc86..e55ccfc 100644
+index 180bc86..e92f4b4 100644
 --- a/Source/Core/VideoCommon/BPStructs.cpp
 +++ b/Source/Core/VideoCommon/BPStructs.cpp
-@@ -43,6 +43,12 @@
+@@ -30,6 +30,7 @@
+ #include "VideoCommon/PerfQueryBase.h"
+ #include "VideoCommon/PixelEngine.h"
+ #include "VideoCommon/PixelShaderManager.h"
++#include "VideoCommon/PS4VertexWorker.h"
+ #include "VideoCommon/Present.h"
+ #include "VideoCommon/Statistics.h"
+ #include "VideoCommon/TMEM.h"
+@@ -43,6 +44,12 @@
  
  using namespace BPFunctions;
  
@@ -49119,7 +49239,32 @@ index 180bc86..e55ccfc 100644
  static constexpr Common::EnumMap<float, GammaCorrection::Invalid2_2> s_gammaLUT = {1.0f, 1.7f, 2.2f,
                                                                                     2.2f};
  
-@@ -325,6 +331,9 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager&
+@@ -183,6 +190,8 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager&
+     case 0x02:
+     {
+       INCSTAT(g_stats.this_frame.num_draw_done);
++      // The game hears the GPU is done: queued vertex conversions first (PS4VertexWorker.cpp).
++      PS4VertexWorker::Sync();
+       g_texture_cache->FlushEFBCopies();
+       g_texture_cache->FlushStaleBinds();
+       g_framebuffer_manager->InvalidatePeekCache(false);
+@@ -202,6 +211,7 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager&
+   case BPMEM_PE_TOKEN_ID:  // Pixel Engine Token ID
+   {
+     INCSTAT(g_stats.this_frame.num_token);
++    PS4VertexWorker::Sync();
+     g_texture_cache->FlushEFBCopies();
+     g_texture_cache->FlushStaleBinds();
+     g_framebuffer_manager->InvalidatePeekCache(false);
+@@ -218,6 +228,7 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager&
+   case BPMEM_PE_TOKEN_INT_ID:  // Pixel Engine Interrupt Token ID
+   {
+     INCSTAT(g_stats.this_frame.num_token_int);
++    PS4VertexWorker::Sync();
+     g_texture_cache->FlushEFBCopies();
+     g_texture_cache->FlushStaleBinds();
+     g_framebuffer_manager->InvalidatePeekCache(false);
+@@ -325,6 +336,9 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager&
          else
            yScale = static_cast<float>(bpmem.dispcopyyscale) / 256.0f;
  
@@ -49130,7 +49275,7 @@ index 180bc86..e55ccfc 100644
  
          u32 height = static_cast<u32>(num_xfb_lines);
 diff --git a/Source/Core/VideoCommon/CMakeLists.txt b/Source/Core/VideoCommon/CMakeLists.txt
-index 69a0968..64b0b75 100644
+index 69a0968..0adc064 100644
 --- a/Source/Core/VideoCommon/CMakeLists.txt
 +++ b/Source/Core/VideoCommon/CMakeLists.txt
 @@ -145,6 +145,8 @@ add_library(videocommon
@@ -49142,6 +49287,15 @@ index 69a0968..64b0b75 100644
    Present.h
    RenderState.cpp
    RenderState.h
+@@ -255,6 +257,8 @@ if(_M_X86_64)
+     TextureDecoder_x64.cpp
+     VertexLoaderX64.cpp
+     VertexLoaderX64.h
++    PS4VertexWorker.cpp
++    PS4VertexWorker.h
+   )
+ elseif(_M_ARM_64)
+   target_sources(videocommon PRIVATE
 diff --git a/Source/Core/VideoCommon/CommandProcessor.cpp b/Source/Core/VideoCommon/CommandProcessor.cpp
 index 1dbf466..37270a2 100644
 --- a/Source/Core/VideoCommon/CommandProcessor.cpp
@@ -49324,7 +49478,7 @@ index 976592c..a20137f 100644
    void UpdateInterruptsFromVideoBackend(u64 userdata);
  
 diff --git a/Source/Core/VideoCommon/Fifo.cpp b/Source/Core/VideoCommon/Fifo.cpp
-index f183c93..85d5dad 100644
+index f183c93..1b5c421 100644
 --- a/Source/Core/VideoCommon/Fifo.cpp
 +++ b/Source/Core/VideoCommon/Fifo.cpp
 @@ -3,6 +3,10 @@
@@ -49338,15 +49492,16 @@ index f183c93..85d5dad 100644
  #include <atomic>
  #include <cstring>
  
-@@ -28,6 +32,7 @@
+@@ -28,6 +32,8 @@
  #include "VideoCommon/DataReader.h"
  #include "VideoCommon/FramebufferManager.h"
  #include "VideoCommon/OpcodeDecoding.h"
++#include "VideoCommon/PS4VertexWorker.h"
 +#include "VideoCommon/Present.h"
  #include "VideoCommon/VertexLoaderManager.h"
  #include "VideoCommon/VertexManagerBase.h"
  #include "VideoCommon/VideoBackendBase.h"
-@@ -54,9 +59,16 @@ void FifoManager::DoState(PointerWrap& p)
+@@ -54,9 +60,16 @@ void FifoManager::DoState(PointerWrap& p)
  {
    p.DoArray(m_video_buffer, FIFO_SIZE);
    u8* write_ptr = m_video_buffer_write_ptr;
@@ -49365,7 +49520,15 @@ index f183c93..85d5dad 100644
    if (p.IsReadMode() && m_use_deterministic_gpu_thread)
    {
      // We're good and paused, right?
-@@ -230,8 +242,24 @@ void FifoManager::ReadDataFromFifo(u32 read_ptr)
+@@ -224,14 +237,32 @@ void FifoManager::ReadDataFromFifo(u32 read_ptr)
+                     GPFifo::GATHER_PIPE_SIZE, FIFO_SIZE);
+       return;
+     }
++    // Queued vertex conversions may read the commands this overwrites (PS4VertexWorker.cpp).
++    PS4VertexWorker::Sync();
+     memmove(m_video_buffer, m_video_buffer_read_ptr, existing_len);
+     m_video_buffer_write_ptr = m_video_buffer + existing_len;
+     m_video_buffer_read_ptr = m_video_buffer;
    }
    // Copy new video instructions to m_video_buffer for future use in rendering the new picture
    auto& memory = m_system.GetMemory();
@@ -49391,7 +49554,15 @@ index f183c93..85d5dad 100644
  }
  
  // The deterministic_gpu_thread version.
-@@ -283,16 +311,84 @@ void FifoManager::ResetVideoBuffer()
+@@ -273,6 +304,7 @@ void FifoManager::ReadDataFromFifoOnCPU(u32 read_ptr)
+ 
+ void FifoManager::ResetVideoBuffer()
+ {
++  PS4VertexWorker::Sync();
+   m_video_buffer_read_ptr = m_video_buffer;
+   m_video_buffer_write_ptr = m_video_buffer;
+   m_video_buffer_seen_ptr = m_video_buffer;
+@@ -283,16 +315,84 @@ void FifoManager::ResetVideoBuffer()
  
  // Description: Main FIFO update loop
  // Purpose: Keep the Core HW updated about the CPU-GPU distance
@@ -49476,7 +49647,7 @@ index f183c93..85d5dad 100644
  
          if (m_use_deterministic_gpu_thread)
          {
-@@ -302,6 +398,7 @@ void FifoManager::RunGpuLoop()
+@@ -302,6 +402,7 @@ void FifoManager::RunGpuLoop()
            // See comment in SyncGPU
            if (write_ptr > seen_ptr)
            {
@@ -49484,7 +49655,7 @@ index f183c93..85d5dad 100644
              m_video_buffer_read_ptr =
                  OpcodeDecoder::RunFifo(DataReader(m_video_buffer_read_ptr, write_ptr), nullptr);
              m_video_buffer_seen_ptr = write_ptr;
-@@ -312,6 +409,9 @@ void FifoManager::RunGpuLoop()
+@@ -312,6 +413,9 @@ void FifoManager::RunGpuLoop()
            auto& command_processor = m_system.GetCommandProcessor();
            auto& fifo = command_processor.GetFifo();
            command_processor.SetCPStatusFromGPU();
@@ -49494,7 +49665,7 @@ index f183c93..85d5dad 100644
  
            // check if we are able to run this buffer
            while (!command_processor.IsInterruptWaiting() &&
-@@ -323,28 +423,72 @@ void FifoManager::RunGpuLoop()
+@@ -323,28 +427,72 @@ void FifoManager::RunGpuLoop()
                break;
  
              u32 cyclesExecuted = 0;
@@ -49576,7 +49747,18 @@ index f183c93..85d5dad 100644
              if ((write_ptr - m_video_buffer_read_ptr) == 0)
              {
                fifo.SafeCPReadPointer.store(fifo.CPReadPointer.load(std::memory_order_relaxed),
-@@ -381,21 +525,180 @@ void FifoManager::RunGpuLoop()
+@@ -371,6 +519,10 @@ void FifoManager::RunGpuLoop()
+             AsyncRequests::GetInstance()->PullEvents();
+           }
+ 
++          // Out of FIFO data (or stopped at a breakpoint/interrupt): the game may reuse what the
++          // queued vertex conversions read (PS4VertexWorker.cpp).
++          PS4VertexWorker::Sync();
++
+           // fast skip remaining GPU time if fifo is empty
+           if (m_sync_ticks.load() > 0)
+           {
+@@ -381,21 +533,180 @@ void FifoManager::RunGpuLoop()
  
            // The fifo is empty and it's unlikely we will get any more work in the near future.
            // Make sure VertexManager finishes drawing any primitives it has stored in it's buffer.
@@ -49757,7 +49939,7 @@ index f183c93..85d5dad 100644
  void FifoManager::GpuMaySleep()
  {
    m_gpu_mainloop.AllowSleep();
-@@ -551,7 +854,10 @@ int FifoManager::WaitForGpuThread(int ticks)
+@@ -551,7 +862,10 @@ int FifoManager::WaitForGpuThread(int ticks)
  
    // Wait for GPU
    if (now >= m_config_sync_gpu_max_distance)
@@ -51806,8 +51988,513 @@ index 7e9d061..25a1be2 100644
  
    void Invalidate();
    void ReleaseToPool(TCacheEntry* entry);
+diff --git a/Source/Core/VideoCommon/VertexLoaderBase.h b/Source/Core/VideoCommon/VertexLoaderBase.h
+index 785afc8..f2584dc 100644
+--- a/Source/Core/VideoCommon/VertexLoaderBase.h
++++ b/Source/Core/VideoCommon/VertexLoaderBase.h
+@@ -52,6 +52,8 @@ struct std::hash<VertexLoaderUID>
+   size_t operator()(const VertexLoaderUID& uid) const noexcept { return uid.GetHash(); }
+ };
+ 
++class VertexLoaderX64;
++
+ class VertexLoaderBase
+ {
+ public:
+@@ -61,6 +63,8 @@ public:
+                                                               const VAT& vtx_attr);
+   virtual ~VertexLoaderBase() {}
+   virtual int RunVertices(const u8* src, u8* dst, int count) = 0;
++  // PS4 port (vertex_thread): this loader as one the vertex worker can run, if it is one.
++  virtual VertexLoaderX64* PS4BulkLoader() { return nullptr; }
+ 
+   // per loader public state
+   PortableVertexDeclaration m_native_vtx_decl{};
+diff --git a/Source/Core/VideoCommon/VertexLoaderManager.cpp b/Source/Core/VideoCommon/VertexLoaderManager.cpp
+index e3d3b9f..084c1f4 100644
+--- a/Source/Core/VideoCommon/VertexLoaderManager.cpp
++++ b/Source/Core/VideoCommon/VertexLoaderManager.cpp
+@@ -3,9 +3,17 @@
+ 
+ #include "VideoCommon/VertexLoaderManager.h"
+ 
++#ifdef DOLPHIN_PS4_HOST
++#include <unistd.h>
++#endif
++
+ #include <algorithm>
+ #include <iterator>
+ #include <memory>
++#include <random>
++#include <cstdlib>
++#include <cstdio>
++#include <cstring>
+ #include <mutex>
+ #include <string>
+ #include <type_traits>
+@@ -27,7 +35,10 @@
+ #include "VideoCommon/DataReader.h"
+ #include "VideoCommon/NativeVertexFormat.h"
+ #include "VideoCommon/Statistics.h"
++#include "VideoCommon/Fifo.h"
++#include "VideoCommon/PS4VertexWorker.h"
+ #include "VideoCommon/VertexLoaderBase.h"
++#include "VideoCommon/VertexLoaderX64.h"
+ #include "VideoCommon/VertexManagerBase.h"
+ #include "VideoCommon/VertexShaderManager.h"
+ #include "VideoCommon/VideoConfig.h"
+@@ -61,8 +72,122 @@ std::array<VertexLoaderBase*, CP_NUM_VAT_REG> g_main_vertex_loaders;
+ std::array<VertexLoaderBase*, CP_NUM_VAT_REG> g_preprocess_vertex_loaders;
+ bool g_needs_cp_xf_consistency_check;
+ 
++#ifdef DOLPHIN_PS4_HOST
++// PC test bench: PS4VTX_SELFTEST=1 checks the vertex worker's bulk loaders against the normal
++// ones on random vertex formats and data (every attribute direct or indexed, matrix indices,
++// normal/tangent/binormal with one or three indices), and the skipped-vertex scan against what
++// the normal loader skips; then exits.
++static void PS4BulkSelfTest()
++{
++  std::mt19937 rng(12345);
++  constexpr size_t ARRAY_BYTES = 256 * 1024 + 256;
++  static std::vector<u8> arrays[12];
++  for (auto& a : arrays)
++  {
++    a.resize(ARRAY_BYTES);
++    for (auto& b : a)
++      b = static_cast<u8>(rng());
++  }
++  const auto saved_bases = cached_arraybases;
++  const auto saved_strides = g_main_cp_state.array_strides;
++  unsigned long long formats = 0, draws = 0, skipped = 0, bad = 0;
++  std::vector<u8> src, out_a, out_b;
++  const auto component = [&] { return static_cast<ComponentFormat>(rng() % 5); };
++  for (int f = 0; f < 4000; f++)
++  {
++    TVtxDesc desc;
++    VAT vat;
++    desc.low.Hex = rng() & 0x1FFFF;
++    desc.low.Position = static_cast<VertexComponentFormat>(1 + rng() % 3);
++    desc.high.Hex = rng() & 0xFFFF;
++    vat.g0.Hex = rng();
++    vat.g1.Hex = rng();
++    vat.g2.Hex = rng();
++    vat.g0.PosFormat = component();
++    vat.g0.NormalFormat = component();
++    vat.g0.Color0Comp = static_cast<ColorFormat>(rng() % 6);
++    vat.g0.Color1Comp = static_cast<ColorFormat>(rng() % 6);
++    vat.g0.Tex0CoordFormat = component();
++    vat.g1.Tex1CoordFormat = component();
++    vat.g1.Tex2CoordFormat = component();
++    vat.g1.Tex3CoordFormat = component();
++    vat.g1.Tex4CoordFormat = component();
++    vat.g1.VCacheEnhance = true;
++    vat.g2.Tex5CoordFormat = component();
++    vat.g2.Tex6CoordFormat = component();
++    vat.g2.Tex7CoordFormat = component();
++    VertexLoaderX64 loader(desc, vat);
++    VertexLoaderBase& base = loader;
++    formats++;
++    const int stride = loader.m_native_vtx_decl.stride;
++    for (int r = 0; r < 4; r++)
++    {
++      const int count = 1 + static_cast<int>(rng() % 64);
++      src.resize(static_cast<size_t>(count) * loader.m_vertex_size + 16);
++      for (auto& b : src)
++        b = static_cast<u8>(rng());
++      PS4VertexWorker::ArrayState state;
++      for (u32 i = 0; i < 12; i++)
++      {
++        const CPArray array = static_cast<CPArray>(i);
++        cached_arraybases[array] = arrays[i].data();
++        // Small strides keep any 16-bit index inside the arrays.
++        g_main_cp_state.array_strides[array] = rng() % 4;
++        state.bases[i] = cached_arraybases[array];
++        state.strides[i] = g_main_cp_state.array_strides[array];
++      }
++      out_a.assign(static_cast<size_t>(count) * stride + 64, 0);
++      out_b.assign(static_cast<size_t>(count) * stride + 64, 0);
++      const int na = base.RunVertices(src.data(), out_a.data(), count);
++      const bool skip = loader.HasSkippedVertex(src.data(), count);
++      if (skip != (na != count))
++      {
++        if (bad++ < 10)
++          fprintf(stderr, "[vtxselftest] skip scan says %d, loader loaded %d of %d (desc %08x %08x)\n",
++                  skip, na, count, desc.low.Hex, desc.high.Hex);
++        continue;
++      }
++      if (skip)
++      {
++        skipped++;
++        continue;
++      }
++      const int nb = loader.RunVerticesBulk(src.data(), out_b.data(), count, &state);
++      draws++;
++      if (nb != count ||
++          std::memcmp(out_a.data(), out_b.data(), static_cast<size_t>(count) * stride) != 0)
++      {
++        size_t at = 0;
++        while (at < static_cast<size_t>(count) * stride && out_a[at] == out_b[at])
++          at++;
++        if (bad++ < 10)
++        {
++          fprintf(stderr,
++                  "[vtxselftest] MISMATCH: desc %08x %08x vat %08x %08x %08x, %d vertices, "
++                  "stride %d, bulk %d, first difference at byte %zu\n",
++                  desc.low.Hex, desc.high.Hex, vat.g0.Hex, vat.g1.Hex, vat.g2.Hex, count, stride,
++                  nb, at);
++        }
++      }
++    }
++  }
++  cached_arraybases = saved_bases;
++  g_main_cp_state.array_strides = saved_strides;
++  fprintf(stderr,
++          "[vtxselftest] %llu formats, %llu draws compared, %llu with skipped vertices, %llu "
++          "bad\n",
++          formats, draws, skipped, bad);
++  fflush(stderr);
++  _exit(bad ? 1 : 0);
++}
++#endif
++
+ void Init()
+ {
++#ifdef DOLPHIN_PS4_HOST
++  if (getenv("PS4VTX_SELFTEST"))
++    PS4BulkSelfTest();
++#endif
+   MarkAllDirty();
+   g_main_vertex_loaders.fill(nullptr);
+   g_preprocess_vertex_loaders.fill(nullptr);
+@@ -71,6 +196,8 @@ void Init()
+ 
+ void Clear()
+ {
++  // Queued conversions use the loaders (PS4VertexWorker.cpp).
++  PS4VertexWorker::Sync();
+   std::lock_guard<std::mutex> lk(s_vertex_loader_map_lock);
+   s_vertex_loader_map.clear();
+   s_native_vertex_map.clear();
+@@ -379,6 +506,72 @@ static void CheckCPConfiguration(int vtx_attr_group)
+   }
+ }
+ 
++#ifdef DOLPHIN_PS4_HOST
++// PC test bench: PS4VTX_CHECK=1 converts every draw a second time with the vertex worker's bulk
++// loader (VertexLoaderX64::RunVerticesBulk, from a snapshot of the array state) and compares the
++// bytes with what the normal loader wrote.
++static void PS4CheckBulk(VertexLoaderBase* loader, const u8* src, const u8* dst, int count,
++                         int num_loaded, int stride)
++{
++  static const bool on = getenv("PS4VTX_CHECK") != nullptr;
++  if (!on)
++    return;
++  static u64 s_calls = 0, s_by_size[6] = {};  // 1-3, 4, 5-16, 17-64, 65-256, more
++  s_calls++;
++  s_by_size[count <= 3 ? 0 : count == 4 ? 1 : count <= 16 ? 2 : count <= 64 ? 3 : count <= 256 ? 4 : 5]++;
++  if (s_calls % 100000 == 0)
++  {
++    fprintf(stderr, "[vtxcheck] %llu calls by vertices: 1-3 %llu, 4 %llu, 5-16 %llu, 17-64 %llu, "
++                    "65-256 %llu, more %llu\n", (unsigned long long)s_calls,
++            (unsigned long long)s_by_size[0], (unsigned long long)s_by_size[1],
++            (unsigned long long)s_by_size[2], (unsigned long long)s_by_size[3],
++            (unsigned long long)s_by_size[4], (unsigned long long)s_by_size[5]);
++  }
++  VertexLoaderX64* const bulk = loader->PS4BulkLoader();
++  static u64 s_checked = 0, s_skipped = 0, s_bad = 0, s_vertices = 0, s_no_bulk = 0;
++  if (!bulk)
++  {
++    if (s_no_bulk++ == 0)
++      fprintf(stderr, "[vtxcheck] a loader without a bulk version\n");
++    return;
++  }
++  if (bulk->HasSkippedVertex(src, count))
++  {
++    s_skipped++;
++    return;
++  }
++  PS4VertexWorker::ArrayState state;
++  for (u32 i = 0; i < 12; i++)
++  {
++    state.bases[i] = cached_arraybases[static_cast<CPArray>(i)];
++    state.strides[i] = g_main_cp_state.array_strides[static_cast<CPArray>(i)];
++  }
++  static std::vector<u8> buffer;
++  buffer.assign(static_cast<size_t>(count) * stride + 64, 0xCD);
++  const int n = bulk->RunVerticesBulk(src, buffer.data(), count, &state);
++  const bool ok = n == num_loaded && std::memcmp(buffer.data(), dst, size_t(count) * stride) == 0;
++  s_checked++;
++  s_vertices += count;
++  if (!ok && s_bad++ < 10)
++  {
++    size_t at = 0;
++    while (at < size_t(count) * stride && buffer[at] == dst[at])
++      at++;
++    fprintf(stderr,
++            "[vtxcheck] MISMATCH: %d vertices (stride %d, loaded %d/%d), first difference at byte "
++            "%zu (vertex %zu)\n",
++            count, stride, n, num_loaded, at, at / stride);
++  }
++  if (s_checked == 1 || s_checked % 2000 == 0)
++  {
++    fprintf(stderr, "[vtxcheck] %llu draws (%llu vertices) compared, %llu different, %llu with "
++                    "skipped vertices\n",
++            (unsigned long long)s_checked, (unsigned long long)s_vertices,
++            (unsigned long long)s_bad, (unsigned long long)s_skipped);
++  }
++}
++#endif
++
+ static bool CanSplit(OpcodeDecoder::Primitive primitive)
+ {
+   // Splitting is currently only implemented for the easy cases (individual lines/points/triangles)
+@@ -444,6 +637,15 @@ int RunVertices(int vtx_attr_group, OpcodeDecoder::Primitive primitive, int coun
+                           primitive < OpcodeDecoder::Primitive::GX_DRAW_LINES);
+ 
+     const int stride = loader->m_native_vtx_decl.stride;
++    // vertex_thread (PS4VertexWorker.cpp): the vertex worker converts the draw; this thread only
++    // converts its last three vertices, for what the flush reads from them (the position, normal,
++    // tangent and binormal caches: zfreeze slopes, cached normals). Draws with skipped vertices
++    // (their count isn't known before converting) and CPU culling stay here.
++    VertexLoaderX64* const bulk_loader =
++        PS4VertexWorker::Active() && !can_cpu_cull &&
++                !Core::System::GetInstance().GetFifo().UseDeterministicGPUThread() ?
++            loader->PS4BulkLoader() :
++            nullptr;
+     do
+     {
+       const int max_vertices = 16380;  // Max is 16383, but 16380 is divisible by both 4 and 3
+@@ -452,7 +654,28 @@ int RunVertices(int vtx_attr_group, OpcodeDecoder::Primitive primitive, int coun
+       DataReader dst = g_vertex_manager->PrepareForAdditionalData(primitive, run, stride,
+                                                                   cullall || can_cpu_cull);
+ 
+-      const int num_loaded = loader->RunVertices(src, dst.GetPointer(), run);
++      int num_loaded;
++      if (bulk_loader && !bulk_loader->HasSkippedVertex(src, run))
++      {
++        const int last = std::min(run, 3);
++        alignas(16) static u8 s_last_vertices[3 * 256 + 64];
++        loader->RunVertices(src + loader->m_vertex_size * (run - last), s_last_vertices, last);
++        loader->m_numLoadedVertices += run - last;
++        // Culled draws only needed the caches.
++        if (!cullall)
++          PS4VertexWorker::Push(bulk_loader, src, dst.GetPointer(), run);
++        num_loaded = run;
++      }
++      else
++      {
++        // In order with the worker's writes (each loader writes up to 4 bytes past its vertices).
++        if (bulk_loader)
++          PS4VertexWorker::Sync();
++        num_loaded = loader->RunVertices(src, dst.GetPointer(), run);
++#ifdef DOLPHIN_PS4_HOST
++        PS4CheckBulk(loader, src, dst.GetPointer(), run, num_loaded, stride);
++#endif
++      }
+       src += loader->m_vertex_size * max_vertices;
+ 
+       if (can_cpu_cull && !cullall)
+diff --git a/Source/Core/VideoCommon/VertexLoaderX64.cpp b/Source/Core/VideoCommon/VertexLoaderX64.cpp
+index fd3692a..6ef63d0 100644
+--- a/Source/Core/VideoCommon/VertexLoaderX64.cpp
++++ b/Source/Core/VideoCommon/VertexLoaderX64.cpp
+@@ -14,6 +14,7 @@
+ #include "Common/x64ABI.h"
+ #include "Common/x64Emitter.h"
+ #include "VideoCommon/CPMemory.h"
++#include "VideoCommon/PS4VertexWorker.h"
+ #include "VideoCommon/VertexLoaderManager.h"
+ 
+ using namespace Gen;
+@@ -28,6 +29,8 @@ static const X64Reg scratch3 = ABI_PARAM4;
+ static const X64Reg remaining_reg = R10;
+ static const X64Reg skipped_reg = R11;
+ static const X64Reg base_reg = RBX;
++// The bulk version's PS4VertexWorker::ArrayState (callee-saved on both ABIs).
++static const X64Reg state_reg = R12;
+ 
+ static const u8* memory_base_ptr = (u8*)&g_main_cp_state.array_strides;
+ 
+@@ -44,9 +47,17 @@ static OpArg MPIC(const void* ptr)
+ VertexLoaderX64::VertexLoaderX64(const TVtxDesc& vtx_desc, const VAT& vtx_att)
+     : VertexLoaderBase(vtx_desc, vtx_att)
+ {
+-  AllocCodeSpace(4096);
++  AllocCodeSpace(8192);
+   ClearCodeSpace();
+   GenerateVertexLoader();
++  // PS4 port: the vertex worker's version right behind it (same layout: generated the same way).
++  m_ps4_bulk = true;
++  m_src_ofs = 0;
++  m_dst_ofs = 0;
++  AlignCode16();
++  m_ps4_bulk_code = GetCodePtr();
++  GenerateVertexLoader();
++  m_ps4_bulk = false;
+   WriteProtect(true);
+ 
+   Common::JitRegister::Register(region, GetCodePtr(), "VertexLoaderX64\nVtx desc: \n{}\nVAT:\n{}",
+@@ -58,6 +69,11 @@ OpArg VertexLoaderX64::GetVertexAddr(CPArray array, VertexComponentFormat attrib
+   if (IsIndexed(attribute))
+   {
+     int bits = attribute == VertexComponentFormat::Index8 ? 8 : 16;
++    if (array == CPArray::Position)
++    {
++      m_ps4_pos_index_offset = m_src_ofs;
++      m_ps4_pos_index_bytes = bits / 8;
++    }
+     LoadAndSwap(bits, scratch1, MDisp(src_reg, m_src_ofs));
+     m_src_ofs += bits / 8;
+     if (array == CPArray::Position)
+@@ -65,8 +81,21 @@ OpArg VertexLoaderX64::GetVertexAddr(CPArray array, VertexComponentFormat attrib
+       CMP(bits, R(scratch1), Imm8(-1));
+       m_skip_vertex = J_CC(CC_E, Jump::Near);
+     }
+-    IMUL(32, scratch1, MPIC(&g_main_cp_state.array_strides[array]));
+-    MOV(64, R(scratch2), MPIC(&VertexLoaderManager::cached_arraybases[array]));
++    if (m_ps4_bulk)
++    {
++      const int index = static_cast<int>(array);
++      IMUL(32, scratch1,
++           MDisp(state_reg, static_cast<s32>(offsetof(PS4VertexWorker::ArrayState, strides) +
++                                             sizeof(u32) * index)));
++      MOV(64, R(scratch2),
++          MDisp(state_reg, static_cast<s32>(offsetof(PS4VertexWorker::ArrayState, bases) +
++                                            sizeof(u8*) * index)));
++    }
++    else
++    {
++      IMUL(32, scratch1, MPIC(&g_main_cp_state.array_strides[array]));
++      MOV(64, R(scratch2), MPIC(&VertexLoaderManager::cached_arraybases[array]));
++    }
+     return MRegSum(scratch1, scratch2);
+   }
+   else
+@@ -124,6 +153,8 @@ void VertexLoaderX64::ReadVertex(OpArg data, VertexComponentFormat attribute,
+   X64Reg coords = XMM0;
+ 
+   const auto write_zfreeze = [&] {  // zfreeze
++    if (m_ps4_bulk)
++      return;
+     if (native_format == &m_native_vtx_decl.position)
+     {
+       CMP(32, R(remaining_reg), Imm8(3));
+@@ -419,6 +450,8 @@ void VertexLoaderX64::GenerateVertexLoader()
+ {
+   BitSet32 regs = {src_reg,  dst_reg,       scratch1,    scratch2,
+                    scratch3, remaining_reg, skipped_reg, base_reg};
++  if (m_ps4_bulk)
++    regs[state_reg] = true;
+   regs &= ABI_ALL_CALLEE_SAVED;
+   regs[RBP] = true;  // Give us a stack frame
+   ABI_PushRegistersAndAdjustStack(regs, 0);
+@@ -431,7 +464,15 @@ void VertexLoaderX64::GenerateVertexLoader()
+   // this requires subtracting 1 at the start.
+   LEA(32, remaining_reg, MDisp(ABI_PARAM3, -1));
+ 
+-  MOV(64, R(base_reg), R(ABI_PARAM4));
++  if (m_ps4_bulk)
++  {
++    MOV(64, R(state_reg), R(ABI_PARAM4));
++    MOV(64, R(base_reg), Imm64(reinterpret_cast<u64>(memory_base_ptr)));
++  }
++  else
++  {
++    MOV(64, R(base_reg), R(ABI_PARAM4));
++  }
+ 
+   if (IsIndexed(m_VtxDesc.low.Position))
+     XOR(32, R(skipped_reg), R(skipped_reg));
+@@ -447,11 +488,15 @@ void VertexLoaderX64::GenerateVertexLoader()
+     MOV(32, MDisp(dst_reg, m_dst_ofs), R(scratch1));
+ 
+     // zfreeze
+-    CMP(32, R(remaining_reg), Imm8(3));
+-    FixupBranch dont_store = J_CC(CC_AE);
+-    MOV(32, MPIC(VertexLoaderManager::position_matrix_index_cache.data(), remaining_reg, SCALE_4),
+-        R(scratch1));
+-    SetJumpTarget(dont_store);
++    if (!m_ps4_bulk)
++    {
++      CMP(32, R(remaining_reg), Imm8(3));
++      FixupBranch dont_store = J_CC(CC_AE);
++      MOV(32,
++          MPIC(VertexLoaderManager::position_matrix_index_cache.data(), remaining_reg, SCALE_4),
++          R(scratch1));
++      SetJumpTarget(dont_store);
++    }
+ 
+     m_native_vtx_decl.posmtx.components = 4;
+     m_native_vtx_decl.posmtx.enable = true;
+@@ -604,6 +649,36 @@ void VertexLoaderX64::GenerateVertexLoader()
+   m_native_vtx_decl.stride = m_dst_ofs;
+ }
+ 
++int VertexLoaderX64::RunVerticesBulk(const u8* src, u8* dst, int count, const void* state) const
++{
++  using Bulk = int (*)(const u8* src, u8* dst, int count, const void* state);
++  return reinterpret_cast<Bulk>(const_cast<u8*>(m_ps4_bulk_code))(src, dst, count, state);
++}
++
++bool VertexLoaderX64::HasSkippedVertex(const u8* src, int count) const
++{
++  if (m_ps4_pos_index_bytes == 0)
++    return false;
++  const u8* index = src + m_ps4_pos_index_offset;
++  if (m_ps4_pos_index_bytes == 1)
++  {
++    for (int i = 0; i < count; i++, index += m_vertex_size)
++    {
++      if (index[0] == 0xFF)
++        return true;
++    }
++  }
++  else
++  {
++    for (int i = 0; i < count; i++, index += m_vertex_size)
++    {
++      if (index[0] == 0xFF && index[1] == 0xFF)
++        return true;
++    }
++  }
++  return false;
++}
++
+ int VertexLoaderX64::RunVertices(const u8* src, u8* dst, int count)
+ {
+   m_numLoadedVertices += count;
+diff --git a/Source/Core/VideoCommon/VertexLoaderX64.h b/Source/Core/VideoCommon/VertexLoaderX64.h
+index 377d47d..d76ee17 100644
+--- a/Source/Core/VideoCommon/VertexLoaderX64.h
++++ b/Source/Core/VideoCommon/VertexLoaderX64.h
+@@ -17,12 +17,25 @@ class VertexLoaderX64 : public VertexLoaderBase, public Gen::X64CodeBlock
+ public:
+   VertexLoaderX64(const TVtxDesc& vtx_desc, const VAT& vtx_att);
+ 
++  // PS4 port (vertex_thread, VideoCommon/PS4VertexWorker.cpp): the same conversion for the vertex
++  // worker - the array bases and strides from `state` (a PS4VertexWorker::ArrayState taken at the
++  // draw) instead of the globals, and none of the cached last vertices (the video thread converts
++  // those itself). Returns count: the worker only gets draws without skipped vertices.
++  int RunVerticesBulk(const u8* src, u8* dst, int count, const void* state) const;
++  VertexLoaderX64* PS4BulkLoader() override { return m_ps4_bulk_code ? this : nullptr; }
++  // A vertex with the position index 0xFF / 0xFFFF, which the loader skips.
++  bool HasSkippedVertex(const u8* src, int count) const;
++
+ protected:
+   int RunVertices(const u8* src, u8* dst, int count) override;
+ 
+ private:
+   u32 m_src_ofs = 0;
+   u32 m_dst_ofs = 0;
++  bool m_ps4_bulk = false;  // generating the bulk version
++  const u8* m_ps4_bulk_code = nullptr;
++  u32 m_ps4_pos_index_offset = 0;  // the position index in a vertex, when indexed
++  u32 m_ps4_pos_index_bytes = 0;
+   Gen::FixupBranch m_skip_vertex;
+   Gen::OpArg GetVertexAddr(CPArray array, VertexComponentFormat attribute);
+   void ReadVertex(Gen::OpArg data, VertexComponentFormat attribute, ComponentFormat format,
 diff --git a/Source/Core/VideoCommon/VertexManagerBase.cpp b/Source/Core/VideoCommon/VertexManagerBase.cpp
-index 2bc6d58..06b5c3c 100644
+index 2bc6d58..fa46c72 100644
 --- a/Source/Core/VideoCommon/VertexManagerBase.cpp
 +++ b/Source/Core/VideoCommon/VertexManagerBase.cpp
 @@ -2,6 +2,22 @@
@@ -51833,7 +52520,15 @@ index 2bc6d58..06b5c3c 100644
  
  #include <array>
  #include <cmath>
-@@ -192,7 +208,13 @@ DataReader VertexManagerBase::PrepareForAdditionalData(OpcodeDecoder::Primitive
+@@ -36,6 +52,7 @@
+ #include "VideoCommon/PixelShaderManager.h"
+ #include "VideoCommon/Statistics.h"
+ #include "VideoCommon/TextureCacheBase.h"
++#include "VideoCommon/PS4VertexWorker.h"
+ #include "VideoCommon/VertexLoaderManager.h"
+ #include "VideoCommon/VertexShaderManager.h"
+ #include "VideoCommon/VideoBackendBase.h"
+@@ -192,7 +209,13 @@ DataReader VertexManagerBase::PrepareForAdditionalData(OpcodeDecoder::Primitive
      }
      else
      {
@@ -51847,7 +52542,17 @@ index 2bc6d58..06b5c3c 100644
      }
  
      remaining_index_generator_indices = m_index_generator.GetRemainingIndices(primitive);
-@@ -434,6 +456,7 @@ BitSet32 VertexManagerBase::UsedTextures() const
+@@ -381,6 +404,9 @@ void VertexManagerBase::UploadUtilityVertices(const void* vertices, u32 vertex_s
+ {
+   // The GX vertex list should be flushed before any utility draws occur.
+   ASSERT(m_is_flushed);
++  // Queued vertex conversions write up to 4 bytes past their vertices (PS4VertexWorker.cpp).
++  if (vertices)
++    PS4VertexWorker::Sync();
+ 
+   // Copy into the buffers usually used for GX drawing.
+   ResetBuffer(std::max(vertex_stride, 1u));
+@@ -434,6 +460,7 @@ BitSet32 VertexManagerBase::UsedTextures() const
  
  void VertexManagerBase::Flush()
  {
@@ -51855,6 +52560,14 @@ index 2bc6d58..06b5c3c 100644
    if (m_is_flushed)
      return;
  
+@@ -680,6 +707,7 @@ void VertexManagerBase::Flush()
+ 
+ void VertexManagerBase::DoState(PointerWrap& p)
+ {
++  PS4VertexWorker::Sync();
+   if (p.IsReadMode())
+   {
+     // Flush old vertex data before loading state.
 diff --git a/Source/Core/VideoCommon/VertexManagerBase.h b/Source/Core/VideoCommon/VertexManagerBase.h
 index 715dbee..91ca7de 100644
 --- a/Source/Core/VideoCommon/VertexManagerBase.h
@@ -55542,3 +56255,324 @@ index 0000000..01ac37c
 +// Textures and pipelines freed (the setting turned off, the renderer going away).
 +void Release();
 +}  // namespace PS4FrameGen
+diff --git a/Source/Core/VideoCommon/PS4VertexWorker.cpp b/Source/Core/VideoCommon/PS4VertexWorker.cpp
+new file mode 100755
+index 0000000..21cb129
+--- /dev/null
++++ b/Source/Core/VideoCommon/PS4VertexWorker.cpp
+@@ -0,0 +1,266 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++// PS4 port (Dolphin Lab, vertex_thread): the vertex conversion of draws runs on a core of its own.
++//
++// Super Mario Galaxy's video thread - the bottleneck of its busiest scenes, 96-99% busy - spent
++// ~29% of its time converting vertices (Dolphin's vertex loaders, JIT Lab v60.46 profile). The
++// video thread still reserves the space in the stream buffer and generates the indices; it queues
++// the conversion, and this worker writes the vertices, in order. Everything that reads them waits
++// for it first:
++// - the GPU: the Vulkan recording thread waits before it submits a command buffer
++//   (PS4CommandRecorder.cpp, OP_QueueSubmit);
++// - the game: the video thread waits before it reports a PE token or draw done, and whenever it
++//   runs out of FIFO data - a game may reuse its vertex arrays and display lists then;
++// - Dolphin: before the FIFO copy buffer is reused, before vertices are written into the stream
++//   buffer on the video thread (each loader writes up to 4 bytes past its last vertex), save
++//   states, a new set of vertex loaders, shutdown.
++// What the video thread itself reads from converted vertices - the last three positions and the
++// last normal, tangent and binormal (zfreeze slopes, cached normals) - it gets by converting the
++// last three vertices of each draw itself (VertexLoaderManager.cpp).
++
++#include "VideoCommon/PS4VertexWorker.h"
++
++extern "C" {
++int ps4_vertex_thread = 1;       // ps4.ini / settings vertex_thread=on
++int ps4_vertex_thread_core = 1;  // vertex_thread_core
++}
++
++#ifndef __ORBIS__
++
++namespace PS4VertexWorker
++{
++void SetAllowed(bool)
++{
++}
++bool Active()
++{
++  return false;
++}
++void Push(VertexLoaderX64*, const u8*, u8*, int)
++{
++}
++void Sync()
++{
++}
++u64 Issued()
++{
++  return 0;
++}
++void WaitDone(u64)
++{
++}
++void Shutdown()
++{
++}
++}  // namespace PS4VertexWorker
++
++#else
++
++#include <atomic>
++#include <chrono>
++#include <condition_variable>
++#include <cstdio>
++#include <mutex>
++#include <thread>
++
++#include <immintrin.h>
++#include <x86intrin.h>
++
++#include "Common/Thread.h"
++#include "VideoCommon/CPMemory.h"
++#include "VideoCommon/VertexLoaderManager.h"
++#include "VideoCommon/VertexLoaderX64.h"
++
++extern "C" void ps4_boot_trace(const char* line);                 // port/ps4_crashlog.cpp
++extern "C" void ps4_wait_add(int slot, long long ns);              // port/ps4_sampler.cpp
++extern "C" void ps4_sampler_register_thread(const char* name);     // port/ps4_sampler.cpp
++extern "C" void ps4_thread_cpu_sample(int slot);                   // port/ps4_sampler.cpp
++
++namespace PS4VertexWorker
++{
++namespace
++{
++struct Job
++{
++  VertexLoaderX64* loader;
++  const u8* src;
++  u8* dst;
++  int count;
++  ArrayState state;
++};
++
++constexpr u64 RING_SIZE = 2048;  // conversions queued at most (a power of two)
++Job s_jobs[RING_SIZE];
++alignas(64) std::atomic<u64> s_issued{0};  // written by the video thread
++alignas(64) std::atomic<u64> s_done{0};    // written by the worker
++alignas(64) std::atomic<bool> s_sleeping{false};
++std::atomic<bool> s_stop{false};
++std::mutex s_wake_mutex;
++std::condition_variable s_wake;
++std::thread s_thread;
++bool s_started = false;
++bool s_allowed = false;
++
++void WakeWorker()
++{
++  if (s_sleeping.load(std::memory_order_seq_cst))
++  {
++    std::lock_guard lk(s_wake_mutex);
++    s_wake.notify_one();
++  }
++}
++
++void Pause(u32& spins)
++{
++  if (++spins < 64)
++    _mm_pause();
++  else if (spins < 256)
++    std::this_thread::yield();
++  else
++    std::this_thread::sleep_for(std::chrono::microseconds(20));
++}
++
++// Waits until `target` conversions are written; the monitor's time and count slots.
++void WaitFor(u64 target, int ns_slot, int count_slot)
++{
++  if (s_done.load(std::memory_order_acquire) >= target)
++    return;
++  const auto t0 = std::chrono::steady_clock::now();
++  u32 spins = 0;
++  while (s_done.load(std::memory_order_acquire) < target)
++  {
++    WakeWorker();
++    Pause(spins);
++  }
++  ps4_wait_add(ns_slot,
++               std::chrono::nanoseconds(std::chrono::steady_clock::now() - t0).count());
++  if (count_slot >= 0)
++    ps4_wait_add(count_slot, 1);
++}
++
++void WorkerLoop()
++{
++  Common::SetCurrentThreadName("Vertex thread");
++  ps4_sampler_register_thread("Vertex thread");
++  {
++    const auto [affinity, priority] =
++        Common::PS4SetCurrentThreadCoreAndPriority(ps4_vertex_thread_core, 0);
++    char line[128];
++    snprintf(line, sizeof(line), "vertex_thread: worker on core %d (result 0x%x)",
++             ps4_vertex_thread_core, affinity);
++    ps4_boot_trace(line);
++  }
++  u64 done = s_done.load(std::memory_order_relaxed);
++  u32 passes = 0;
++  for (;;)
++  {
++    if ((++passes & 255) == 0)
++      ps4_thread_cpu_sample(3);
++    const u64 issued = s_issued.load(std::memory_order_acquire);
++    if (done == issued)
++    {
++      if (s_stop.load(std::memory_order_acquire))
++        break;
++      // Spin ~100 us for the next draw (the Jaguar's TSC runs at 1.6 GHz), then sleep: each
++      // sleep costs the video thread a wake-up call.
++      const u64 spin_until = __rdtsc() + 100 * 1600;
++      u32 spins = 0;
++      while (s_issued.load(std::memory_order_acquire) == done)
++      {
++        _mm_pause();
++        if ((++spins & 63) == 0 && __rdtsc() >= spin_until)
++          break;
++      }
++      if (s_issued.load(std::memory_order_acquire) == done)
++      {
++        std::unique_lock lk(s_wake_mutex);
++        s_sleeping.store(true, std::memory_order_seq_cst);
++        if (s_issued.load(std::memory_order_seq_cst) == done && !s_stop.load())
++          s_wake.wait_for(lk, std::chrono::milliseconds(1));
++        s_sleeping.store(false, std::memory_order_relaxed);
++      }
++      continue;
++    }
++    while (done != issued)
++    {
++      const Job& job = s_jobs[done & (RING_SIZE - 1)];
++      job.loader->RunVerticesBulk(job.src, job.dst, job.count, &job.state);
++      done++;
++      // The stream buffer may be write-combined memory: its stores before the count that
++      // releases them.
++      _mm_sfence();
++      s_done.store(done, std::memory_order_release);
++    }
++  }
++}
++}  // namespace
++
++void SetAllowed(bool allowed)
++{
++  s_allowed = allowed;
++}
++
++bool Active()
++{
++  return ps4_vertex_thread && s_allowed;
++}
++
++void Push(VertexLoaderX64* loader, const u8* src, u8* dst, int count)
++{
++  if (!s_started)
++  {
++    s_stop.store(false);
++    s_thread = std::thread(WorkerLoop);
++    s_started = true;
++  }
++  const u64 seq = s_issued.load(std::memory_order_relaxed);
++  if (seq - s_done.load(std::memory_order_acquire) >= RING_SIZE)
++    WaitFor(seq - RING_SIZE + 1, 16, 17);
++  Job& job = s_jobs[seq & (RING_SIZE - 1)];
++  job.loader = loader;
++  job.src = src;
++  job.dst = dst;
++  job.count = count;
++  for (u32 i = 0; i < 12; i++)
++  {
++    const CPArray array = static_cast<CPArray>(i);
++    job.state.bases[i] = VertexLoaderManager::cached_arraybases[array];
++    job.state.strides[i] = g_main_cp_state.array_strides[array];
++  }
++  s_issued.store(seq + 1, std::memory_order_seq_cst);
++  WakeWorker();
++}
++
++void Sync()
++{
++  if (s_started)
++    WaitFor(s_issued.load(std::memory_order_relaxed), 16, 17);
++}
++
++u64 Issued()
++{
++  return s_issued.load(std::memory_order_relaxed);
++}
++
++void WaitDone(u64 issued)
++{
++  WaitFor(issued, 18, -1);
++}
++
++void Shutdown()
++{
++  if (!s_started)
++    return;
++  Sync();
++  {
++    std::lock_guard lk(s_wake_mutex);
++    s_stop.store(true, std::memory_order_seq_cst);
++    s_wake.notify_one();
++  }
++  s_thread.join();
++  s_started = false;
++}
++}  // namespace PS4VertexWorker
++
++#endif
+diff --git a/Source/Core/VideoCommon/PS4VertexWorker.h b/Source/Core/VideoCommon/PS4VertexWorker.h
+new file mode 100755
+index 0000000..27f4bbe
+--- /dev/null
++++ b/Source/Core/VideoCommon/PS4VertexWorker.h
+@@ -0,0 +1,43 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++// PS4 port (Dolphin Lab, vertex_thread): vertex conversion on a core of its own (see
++// PS4VertexWorker.cpp).
++
++#include <array>
++
++#include "Common/CommonTypes.h"
++
++class VertexLoaderX64;
++
++extern "C" int ps4_vertex_thread, ps4_vertex_thread_core;
++
++namespace PS4VertexWorker
++{
++// What a worker conversion reads instead of the globals the video thread keeps changing: the
++// vertex array bases and strides at the time of the draw (VertexLoaderX64's bulk loader).
++struct ArrayState
++{
++  std::array<u8*, 12> bases;
++  std::array<u32, 12> strides;
++};
++
++// Set by the video backend: conversions may be deferred only where everything that reads the
++// vertex buffer waits for them (Vulkan with the command recorder, host-coherent stream buffer).
++void SetAllowed(bool allowed);
++// vertex_thread=on and allowed: the worker is (or will be) used.
++bool Active();
++// Queues the conversion of `count` vertices from `src` into `dst` (the stream buffer, space
++// already reserved). The video thread is the only caller.
++void Push(VertexLoaderX64* loader, const u8* src, u8* dst, int count);
++// Waits until every queued conversion has been written (video thread).
++void Sync();
++// The number of conversions queued so far, and a wait until that many are written (the Vulkan
++// recording thread, before it submits the command buffer that reads them).
++u64 Issued();
++void WaitDone(u64 issued);
++// Stops the worker thread (video backend shutdown).
++void Shutdown();
++}  // namespace PS4VertexWorker

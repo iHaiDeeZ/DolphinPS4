@@ -691,12 +691,12 @@ extern "C" void ps4_dump_thread_stacks(const char* path, const char* reason) {
 // is to its limit and whether something else shares its core (the sampler can't see that).
 namespace {
 constexpr clockid_t kThreadCpuClock = 14;  // FreeBSD CLOCK_THREAD_CPUTIME_ID
-std::atomic<uint64_t> g_thread_cpu_ns[3];  // CPU thread 0, video thread 1, VK record thread 2
+std::atomic<uint64_t> g_thread_cpu_ns[4];  // CPU 0, video 1, VK record 2, vertex thread 3
 }  // namespace
 
 extern "C" void ps4_thread_cpu_sample(int slot) {
     timespec ts;
-    if (slot < 0 || slot > 2 || clock_gettime(kThreadCpuClock, &ts) != 0)
+    if (slot < 0 || slot > 3 || clock_gettime(kThreadCpuClock, &ts) != 0)
         return;
     g_thread_cpu_ns[slot].store(static_cast<uint64_t>(ts.tv_sec) * 1000000000ull +
                                     static_cast<uint64_t>(ts.tv_nsec),
@@ -709,9 +709,11 @@ extern "C" void ps4_thread_cpu_sample(int slot) {
 // video thread by cause (ns, then count): 6/10 a submit that waits for its own completion (EFB
 // readbacks, sync), 7/11 all command buffers in flight, 8/12 the frame's descriptor pools, 9/13
 // anything else (stream buffers, texture readbacks); waits for the Vulkan recording thread:
-// 14 full drains, 15 up to a submit (fence waits).
+// 14 full drains, 15 up to a submit (fence waits); the vertex worker (VideoCommon/
+// PS4VertexWorker.cpp): 16/17 the video thread waiting for it (ns, waits), 18 the Vulkan
+// recording thread waiting for it before a submit (ns).
 namespace {
-constexpr int WAIT_SLOTS = 16;
+constexpr int WAIT_SLOTS = 19;
 std::atomic<long long> g_wait_ns[WAIT_SLOTS];
 }  // namespace
 
@@ -725,7 +727,7 @@ extern "C" long long ps4_wait_total(int slot) {
 }
 
 extern "C" double ps4_thread_cpu_seconds(int slot) {
-    if (slot < 0 || slot > 2)
+    if (slot < 0 || slot > 3)
         return 0;
     return g_thread_cpu_ns[slot].load(std::memory_order_relaxed) / 1e9;
 }
