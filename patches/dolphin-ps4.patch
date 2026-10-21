@@ -48900,7 +48900,7 @@ index 456b4fc..3fda665 100644
    static std::unique_ptr<VKStagingTexture> Create(StagingTextureType type,
                                                    const TextureConfig& config);
 diff --git a/Source/Core/VideoBackends/Vulkan/VKVertexManager.cpp b/Source/Core/VideoBackends/Vulkan/VKVertexManager.cpp
-index 18c5ad5..fcb9841 100644
+index 18c5ad5..ffe6a04 100644
 --- a/Source/Core/VideoBackends/Vulkan/VKVertexManager.cpp
 +++ b/Source/Core/VideoBackends/Vulkan/VKVertexManager.cpp
 @@ -12,6 +12,7 @@
@@ -48935,20 +48935,22 @@ index 18c5ad5..fcb9841 100644
    DestroyTexelBufferViews();
  }
  
-@@ -73,6 +80,21 @@ bool VertexManager::Initialize()
+@@ -73,6 +80,23 @@ bool VertexManager::Initialize()
      PanicAlertFmt("Failed to allocate streaming buffers");
      return false;
    }
 +#ifdef __ORBIS__
 +  // vertex_thread (VideoCommon/PS4VertexWorker.cpp): the recording thread's submits wait for
-+  // the worker's vertices, and only host-coherent memory lets them be written after the commit.
++  // the worker's vertices (and its runs' indices), and only host-coherent memory lets them be
++  // written after the commit.
 +  {
 +    const bool recorder = PS4CommandRecorderActive();
-+    const bool coherent = m_vertex_stream_buffer->IsCoherent();
++    const bool coherent =
++        m_vertex_stream_buffer->IsCoherent() && m_index_stream_buffer->IsCoherent();
 +    PS4VertexWorker::SetAllowed(recorder && coherent);
 +    char line[160];
 +    snprintf(line, sizeof(line),
-+             "vertex_thread: %s (setting %s, Vulkan thread %s, stream buffer %s)",
++             "vertex_thread: %s (setting %s, Vulkan thread %s, stream buffers %s)",
 +             PS4VertexWorker::Active() ? "on" : "off", ps4_vertex_thread ? "on" : "off",
 +             recorder ? "on" : "off", coherent ? "coherent" : "not coherent");
 +    ps4_boot_trace(line);
@@ -50267,10 +50269,10 @@ index 4decd2b..245d9ea 100644
    m_base_index += num_vertices;
  }
 diff --git a/Source/Core/VideoCommon/IndexGenerator.h b/Source/Core/VideoCommon/IndexGenerator.h
-index 3c57ea7..f3b32b7 100644
+index 3c57ea7..6fe91f6 100644
 --- a/Source/Core/VideoCommon/IndexGenerator.h
 +++ b/Source/Core/VideoCommon/IndexGenerator.h
-@@ -14,21 +14,35 @@ class IndexGenerator
+@@ -14,21 +14,70 @@ class IndexGenerator
  {
  public:
    void Init();
@@ -50297,6 +50299,41 @@ index 3c57ea7..f3b32b7 100644
 +  {
 +    m_index_buffer_current = current;
 +    m_base_index = base_index;
++  }
++  // vertex_runs: the indices a command of `count` vertices adds with primitive restart, or ~0u
++  // where they don't add up command by command (fans, lines, points; partial quads/triangles).
++  static u32 PS4RunIndexCount(OpcodeDecoder::Primitive primitive, u32 count)
++  {
++    if (count == 0)
++      return 0;  // RunVertices does nothing
++    switch (primitive)
++    {
++    case OpcodeDecoder::Primitive::GX_DRAW_TRIANGLE_STRIP:
++      return count + 1;  // the strip and a restart index
++    case OpcodeDecoder::Primitive::GX_DRAW_QUADS:
++    case OpcodeDecoder::Primitive::GX_DRAW_QUADS_2:
++      return count % 4 == 0 ? count / 4 * 5 : ~0u;  // per quad a 4-index strip and a restart
++    case OpcodeDecoder::Primitive::GX_DRAW_TRIANGLES:
++      return count % 3 == 0 ? count / 3 * 4 : ~0u;
++    default:
++      return ~0u;
++    }
++  }
++  // A run whose indices the vertex thread writes (PS4VertexWorker::PushRun): the generator moves
++  // past them; returns where they go and, in base_index, the run's first vertex number.
++  u16* PS4Reserve(u32 indices, u32 vertices, u32* base_index)
++  {
++    u16* const at = m_index_buffer_current;
++    *base_index = m_base_index;
++    m_index_buffer_current += indices;
++    m_base_index += vertices;
++    return at;
++  }
++  // What AddIndices writes for a primitive: (indices, vertices, first vertex number) -> the end.
++  using PS4IndexFunction = u16* (*)(u16*, u32, u32);
++  PS4IndexFunction PS4Function(OpcodeDecoder::Primitive primitive) const
++  {
++    return m_primitive_table[primitive];
 +  }
 +#endif
  
@@ -52137,7 +52174,7 @@ index 785afc8..f2584dc 100644
    // per loader public state
    PortableVertexDeclaration m_native_vtx_decl{};
 diff --git a/Source/Core/VideoCommon/VertexLoaderManager.cpp b/Source/Core/VideoCommon/VertexLoaderManager.cpp
-index e3d3b9f..4c3208c 100644
+index e3d3b9f..b3f9c65 100644
 --- a/Source/Core/VideoCommon/VertexLoaderManager.cpp
 +++ b/Source/Core/VideoCommon/VertexLoaderManager.cpp
 @@ -3,9 +3,17 @@
@@ -52169,7 +52206,7 @@ index e3d3b9f..4c3208c 100644
  #include "VideoCommon/VertexManagerBase.h"
  #include "VideoCommon/VertexShaderManager.h"
  #include "VideoCommon/VideoConfig.h"
-@@ -61,8 +72,183 @@ std::array<VertexLoaderBase*, CP_NUM_VAT_REG> g_main_vertex_loaders;
+@@ -61,8 +72,326 @@ std::array<VertexLoaderBase*, CP_NUM_VAT_REG> g_main_vertex_loaders;
  std::array<VertexLoaderBase*, CP_NUM_VAT_REG> g_preprocess_vertex_loaders;
  bool g_needs_cp_xf_consistency_check;
  
@@ -52272,6 +52309,149 @@ index e3d3b9f..4c3208c 100644
 +      }
 +    }
 +  }
++  // Runs as one job for the vertex thread (PS4VertexWorker::PushRun, converted at once here):
++  // commands of one format one after the other as in the FIFO data, some with skipped vertices,
++  // against the normal loader and index generator command by command. Skipped vertices leave the
++  // job's vertex slots and indices laid out differently, so what is compared is what gets drawn:
++  // each primitive's vertices (between primitive restarts).
++  unsigned long long run_jobs = 0, run_skips = 0, run_bad = 0;
++  {
++    const bool saved_restart = g_backend_info.bSupportsPrimitiveRestart;
++    g_backend_info.bSupportsPrimitiveRestart = true;
++    IndexGenerator generator;
++    generator.Init();
++    g_backend_info.bSupportsPrimitiveRestart = saved_restart;
++    const OpcodeDecoder::Primitive kinds[] = {OpcodeDecoder::Primitive::GX_DRAW_TRIANGLE_STRIP,
++                                              OpcodeDecoder::Primitive::GX_DRAW_QUADS,
++                                              OpcodeDecoder::Primitive::GX_DRAW_TRIANGLES};
++    std::vector<u8> fifo, out_job, out_ref;
++    std::vector<u16> index_job, index_ref;
++    for (int f = 0; f < 3000; f++)
++    {
++      TVtxDesc desc;
++      VAT vat;
++      desc.low.Hex = rng() & 0x1FFFF;
++      desc.low.Position = static_cast<VertexComponentFormat>(1 + rng() % 3);
++      desc.high.Hex = rng() & 0xFFFF;
++      vat.g0.Hex = rng();
++      vat.g1.Hex = rng();
++      vat.g2.Hex = rng();
++      vat.g0.PosFormat = component();
++      vat.g0.NormalFormat = component();
++      vat.g0.Color0Comp = static_cast<ColorFormat>(rng() % 6);
++      vat.g0.Color1Comp = static_cast<ColorFormat>(rng() % 6);
++      vat.g0.Tex0CoordFormat = component();
++      vat.g1.Tex1CoordFormat = component();
++      vat.g1.Tex2CoordFormat = component();
++      vat.g1.Tex3CoordFormat = component();
++      vat.g1.Tex4CoordFormat = component();
++      vat.g1.VCacheEnhance = true;
++      vat.g2.Tex5CoordFormat = component();
++      vat.g2.Tex6CoordFormat = component();
++      vat.g2.Tex7CoordFormat = component();
++      VertexLoaderX64 loader(desc, vat);
++      VertexLoaderBase& base = loader;
++      const u32 stride = loader.m_native_vtx_decl.stride;
++      const u32 vertex_size = loader.m_vertex_size;
++      const OpcodeDecoder::Primitive primitive = kinds[rng() % 3];
++      const int commands = 2 + static_cast<int>(rng() % 12);
++      fifo.clear();
++      std::vector<size_t> offsets;
++      std::vector<u32> counts;
++      u32 vertices = 0, indices = 0;
++      for (int c = 0; c < commands; c++)
++      {
++        u32 n = rng() % 13;
++        if (primitive == OpcodeDecoder::Primitive::GX_DRAW_QUADS)
++          n = n / 4 * 4;
++        else if (primitive == OpcodeDecoder::Primitive::GX_DRAW_TRIANGLES)
++          n = n / 3 * 3;
++        fifo.push_back(static_cast<u8>(rng()));  // the opcode: not read
++        fifo.push_back(static_cast<u8>(n >> 8));
++        fifo.push_back(static_cast<u8>(n));
++        offsets.push_back(fifo.size());
++        counts.push_back(n);
++        for (u32 b = 0; b < n * vertex_size; b++)
++          fifo.push_back(static_cast<u8>(rng() % 12 == 0 ? 0xFF : rng()));
++        vertices += n;
++        indices += IndexGenerator::PS4RunIndexCount(primitive, n);
++      }
++      fifo.resize(fifo.size() + 16);
++      std::vector<PrimitiveRun> run;
++      for (int c = 0; c < commands; c++)
++        run.push_back({fifo.data() + offsets[c], counts[c]});
++      for (u32 i = 0; i < 12; i++)
++      {
++        const CPArray array = static_cast<CPArray>(i);
++        cached_arraybases[array] = arrays[(i + rng()) % 12].data();
++        g_main_cp_state.array_strides[array] = rng() % 4;
++      }
++      constexpr u16 INDEX_FILL = 0xABCD;
++      out_job.assign(static_cast<size_t>(vertices) * stride + 64, 0xCD);
++      index_job.assign(indices + 8, INDEX_FILL);
++      PS4VertexWorker::PushRun(&loader, run.data(), commands, commands - 1, out_job.data(),
++                               index_job.data(), 0, primitive, generator.PS4Function(primitive));
++      out_ref.assign(static_cast<size_t>(vertices) * stride + 64, 0xCD);
++      index_ref.assign(indices + 8, INDEX_FILL);
++      u8* dst = out_ref.data();
++      u16* index = index_ref.data();
++      u32 loaded_all = 0;
++      for (int c = 0; c < commands; c++)
++      {
++        if (counts[c] == 0)
++          continue;
++        const u32 loaded =
++            static_cast<u32>(base.RunVertices(run[c].src, dst, static_cast<int>(counts[c])));
++        index = generator.PS4Function(primitive)(index, loaded, loaded_all);
++        dst += loaded * stride;
++        loaded_all += loaded;
++      }
++      run_jobs++;
++      if (loaded_all != vertices)
++        run_skips++;
++      const size_t ref_indices = static_cast<size_t>(index - index_ref.data());
++      const auto drawn = [stride](const std::vector<u16>& list, size_t length,
++                                  const std::vector<u8>& data) {
++        std::vector<std::vector<u8>> primitives;
++        std::vector<u8> current;
++        for (size_t i = 0; i < length; i++)
++        {
++          if (list[i] == UINT16_MAX)
++          {
++            if (!current.empty())
++              primitives.push_back(current);
++            current.clear();
++            continue;
++          }
++          const auto at = data.begin() + static_cast<size_t>(list[i]) * stride;
++          current.insert(current.end(), at, at + stride);
++        }
++        if (!current.empty())
++          primitives.push_back(current);
++        return primitives;
++      };
++      bool past = index_job[indices] != INDEX_FILL;
++      for (size_t b = static_cast<size_t>(vertices) * stride + 4; b < out_job.size(); b++)
++        past |= out_job[b] != 0xCD;
++      const bool max_ok = std::all_of(index_job.begin(), index_job.begin() + indices,
++                                      [&](u16 i) { return i == UINT16_MAX || i < vertices; });
++      if (past || !max_ok ||
++          drawn(index_job, indices, out_job) != drawn(index_ref, ref_indices, out_ref))
++      {
++        if (run_bad++ < 10)
++        {
++          fprintf(stderr,
++                  "[vtxselftest] RUN JOB MISMATCH: primitive %d, %d commands, %u vertices (%u "
++                  "loaded), %u indices (%zu), written past %d, index range %d, desc %08x %08x\n",
++                  static_cast<int>(primitive), commands, vertices, loaded_all, indices, ref_indices,
++                  past, max_ok, desc.low.Hex, desc.high.Hex);
++        }
++      }
++    }
++  }
++  bad += run_bad;
++  fprintf(stderr, "[vtxselftest] run jobs: %llu compared, %llu with skipped vertices, %llu bad\n",
++          run_jobs, run_skips, run_bad);
 +  // The vertex thread's flush caches (PS4VertexWorker.cpp): batches of short draws of one
 +  // format - points and lines among them, culled draws, skipped vertices, array bases and strides
 +  // changing between draws - converted for real, and from the last vertices at the flush.
@@ -52353,7 +52533,7 @@ index e3d3b9f..4c3208c 100644
    MarkAllDirty();
    g_main_vertex_loaders.fill(nullptr);
    g_preprocess_vertex_loaders.fill(nullptr);
-@@ -71,6 +257,8 @@ void Init()
+@@ -71,6 +400,8 @@ void Init()
  
  void Clear()
  {
@@ -52362,7 +52542,7 @@ index e3d3b9f..4c3208c 100644
    std::lock_guard<std::mutex> lk(s_vertex_loader_map_lock);
    s_vertex_loader_map.clear();
    s_native_vertex_map.clear();
-@@ -379,6 +567,88 @@ static void CheckCPConfiguration(int vtx_attr_group)
+@@ -379,6 +710,88 @@ static void CheckCPConfiguration(int vtx_attr_group)
    }
  }
  
@@ -52451,7 +52631,7 @@ index e3d3b9f..4c3208c 100644
  static bool CanSplit(OpcodeDecoder::Primitive primitive)
  {
    // Splitting is currently only implemented for the easy cases (individual lines/points/triangles)
-@@ -444,6 +714,12 @@ int RunVertices(int vtx_attr_group, OpcodeDecoder::Primitive primitive, int coun
+@@ -444,6 +857,12 @@ int RunVertices(int vtx_attr_group, OpcodeDecoder::Primitive primitive, int coun
                            primitive < OpcodeDecoder::Primitive::GX_DRAW_LINES);
  
      const int stride = loader->m_native_vtx_decl.stride;
@@ -52464,7 +52644,7 @@ index e3d3b9f..4c3208c 100644
      do
      {
        const int max_vertices = 16380;  // Max is 16383, but 16380 is divisible by both 4 and 3
-@@ -452,7 +728,35 @@ int RunVertices(int vtx_attr_group, OpcodeDecoder::Primitive primitive, int coun
+@@ -452,7 +871,35 @@ int RunVertices(int vtx_attr_group, OpcodeDecoder::Primitive primitive, int coun
        DataReader dst = g_vertex_manager->PrepareForAdditionalData(primitive, run, stride,
                                                                    cullall || can_cpu_cull);
  
@@ -52501,7 +52681,7 @@ index e3d3b9f..4c3208c 100644
        src += loader->m_vertex_size * max_vertices;
  
        if (can_cpu_cull && !cullall)
-@@ -483,6 +787,193 @@ template int RunVertices<false>(int vtx_attr_group, OpcodeDecoder::Primitive pri
+@@ -483,6 +930,216 @@ template int RunVertices<false>(int vtx_attr_group, OpcodeDecoder::Primitive pri
  template int RunVertices<true>(int vtx_attr_group, OpcodeDecoder::Primitive primitive, int count,
                                 const u8* src);
  
@@ -52516,24 +52696,33 @@ index e3d3b9f..4c3208c 100644
 +unsigned long long ps4_vtx_grouped = 0;  // the commands in them
 +}
 +
-+// The indices a command of `count` vertices adds (IndexGenerator.cpp, primitive restart), or ~0u
-+// where they don't add up command by command.
-+static u32 PS4RunIndices(OpcodeDecoder::Primitive primitive, u32 count)
++// vertex_thread: the stretch as one job for the vertex thread, indices included (v60.49 queued
++// each command: ~1.7 million hand-overs a second in Super Mario Galaxy, and with the skipped-vertex
++// scan and the index generation they were ~20% of its video thread). The flush caches come from
++// the last commands (from the last one of three or more vertices, PS4VertexWorker's tail): where
++// one of those has a skipped vertex among its last three, the caches keep values from before it
++// that the tail doesn't follow - then the stretch goes command by command. Returns whether queued.
++static bool PS4QueueRun(VertexLoaderX64* bulk_loader, OpcodeDecoder::Primitive primitive,
++                        const PrimitiveRun* run, int count, u32 vertices, u32 indices, u8* dst)
 +{
-+  if (count == 0)
-+    return 0;  // RunVertices does nothing
-+  switch (primitive)
++  int tail = count - 1;
++  while (tail > 0 && run[tail].count < 3)
++    tail--;
++  for (int i = tail; i < count; i++)
 +  {
-+  case OpcodeDecoder::Primitive::GX_DRAW_TRIANGLE_STRIP:
-+    return count + 1;  // the strip and a restart index
-+  case OpcodeDecoder::Primitive::GX_DRAW_QUADS:
-+  case OpcodeDecoder::Primitive::GX_DRAW_QUADS_2:
-+    return count % 4 == 0 ? count / 4 * 5 : ~0u;  // per quad a 4-index strip and a restart
-+  case OpcodeDecoder::Primitive::GX_DRAW_TRIANGLES:
-+    return count % 3 == 0 ? count / 3 * 4 : ~0u;
-+  default:
-+    return ~0u;
++    const u32 n = run[i].count;
++    const u32 last = std::min<u32>(n, 3);
++    if (bulk_loader->HasSkippedVertex(run[i].src + (n - last) * bulk_loader->m_vertex_size,
++                                      static_cast<int>(last)))
++    {
++      return false;
++    }
 +  }
++  u32 base_index;
++  u16* const index_dst = g_vertex_manager->PS4ReserveIndices(indices, vertices, &base_index);
++  PS4VertexWorker::PushRun(bulk_loader, run, count, tail, dst, index_dst, base_index, primitive,
++                           g_vertex_manager->PS4IndexFunction(primitive));
++  return true;
 +}
 +
 +static void PS4RunStretch(int vtx_attr_group, OpcodeDecoder::Primitive primitive,
@@ -52556,6 +52745,20 @@ index e3d3b9f..4c3208c 100644
 +                      !Core::System::GetInstance().GetFifo().UseDeterministicGPUThread();
 +  VertexLoaderX64* const bulk_loader = worker ? loader->PS4BulkLoader() : nullptr;
 +  u8* dst = g_vertex_manager->PS4PrepareForRun(primitive, vertices, indices, stride).GetPointer();
++#ifdef DOLPHIN_PS4_HOST
++  // PC test bench, PS4VTX_RUNJOB=1: the vertex thread's run jobs, converted at once.
++  static const bool host_jobs = getenv("PS4VTX_RUNJOB") != nullptr;
++  VertexLoaderX64* const job_loader = host_jobs ? loader->PS4BulkLoader() : nullptr;
++#else
++  VertexLoaderX64* const job_loader = bulk_loader;
++#endif
++  if (job_loader && PS4QueueRun(job_loader, primitive, run, count, vertices, indices, dst))
++  {
++    ADDSTAT(g_stats.this_frame.num_prims, vertices);
++    ADDSTAT(g_stats.this_frame.num_primitive_joins, count);
++    g_vertex_manager->FlushData(vertices, stride);
++    return;
++  }
 +  u32 loaded = 0;
 +  bool same_arrays = false;
 +  for (int i = 0; i < count; i++)
@@ -52669,7 +52872,7 @@ index e3d3b9f..4c3208c 100644
 +    u32 indices = 0;
 +    while (stretches && end < count)
 +    {
-+      const u32 n = PS4RunIndices(primitive, run[end].count);
++      const u32 n = IndexGenerator::PS4RunIndexCount(primitive, run[end].count);
 +      if (n == ~0u || vertices + run[end].count > MAX_STRETCH_VERTICES)
 +        break;
 +      vertices += run[end].count;
@@ -53068,7 +53271,7 @@ index 2bc6d58..e14f88b 100644
  
  void VertexManagerBase::CalculateZSlope(NativeVertexFormat* format)
 diff --git a/Source/Core/VideoCommon/VertexManagerBase.h b/Source/Core/VideoCommon/VertexManagerBase.h
-index 715dbee..ecacc7d 100644
+index 715dbee..f4c97af 100644
 --- a/Source/Core/VideoCommon/VertexManagerBase.h
 +++ b/Source/Core/VideoCommon/VertexManagerBase.h
 @@ -96,10 +96,23 @@ public:
@@ -53095,7 +53298,7 @@ index 715dbee..ecacc7d 100644
  
    VertexManagerBase();
    virtual ~VertexManagerBase();
-@@ -117,6 +130,34 @@ public:
+@@ -117,6 +130,44 @@ public:
    /// Returns whether cullall was changed (false if cullall was already off)
    DataReader DisableCullAll(u32 stride);
    void FlushData(u32 count, u32 stride);
@@ -53104,6 +53307,16 @@ index 715dbee..ecacc7d 100644
 +  // (VertexLoaderManager::RunVerticesRun) - `indices`: what the whole run adds.
 +  DataReader PS4PrepareForRun(OpcodeDecoder::Primitive primitive, u32 vertices, u32 indices,
 +                              u32 stride);
++  // The indices of a run the vertex thread converts (PS4VertexWorker::PushRun): where they go,
++  // its first vertex number, and the function that writes a command's.
++  u16* PS4ReserveIndices(u32 indices, u32 vertices, u32* base_index)
++  {
++    return m_index_generator.PS4Reserve(indices, vertices, base_index);
++  }
++  IndexGenerator::PS4IndexFunction PS4IndexFunction(OpcodeDecoder::Primitive primitive) const
++  {
++    return m_index_generator.PS4Function(primitive);
++  }
 +  u64 m_ps4_flushes = 0;  // batches ended by Flush
 +#endif
 +#ifdef DOLPHIN_PS4_HOST
@@ -53130,7 +53343,7 @@ index 715dbee..ecacc7d 100644
  
    void Flush();
    bool HasSendableVertices() const { return !m_is_flushed && !m_cull_all; }
-@@ -217,6 +258,10 @@ protected:
+@@ -217,6 +268,10 @@ protected:
    bool m_cull_all = false;
  
    IndexGenerator m_index_generator;
@@ -56790,11 +57003,11 @@ index 0000000..01ac37c
 +void Release();
 +}  // namespace PS4FrameGen
 diff --git a/Source/Core/VideoCommon/PS4VertexWorker.cpp b/Source/Core/VideoCommon/PS4VertexWorker.cpp
-new file mode 100755
-index 0000000..10052d7
+new file mode 100644
+index 0000000..4403044
 --- /dev/null
 +++ b/Source/Core/VideoCommon/PS4VertexWorker.cpp
-@@ -0,0 +1,628 @@
+@@ -0,0 +1,761 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -56845,6 +57058,10 @@ index 0000000..10052d7
 +void Push(VertexLoaderX64*, const u8*, u8*, int, bool)
 +{
 +}
++void PushRun(VertexLoaderX64*, const VertexLoaderManager::PrimitiveRun*, int, int, u8*, u16*, u32,
++             OpcodeDecoder::Primitive, u16* (*)(u16*, u32, u32))
++{
++}
 +void ConvertCaches(VertexLoaderX64*, const u8*, int)
 +{
 +}
@@ -56872,7 +57089,9 @@ index 0000000..10052d7
 +#include <array>
 +#include <cstdio>
 +
++#include "Common/Swap.h"
 +#include "VideoCommon/CPMemory.h"
++#include "VideoCommon/IndexGenerator.h"
 +#include "VideoCommon/VertexLoaderManager.h"
 +#include "VideoCommon/VertexLoaderX64.h"
 +
@@ -56959,6 +57178,55 @@ index 0000000..10052d7
 +    state.strides[i] = g_main_cp_state.array_strides[array];
 +  }
 +}
++
++// One conversion for the worker (64 bytes): a draw (indices null) - its vertices, which the video
++// thread indexes - or a run (PushRun) - its commands' vertices and indices (ConvertRun). The array
++// state is shared by the jobs queued while it is unchanged.
++struct Job
++{
++  VertexLoaderX64* loader;
++  const u8* src;  // a run: its first command's vertices
++  u8* dst;
++  const ArrayState* arrays;
++  u16* indices;
++  u16* (*add_indices)(u16*, u32, u32);
++  u32 count;  // a draw's vertices, a run's commands
++  u32 base;   // a run: its first vertex number
++  OpcodeDecoder::Primitive primitive;
++};
++
++// A run's commands follow each other in the FIFO data (or display list), each a 3-byte header -
++// the opcode and the big-endian vertex count - and its vertices. Each command gets the space the
++// video thread reserved for it: a vertex slot per vertex and PS4RunIndexCount indices. Skipped
++// vertices (position index 0xFF / 0xFFFF, which the loader leaves out) leave its last slots
++// unused and its last indices primitive restarts.
++void ConvertRun(const Job& job)
++{
++  VertexLoaderX64* const loader = job.loader;
++  const u32 vertex_size = loader->m_vertex_size;
++  const u32 stride = loader->m_native_vtx_decl.stride;
++  const u8* src = job.src;
++  u8* dst = job.dst;
++  u16* indices = job.indices;
++  u32 base = job.base;
++  for (u32 i = 0; i < job.count; i++)
++  {
++    const u32 count = Common::swap16(src - 2);
++    if (count != 0)
++    {
++      const u32 loaded = static_cast<u32>(
++          loader->RunVerticesBulk(src, dst, static_cast<int>(count), job.arrays));
++      u16* const end = indices + IndexGenerator::PS4RunIndexCount(job.primitive, count);
++      u16* written = job.add_indices(indices, loaded, base);
++      while (written < end)
++        *written++ = UINT16_MAX;
++      indices = end;
++    }
++    src += count * vertex_size + 3;
++    dst += count * stride;
++    base += count;
++  }
++}
 +}  // namespace
 +
 +void ConvertCaches(VertexLoaderX64* loader, const u8* src, int count)
@@ -56992,16 +57260,6 @@ index 0000000..10052d7
 +{
 +namespace
 +{
-+// 40 bytes: the array state is shared by the jobs queued while it is unchanged (Push).
-+struct Job
-+{
-+  VertexLoaderX64* loader;
-+  const u8* src;
-+  u8* dst;
-+  const ArrayState* arrays;
-+  int count;
-+};
-+
 +constexpr u64 RING_SIZE = 2048;    // conversions queued at most (a power of two)
 +// Array snapshots: a new one only with a queued job (Push), so a slot is reused 2 * RING_SIZE jobs
 +// after the last job that read it at the earliest - long done (the ring holds RING_SIZE).
@@ -57130,27 +57388,22 @@ index 0000000..10052d7
 +    while (done != issued)
 +    {
 +      const Job& job = s_jobs[done & (RING_SIZE - 1)];
-+      job.loader->RunVerticesBulk(job.src, job.dst, job.count, job.arrays);
++      const bool run = job.indices != nullptr;
++      if (run)
++        ConvertRun(job);
++      else
++        job.loader->RunVerticesBulk(job.src, job.dst, static_cast<int>(job.count), job.arrays);
 +      done++;
-+      if ((done & (DONE_BATCH - 1)) == 0 && done != issued)
++      // A run is about as much work as a batch of draws.
++      if ((run || (done & (DONE_BATCH - 1)) == 0) && done != issued)
 +        Report(done);
 +    }
 +    Report(done);
 +  }
 +}
-+}  // namespace
 +
-+void SetAllowed(bool allowed)
-+{
-+  s_allowed = allowed;
-+}
-+
-+bool Active()
-+{
-+  return ps4_vertex_thread && s_allowed;
-+}
-+
-+void Push(VertexLoaderX64* loader, const u8* src, u8* dst, int count, bool same_arrays)
++// The next job's slot: the worker started on first use, waited for while the ring is full.
++Job& NextJob()
 +{
 +  if (!s_started)
 +  {
@@ -57169,6 +57422,13 @@ index 0000000..10052d7
 +      s_done_seen = s_done.load(std::memory_order_acquire);
 +    }
 +  }
++  return s_jobs[seq & (RING_SIZE - 1)];
++}
++
++// The vertex arrays' bases and strides of now: the latest snapshot while they are unchanged
++// (`same_arrays`: they can't have changed since the last job).
++const ArrayState* CurrentArrays(bool same_arrays)
++{
 +  const ArrayState* arrays = s_arrays_latest;
 +  if (!same_arrays || !arrays)
 +  {
@@ -57186,17 +57446,61 @@ index 0000000..10052d7
 +      s_arrays_latest = arrays = &next;
 +    }
 +  }
-+  Job& job = s_jobs[seq & (RING_SIZE - 1)];
++  return arrays;
++}
++}  // namespace
++
++void SetAllowed(bool allowed)
++{
++  s_allowed = allowed;
++}
++
++bool Active()
++{
++  return ps4_vertex_thread && s_allowed;
++}
++
++void Push(VertexLoaderX64* loader, const u8* src, u8* dst, int count, bool same_arrays)
++{
++  Job& job = NextJob();
++  const ArrayState* const arrays = CurrentArrays(same_arrays);
 +  job.loader = loader;
 +  job.src = src;
 +  job.dst = dst;
 +  job.arrays = arrays;
-+  job.count = count;
-+  s_written = seq + 1;
++  job.indices = nullptr;
++  job.count = static_cast<u32>(count);
++  s_written++;
 +  ps4_vtx_queued++;
 +  AddTail(loader, src, count, arrays);
 +  if (s_written - s_published >= PUBLISH_BATCH)
 +    Publish();
++}
++
++void PushRun(VertexLoaderX64* loader, const VertexLoaderManager::PrimitiveRun* run, int commands,
++             int tail, u8* dst, u16* indices, u32 base_index, OpcodeDecoder::Primitive primitive,
++             u16* (*add_indices)(u16*, u32, u32))
++{
++  Job& job = NextJob();
++  const ArrayState* const arrays = CurrentArrays(false);
++  job.loader = loader;
++  job.src = run[0].src;
++  job.dst = dst;
++  job.arrays = arrays;
++  job.indices = indices;
++  job.add_indices = add_indices;
++  job.count = static_cast<u32>(commands);
++  job.base = base_index;
++  job.primitive = primitive;
++  s_written++;
++  ps4_vtx_queued += commands;
++  for (int i = tail; i < commands; i++)
++  {
++    if (run[i].count != 0)
++      AddTail(loader, run[i].src, static_cast<int>(run[i].count), arrays);
++  }
++  // A run is about as much work as a batch of draws: the worker hears of it at once.
++  Publish();
 +}
 +
 +void OnFlush()
@@ -57333,6 +57637,48 @@ index 0000000..10052d7
 +{
 +}
 +
++void PushRun(VertexLoaderX64* loader, const VertexLoaderManager::PrimitiveRun* run, int commands,
++             int tail, u8* dst, u16* indices, u32 base_index, OpcodeDecoder::Primitive primitive,
++             u16* (*add_indices)(u16*, u32, u32))
++{
++  // PS4VTX_RUNJOB=1 (VertexLoaderManager.cpp): the run converted at once, as the worker would.
++  ArrayState& state = s_states[s_next_state++ & 3];
++  SnapshotArrays(state);
++  Job job{};
++  job.loader = loader;
++  job.src = run[0].src;
++  job.dst = dst;
++  job.arrays = &state;
++  job.indices = indices;
++  job.add_indices = add_indices;
++  job.count = static_cast<u32>(commands);
++  job.base = base_index;
++  job.primitive = primitive;
++  ConvertRun(job);
++  static const bool check = getenv("PS4VTX_TAIL") != nullptr;
++  s_check = check;
++  if (!s_check)
++    return;
++  // The real caches, as the commands converted one by one leave them; the tail from the run.
++  SwapCaches();
++  static std::vector<u8> scratch;
++  for (int i = 0; i < commands; i++)
++  {
++    if (run[i].count == 0)
++      continue;
++    scratch.resize(static_cast<size_t>(run[i].count) * 256 + 64);
++    static_cast<VertexLoaderBase*>(loader)->RunVertices(run[i].src, scratch.data(),
++                                                        static_cast<int>(run[i].count));
++  }
++  SwapCaches();
++  for (int i = tail; i < commands; i++)
++  {
++    if (run[i].count != 0)
++      AddTail(loader, run[i].src, static_cast<int>(run[i].count), &state);
++  }
++  s_draws += commands;
++}
++
 +void OnFlush()
 +{
 +  if (!s_check)
@@ -57424,11 +57770,11 @@ index 0000000..10052d7
 +#endif
 +#endif
 diff --git a/Source/Core/VideoCommon/PS4VertexWorker.h b/Source/Core/VideoCommon/PS4VertexWorker.h
-new file mode 100755
-index 0000000..ec90a9a
+new file mode 100644
+index 0000000..2c964fb
 --- /dev/null
 +++ b/Source/Core/VideoCommon/PS4VertexWorker.h
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,75 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -57442,6 +57788,14 @@ index 0000000..ec90a9a
 +#include "Common/CommonTypes.h"
 +
 +class VertexLoaderX64;
++namespace OpcodeDecoder
++{
++enum class Primitive : u8;
++}
++namespace VertexLoaderManager
++{
++struct PrimitiveRun;
++}
 +
 +extern "C" int ps4_vertex_thread, ps4_vertex_thread_core;
 +// Monitor counters (video thread): draws queued for the worker, draws converted here.
@@ -57467,6 +57821,14 @@ index 0000000..ec90a9a
 +// have changed since the previous Push (the commands of one run). The video thread is the only
 +// caller of everything below but WaitDone.
 +void Push(VertexLoaderX64* loader, const u8* src, u8* dst, int count, bool same_arrays = false);
++// A run of `commands` primitive commands (VertexLoaderManager::RunVerticesRun) as one conversion,
++// indices included: the vertices into `dst`, the indices into `indices` numbered from
++// `base_index` (add_indices: the index generator's function for the primitive), in the space the
++// video thread reserved - each command's vertex count of vertex slots and
++// IndexGenerator::PS4RunIndexCount indices. The flush caches come from the commands from `tail`.
++void PushRun(VertexLoaderX64* loader, const VertexLoaderManager::PrimitiveRun* run, int commands,
++             int tail, u8* dst, u16* indices, u32 base_index, OpcodeDecoder::Primitive primitive,
++             u16* (*add_indices)(u16*, u32, u32));
 +// A culled draw: only what the vertex manager's flush reads from its last vertices.
 +void ConvertCaches(VertexLoaderX64* loader, const u8* src, int count);
 +// The vertex manager flushes: the caches of the queued draws, and the worker told of them.

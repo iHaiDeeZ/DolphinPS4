@@ -5,7 +5,8 @@
 // instruction pointer. Every 10 seconds the samples are aggregated and appended to
 // /data/DolphinPS4/samples.log: per thread, the busiest eboot addresses (ELF virtual addresses,
 // symbolize with `llvm-symbolizer --obj=<oelf> 0x...`), system module addresses ("sys") and JIT
-// code addresses ("jit", 16-byte buckets). Every 60 s the busiest JIT code (64 KiB chunks) is
+// code addresses ("jit", 16-byte buckets), then who called the sampled eboot code where the
+// caller could be found ("call <bucket> <- <return address>"). Every 60 s the busiest JIT code (64 KiB chunks) is
 // copied to /data/DolphinPS4/jitcode.bin and the emulated MEM1 to mem1.bin, so the generated x86
 // and the guest code behind it can be disassembled offline (blocks: the jit-perf map written by
 // Common/JitRegister).
@@ -61,6 +62,7 @@ struct ThreadSamples {
     const char* name = nullptr;
     uint64_t stack_top = 0;  // ps4_sampler_register_thread: the frame-pointer walk's limit
     uint64_t samples[kMaxSamples];
+    uint32_t callers[kMaxSamples];  // eboot samples: the caller's return address (findCaller), or 0
     std::atomic<int> count{0};
     // The last kRing samples, across windows: what the thread did during a hitch
     // (ps4_sampler_note_hitch).
@@ -71,6 +73,38 @@ constexpr uint32_t kRing = 4096;
 
 ThreadSamples g_threads[kMaxThreads];
 std::atomic<int> g_thread_count{0};
+
+// Who called the interrupted function (eboot samples): a sample names the function it lands in,
+// not the caller that matters - memset, memcpy and hashing were 10% of Super Mario Galaxy's video
+// thread with no way to tell for what. The first word on the stack (from the interrupted rsp, at
+// most kCallerScan words, inside the thread's stack) that is a return address after a direct call
+// (E8 rel32) to an address at most kCallerSpan before rip - the function's own entry. Exact for
+// leaf functions and small frames; 0 when none is found (deep frames, calls through pointers,
+// tail calls).
+constexpr int kCallerScan = 32;
+constexpr uint64_t kCallerSpan = 0x8000;
+uintptr_t g_text_end = 0;  // the end of the eboot's code segment (samplerStartOnce); 0: off
+
+uint32_t findCaller(uint64_t rip, uint64_t sp, uint64_t top) {
+    const uintptr_t text = reinterpret_cast<uintptr_t>(__text_start);
+    if (!g_text_end || !top || (sp & 7))
+        return 0;
+    for (int k = 0; k < kCallerScan && sp + 8 * k + 8 <= top; k++) {
+        const uint64_t ret = reinterpret_cast<const uint64_t*>(sp)[k];
+        if (ret < text + 5 || ret >= g_text_end)
+            continue;
+        const uint8_t* code = reinterpret_cast<const uint8_t*>(ret);
+        if (code[-5] != 0xE8)
+            continue;
+        const int32_t rel = static_cast<int32_t>(
+            static_cast<uint32_t>(code[-4]) | static_cast<uint32_t>(code[-3]) << 8 |
+            static_cast<uint32_t>(code[-2]) << 16 | static_cast<uint32_t>(code[-1]) << 24);
+        const uint64_t target = ret + static_cast<int64_t>(rel);
+        if (target <= rip && rip - target < kCallerSpan)
+            return static_cast<uint32_t>(ret - text);
+    }
+    return 0;
+}
 
 void profHandler(int, siginfo_t*, void* context) {
     const pthread_t self = pthread_self();
@@ -84,6 +118,9 @@ void profHandler(int, siginfo_t*, void* context) {
         {
             uint64_t sample = regs[kRipIndex];
             uint64_t ring_sample = sample;  // the hitch ring: a wait keeps two callers
+            uint32_t caller_of = 0;
+            if (sample < g_text_end && sample >= reinterpret_cast<uintptr_t>(__text_start))
+                caller_of = findCaller(sample, regs[kRspIndex], t.stack_top);
             // Inside a system module: keep the exact address (tagged). The module list at the
             // top of samples.log maps it to a module offset, which the decrypted modules' symbol
             // tables name. (Blaming "the first eboot address on the stack" picked up stale
@@ -138,6 +175,7 @@ void profHandler(int, siginfo_t*, void* context) {
             t.ring_pos.store(pos + 1, std::memory_order_release);
             if (n < kMaxSamples) {
                 t.samples[n] = sample;
+                t.callers[n] = caller_of;
                 t.count.store(n + 1, std::memory_order_release);
             }
         }
@@ -190,18 +228,52 @@ void writeJitSamples(const uint64_t* samples, int n, double window_start) {
     }
 }
 
+// "call <bucket> <- <return address>" lines after a window's entries: who called the sampled code,
+// for the samples whose caller was found (findCaller), busiest first. Both are ELF addresses like
+// the entries'; symbolized offline (scratchpad callers.py).
+void writeCallers(int fd, uint64_t* pairs, int m, int n) {
+    std::sort(pairs, pairs + m);
+    struct Entry { uint64_t key; int count; };
+    static Entry entries[kMaxSamples];
+    int unique = 0;
+    for (int i = 0; i < m;) {
+        int j = i;
+        while (j < m && pairs[j] == pairs[i])
+            j++;
+        entries[unique++] = {pairs[i], j - i};
+        i = j;
+    }
+    std::sort(entries, entries + unique, [](const Entry& a, const Entry& b) { return a.count > b.count; });
+    char line[96];
+    for (int i = 0; i < unique && i < 800 && entries[i].count >= 2; i++) {
+        snprintf(line, sizeof(line), "  %5.1f%% call 0x%llx <- 0x%llx\n", 100.0 * entries[i].count / n,
+                 static_cast<unsigned long long>(entries[i].key >> 32),
+                 static_cast<unsigned long long>(entries[i].key & 0xFFFFFFFFULL));
+        writeLine(fd, line);
+    }
+}
+
 // Aggregates one thread's window: sorts the samples in place and prints the top entries.
 void report(int fd, ThreadSamples& t, double window_start) {
     // Copy first: the handler keeps writing into t.samples once count is reset.
     static uint64_t s[kMaxSamples];
+    static uint32_t c[kMaxSamples];
     const int n = std::min(t.count.load(std::memory_order_acquire), kMaxSamples);
     memcpy(s, t.samples, sizeof(uint64_t) * n);
+    memcpy(c, t.callers, sizeof(uint32_t) * n);
     t.count.store(0, std::memory_order_release);
     if (n == 0)
         return;
     const uintptr_t text = reinterpret_cast<uintptr_t>(__text_start);
     if (g_jit_fd >= 0 && t.name && strcmp(t.name, "CPU thread") == 0)
         writeJitSamples(s, n, window_start);
+    // The caller pairs, before the samples are bucketed: (16-byte bucket << 32) | return address.
+    static uint64_t pairs[kMaxSamples];
+    int pair_count = 0;
+    for (int i = 0; i < n; i++) {
+        if (c[i])
+            pairs[pair_count++] = (static_cast<uint64_t>((s[i] - text) & ~0xFULL) << 32) | c[i];
+    }
 
     // Eboot code: bucket by 16 bytes (addresses relative to .text). JIT code (tagged with bit 63):
     // by 128 bytes - a game's code is spread thin over thousands of small blocks, and 16-byte
@@ -271,6 +343,7 @@ void report(int fd, ThreadSamples& t, double window_start) {
                      static_cast<unsigned long long>(entries[i].key));
         writeLine(fd, line);
     }
+    writeCallers(fd, pairs, pair_count, n);
 }
 
 // 64 KiB chunks of JIT code sampled since the last dump (dumpJitCode).
@@ -333,6 +406,28 @@ void writeModuleList(int fd) {
         snprintf(line + len, sizeof(line) - len, "\n");
         writeLine(fd, line);
     }
+}
+
+// findCaller's limit: the end of the readable module segment that holds .text (the eboot's code).
+uintptr_t ebootTextEnd() {
+    int32_t handles[256];
+    size_t count = 0;
+    if (sceKernelGetModuleList(handles, 256, &count) != 0)
+        return 0;
+    const uintptr_t text = reinterpret_cast<uintptr_t>(__text_start);
+    for (size_t m = 0; m < count && m < 256; m++) {
+        ModuleInfo info;
+        memset(&info, 0, sizeof(info));
+        info.size = sizeof(info);
+        if (sceKernelGetModuleInfo(handles[m], &info) != 0)
+            continue;
+        for (uint32_t g = 0; g < info.segment_count && g < 4; g++) {
+            const uintptr_t start = reinterpret_cast<uintptr_t>(info.segments[g].address);
+            if (text >= start && text < start + info.segments[g].size && (info.segments[g].prot & 1))
+                return start + info.segments[g].size;
+        }
+    }
+    return 0;
 }
 
 }  // namespace
@@ -751,6 +846,15 @@ static void samplerStartOnce() {
     static std::atomic<bool> s_started{false};
     if (s_started.exchange(true))
         return;
+    g_text_end = ebootTextEnd();
+    {
+        char line[96];
+        snprintf(line, sizeof(line), "sampler: callers %s (code up to elf 0x%llx)",
+                 g_text_end ? "on" : "off",
+                 static_cast<unsigned long long>(
+                     g_text_end ? g_text_end - reinterpret_cast<uintptr_t>(__text_start) : 0));
+        ps4_boot_trace(line);
+    }
     struct sigaction action;
     memset(&action, 0, sizeof(action));
     void (*handler)(int, siginfo_t*, void*) = profHandler;
