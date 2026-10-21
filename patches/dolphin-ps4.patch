@@ -46524,7 +46524,7 @@ index 5f5583f..fa7ee2a 100644
  )
  
 diff --git a/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp b/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp
-index c82417e..39df460 100644
+index c82417e..637a5b9 100644
 --- a/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp
 +++ b/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp
 @@ -4,15 +4,44 @@
@@ -46627,7 +46627,7 @@ index c82417e..39df460 100644
          WaitForCommandBufferCompletion(cmd_buffer_index);
        }
        cmd_buffer_index = (cmd_buffer_index + 1) % NUM_COMMAND_BUFFERS;
-@@ -363,6 +414,34 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
+@@ -363,6 +414,36 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
      // Reset the descriptor pools
      FrameResources& frame_resources = GetCurrentFrameResources();
  
@@ -46645,9 +46645,11 @@ index c82417e..39df460 100644
 +      for (size_t i = keep; i < pools.size(); i++)
 +        vkDestroyDescriptorPool(device, pools[i], nullptr);
 +      pools.resize(keep);
++      // The frame's command buffers have completed (waited above): no drain of the Vulkan
++      // thread for the reset (PS4CommandRecorder.cpp).
 +      for (VkDescriptorPool pool : pools)
 +      {
-+        VkResult res = vkResetDescriptorPool(device, pool, 0);
++        VkResult res = PS4CommandRecorderResetCompletedPool(device, pool);
 +        if (res != VK_SUCCESS)
 +          LOG_VULKAN_ERROR(res, "vkResetDescriptorPool failed: ");
 +      }
@@ -46662,7 +46664,7 @@ index c82417e..39df460 100644
      if (frame_resources.descriptor_pools.size() == 1) [[likely]]
      {
        VkResult res = vkResetDescriptorPool(g_vulkan_context->GetDevice(),
-@@ -381,6 +460,7 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
+@@ -381,6 +462,7 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
        if (descriptor_pool != VK_NULL_HANDLE) [[likely]]
          frame_resources.descriptor_pools.push_back(descriptor_pool);
      }
@@ -46670,7 +46672,7 @@ index c82417e..39df460 100644
  
      frame_resources.current_descriptor_pool_index = 0;
    }
-@@ -420,11 +500,13 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
+@@ -420,11 +502,13 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
      submit_info.waitSemaphoreCount = 1;
    }
  
@@ -46684,7 +46686,7 @@ index c82417e..39df460 100644
  
    VkResult res =
        vkQueueSubmit(g_vulkan_context->GetGraphicsQueue(), 1, &submit_info, resources.fence);
-@@ -434,7 +516,18 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
+@@ -434,7 +518,18 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
      PanicAlertFmt("Failed to submit command buffer: {} ({})", VkResultToString(res),
                    static_cast<int>(res));
    }
@@ -46703,7 +46705,7 @@ index c82417e..39df460 100644
    // Do we have a swap chain to present?
    if (present_swap_chain != VK_NULL_HANDLE)
    {
-@@ -479,7 +572,10 @@ void CommandBufferManager::BeginCommandBuffer()
+@@ -479,7 +574,10 @@ void CommandBufferManager::BeginCommandBuffer()
  
    // Wait for the GPU to finish with all resources for this command buffer.
    if (resources.fence_counter > m_completed_fence_counter)
@@ -46732,10 +46734,10 @@ index 45a322c..b92b5c5 100644
    };
 diff --git a/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp
 new file mode 100644
-index 0000000..51d1dc0
+index 0000000..dc774c2
 --- /dev/null
 +++ b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp
-@@ -0,0 +1,1277 @@
+@@ -0,0 +1,1290 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -47965,6 +47967,19 @@ index 0000000..51d1dc0
 +  return result;
 +}
 +
++// The command buffer manager resets a frame's descriptor pools once per frame, after waiting for
++// that frame's command buffers (PS4CommandRecorderWaitForFence): everything queued that used
++// their sets was replayed before those were submitted. The full drain of the hooked
++// vkResetDescriptorPool made the video thread wait for the worker to replay everything since -
++// the last frame's end, and through its submit the vertex thread's backlog: ~4 ms a frame in
++// Super Mario Galaxy (v60.51, ~165 ms a second).
++VkResult PS4CommandRecorderResetCompletedPool(VkDevice device, VkDescriptorPool pool)
++{
++  if (!s_active)
++    return vkResetDescriptorPool(device, pool, 0);
++  return s_real.real_vkResetDescriptorPool(device, pool, 0);
++}
++
 +void PS4InstallCommandRecorder()
 +{
 +  if (!ps4_vk_thread || s_active)
@@ -48014,11 +48029,11 @@ index 0000000..51d1dc0
 +}
 +}  // namespace Vulkan
 diff --git a/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.h b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.h
-new file mode 100755
-index 0000000..c2dad88
+new file mode 100644
+index 0000000..287d3e8
 --- /dev/null
 +++ b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.h
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,33 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -48043,6 +48058,9 @@ index 0000000..c2dad88
 +// vkWaitForFences for a fence whose vkQueueSubmit was queued before `position`: waits for the
 +// worker only until it has submitted that, not for everything queued since.
 +VkResult PS4CommandRecorderWaitForFence(VkDevice device, VkFence fence, u64 position);
++// vkResetDescriptorPool for a pool whose command buffers have all completed (their fences waited
++// with PS4CommandRecorderWaitForFence): without the full drain of the hooked entry point.
++VkResult PS4CommandRecorderResetCompletedPool(VkDevice device, VkDescriptorPool pool);
 +bool PS4CommandRecorderActive();
 +void PS4ShutdownCommandRecorder();
 +// Runs fn(a, b, c, d) on the worker after everything queued so far (the PS4 flip: right behind
@@ -53174,10 +53192,10 @@ index 377d47d..d76ee17 100644
    Gen::OpArg GetVertexAddr(CPArray array, VertexComponentFormat attribute);
    void ReadVertex(Gen::OpArg data, VertexComponentFormat attribute, ComponentFormat format,
 diff --git a/Source/Core/VideoCommon/VertexManagerBase.cpp b/Source/Core/VideoCommon/VertexManagerBase.cpp
-index 2bc6d58..e14f88b 100644
+index 2bc6d58..133c170 100644
 --- a/Source/Core/VideoCommon/VertexManagerBase.cpp
 +++ b/Source/Core/VideoCommon/VertexManagerBase.cpp
-@@ -2,6 +2,22 @@
+@@ -2,6 +2,23 @@
  // SPDX-License-Identifier: GPL-2.0-or-later
  
  #include "VideoCommon/VertexManagerBase.h"
@@ -53196,11 +53214,12 @@ index 2bc6d58..e14f88b 100644
 +  return size;
 +}
 +unsigned long long ps4_prof_count[PS4_PROF_CATEGORY_COUNT];
++extern "C" int ps4_efb_nowait;  // VideoCommon/FramebufferManager.cpp (efb_cache=nowait)
 +#endif
  
  #include <array>
  #include <cmath>
-@@ -36,6 +52,7 @@
+@@ -36,6 +53,7 @@
  #include "VideoCommon/PixelShaderManager.h"
  #include "VideoCommon/Statistics.h"
  #include "VideoCommon/TextureCacheBase.h"
@@ -53208,7 +53227,7 @@ index 2bc6d58..e14f88b 100644
  #include "VideoCommon/VertexLoaderManager.h"
  #include "VideoCommon/VertexShaderManager.h"
  #include "VideoCommon/VideoBackendBase.h"
-@@ -192,7 +209,13 @@ DataReader VertexManagerBase::PrepareForAdditionalData(OpcodeDecoder::Primitive
+@@ -192,7 +210,13 @@ DataReader VertexManagerBase::PrepareForAdditionalData(OpcodeDecoder::Primitive
      }
      else
      {
@@ -53222,7 +53241,7 @@ index 2bc6d58..e14f88b 100644
      }
  
      remaining_index_generator_indices = m_index_generator.GetRemainingIndices(primitive);
-@@ -220,6 +243,51 @@ DataReader VertexManagerBase::PrepareForAdditionalData(OpcodeDecoder::Primitive
+@@ -220,6 +244,51 @@ DataReader VertexManagerBase::PrepareForAdditionalData(OpcodeDecoder::Primitive
    return DataReader(m_cur_buffer_pointer, m_end_buffer_pointer);
  }
  
@@ -53274,7 +53293,7 @@ index 2bc6d58..e14f88b 100644
  DataReader VertexManagerBase::DisableCullAll(u32 stride)
  {
    if (m_cull_all)
-@@ -381,6 +449,9 @@ void VertexManagerBase::UploadUtilityVertices(const void* vertices, u32 vertex_s
+@@ -381,6 +450,9 @@ void VertexManagerBase::UploadUtilityVertices(const void* vertices, u32 vertex_s
  {
    // The GX vertex list should be flushed before any utility draws occur.
    ASSERT(m_is_flushed);
@@ -53284,7 +53303,7 @@ index 2bc6d58..e14f88b 100644
  
    // Copy into the buffers usually used for GX drawing.
    ResetBuffer(std::max(vertex_stride, 1u));
-@@ -434,10 +505,17 @@ BitSet32 VertexManagerBase::UsedTextures() const
+@@ -434,10 +506,17 @@ BitSet32 VertexManagerBase::UsedTextures() const
  
  void VertexManagerBase::Flush()
  {
@@ -53302,7 +53321,7 @@ index 2bc6d58..e14f88b 100644
  
    if (m_draw_counter == 0)
    {
-@@ -680,6 +758,7 @@ void VertexManagerBase::Flush()
+@@ -680,6 +759,7 @@ void VertexManagerBase::Flush()
  
  void VertexManagerBase::DoState(PointerWrap& p)
  {
@@ -53310,7 +53329,7 @@ index 2bc6d58..e14f88b 100644
    if (p.IsReadMode())
    {
      // Flush old vertex data before loading state.
-@@ -690,6 +769,10 @@ void VertexManagerBase::DoState(PointerWrap& p)
+@@ -690,6 +770,10 @@ void VertexManagerBase::DoState(PointerWrap& p)
    p.Do(VertexLoaderManager::normal_cache);
    p.Do(VertexLoaderManager::tangent_cache);
    p.Do(VertexLoaderManager::binormal_cache);
@@ -53321,6 +53340,20 @@ index 2bc6d58..e14f88b 100644
  }
  
  void VertexManagerBase::CalculateZSlope(NativeVertexFormat* format)
+@@ -1008,7 +1092,13 @@ void VertexManagerBase::OnEndFrame()
+   // In order to reduce CPU readback latency, we want to kick a command buffer roughly halfway
+   // between the draw counters that invoked the readback, or every 250 draws, whichever is
+   // smaller.
++#ifdef __ORBIS__
++  // PS4, efb_cache=nowait: the game's EFB reads don't wait for the GPU, so the kicks only cost -
++  // each is a submit, which waits for the vertex thread (Super Mario Galaxy: ~380 a second).
++  if (g_ActiveConfig.iCommandBufferExecuteInterval > 0 && !ps4_efb_nowait)
++#else
+   if (g_ActiveConfig.iCommandBufferExecuteInterval > 0)
++#endif
+   {
+     u32 last_draw_counter = 0;
+     u32 interval = static_cast<u32>(g_ActiveConfig.iCommandBufferExecuteInterval);
 diff --git a/Source/Core/VideoCommon/VertexManagerBase.h b/Source/Core/VideoCommon/VertexManagerBase.h
 index 715dbee..f4c97af 100644
 --- a/Source/Core/VideoCommon/VertexManagerBase.h
