@@ -708,9 +708,10 @@ extern "C" void ps4_thread_cpu_sample(int slot) {
 // 3 vkWaitForFences, 4 video-thread pipeline compile ns, 5 their count; GPU fence waits of the
 // video thread by cause (ns, then count): 6/10 a submit that waits for its own completion (EFB
 // readbacks, sync), 7/11 all command buffers in flight, 8/12 the frame's descriptor pools, 9/13
-// anything else (stream buffers, texture readbacks).
+// anything else (stream buffers, texture readbacks); waits for the Vulkan recording thread:
+// 14 full drains, 15 up to a submit (fence waits).
 namespace {
-constexpr int WAIT_SLOTS = 14;
+constexpr int WAIT_SLOTS = 16;
 std::atomic<long long> g_wait_ns[WAIT_SLOTS];
 }  // namespace
 

@@ -41177,10 +41177,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..a02daa4
+index 0000000..a5dc2f8
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,2191 @@
+@@ -0,0 +1,2193 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -42007,10 +42007,10 @@ index 0000000..a02daa4
 +        // Where the threads wait, ms per second: the CPU thread for the GPU thread (FlushGpu), the
 +        // GPU thread for work, the video thread for the Vulkan recording thread, GPU fences.
 +        {
-+          static long long s_last_waits[14] = {};
++          static long long s_last_waits[16] = {};
 +          const size_t used3 = strlen(line);
-+          long long ms[14];
-+          for (int i = 0; i < 14; i++)
++          long long ms[16];
++          for (int i = 0; i < 16; i++)
 +          {
 +            const long long total = ps4_wait_total(i);
 +            const long long delta = total - s_last_waits[i];
@@ -42021,12 +42021,14 @@ index 0000000..a02daa4
 +          // The video thread's command buffer waits by cause, ms/s (waits/s): a submit waiting for
 +          // itself (EFB readbacks...), all command buffers in flight, the frame's descriptor
 +          // pools, the rest (stream buffers, texture readbacks).
++          // vk-drain: waits for the Vulkan recording thread, ms/s (full drains/s, waits up to a
++          // submit/s).
 +          snprintf(line + used3, sizeof(line) - used3,
-+                   ", waits ms/s: cpu-for-gpu %lld gpu-idle %lld vk-drain %lld fences %lld "
-+                   "(sync %lld/%lld ring %lld/%lld frame %lld/%lld other %lld/%lld), "
-+                   "compiles %lld/s %lld ms/s",
-+                   ms[0], ms[1], ms[2], ms[3], ms[6], ms[10], ms[7], ms[11], ms[8], ms[12], ms[9],
-+                   ms[13], ms[5], ms[4]);
++                   ", waits ms/s: cpu-for-gpu %lld gpu-idle %lld vk-drain %lld (full %lld/s to-submit "
++                   "%lld/s) fences %lld (sync %lld/%lld ring %lld/%lld frame %lld/%lld other "
++                   "%lld/%lld), compiles %lld/s %lld ms/s",
++                   ms[0], ms[1], ms[2], ms[14], ms[15], ms[3], ms[6], ms[10], ms[7], ms[11], ms[8],
++                   ms[12], ms[9], ms[13], ms[5], ms[4]);
 +        }
 +#ifdef HAS_VULKAN
 +        {
@@ -46492,10 +46494,10 @@ index 5f5583f..fa7ee2a 100644
  )
  
 diff --git a/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp b/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp
-index c82417e..afec2a2 100644
+index c82417e..39df460 100644
 --- a/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp
 +++ b/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp
-@@ -4,15 +4,43 @@
+@@ -4,15 +4,44 @@
  #include "VideoBackends/Vulkan/CommandBufferManager.h"
  
  #include <array>
@@ -46505,6 +46507,7 @@ index c82417e..afec2a2 100644
  #include "Common/Assert.h"
  #include "Common/MsgHandler.h"
  
++#include "VideoBackends/Vulkan/PS4CommandRecorder.h"
 +#include "VideoBackends/Vulkan/VKSwapChain.h"
  #include "VideoBackends/Vulkan/VulkanContext.h"
  #include "VideoCommon/Constants.h"
@@ -46539,7 +46542,7 @@ index c82417e..afec2a2 100644
  namespace Vulkan
  {
  CommandBufferManager::CommandBufferManager(bool use_threaded_submission)
-@@ -271,6 +299,9 @@ void CommandBufferManager::WaitForCommandBufferCompletion(u32 index)
+@@ -271,6 +300,9 @@ void CommandBufferManager::WaitForCommandBufferCompletion(u32 index)
  {
    CmdBufferResources& resources = m_command_buffers[index];
  
@@ -46549,8 +46552,22 @@ index c82417e..afec2a2 100644
    // Ensure this command buffer has been submitted.
    if (resources.waiting_for_submit.load(std::memory_order_acquire))
    {
-@@ -284,6 +315,11 @@ void CommandBufferManager::WaitForCommandBufferCompletion(u32 index)
+@@ -280,10 +312,25 @@ void CommandBufferManager::WaitForCommandBufferCompletion(u32 index)
+   }
+ 
+   // Wait for this command buffer to be completed.
++#ifdef __ORBIS__
++  // With the command recorder: only until the worker has submitted it.
++  VkResult res = PS4CommandRecorderActive() ?
++                     PS4CommandRecorderWaitForFence(g_vulkan_context->GetDevice(),
++                                                    resources.fence,
++                                                    resources.ps4_submit_position) :
++                     vkWaitForFences(g_vulkan_context->GetDevice(), 1, &resources.fence, VK_TRUE,
++                                     UINT64_MAX);
++#else
+   VkResult res =
        vkWaitForFences(g_vulkan_context->GetDevice(), 1, &resources.fence, VK_TRUE, UINT64_MAX);
++#endif
    if (res != VK_SUCCESS)
      LOG_VULKAN_ERROR(res, "vkWaitForFences failed: ");
 +#ifdef __ORBIS__
@@ -46561,7 +46578,7 @@ index c82417e..afec2a2 100644
  
    // Clean up any resources for command buffers between the last known completed buffer and this
    // now-completed command buffer. If we use >2 buffers, this may be more than one buffer.
-@@ -340,7 +376,10 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
+@@ -340,7 +387,10 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
      // Pass through to normal submission path.
      SubmitCommandBuffer(m_current_cmd_buffer, present_swap_chain, present_image_index);
      if (wait_for_completion)
@@ -46572,7 +46589,7 @@ index c82417e..afec2a2 100644
    }
  
    if (advance_to_next_frame)
-@@ -355,6 +394,7 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
+@@ -355,6 +405,7 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
        if (cmd_buffer.frame_index == m_current_frame && cmd_buffer.fence_counter != 0 &&
            cmd_buffer.fence_counter > m_completed_fence_counter)
        {
@@ -46580,7 +46597,7 @@ index c82417e..afec2a2 100644
          WaitForCommandBufferCompletion(cmd_buffer_index);
        }
        cmd_buffer_index = (cmd_buffer_index + 1) % NUM_COMMAND_BUFFERS;
-@@ -363,6 +403,34 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
+@@ -363,6 +414,34 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
      // Reset the descriptor pools
      FrameResources& frame_resources = GetCurrentFrameResources();
  
@@ -46615,7 +46632,7 @@ index c82417e..afec2a2 100644
      if (frame_resources.descriptor_pools.size() == 1) [[likely]]
      {
        VkResult res = vkResetDescriptorPool(g_vulkan_context->GetDevice(),
-@@ -381,6 +449,7 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
+@@ -381,6 +460,7 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
        if (descriptor_pool != VK_NULL_HANDLE) [[likely]]
          frame_resources.descriptor_pools.push_back(descriptor_pool);
      }
@@ -46623,7 +46640,7 @@ index c82417e..afec2a2 100644
  
      frame_resources.current_descriptor_pool_index = 0;
    }
-@@ -420,11 +489,13 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
+@@ -420,11 +500,13 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
      submit_info.waitSemaphoreCount = 1;
    }
  
@@ -46637,9 +46654,13 @@ index c82417e..afec2a2 100644
  
    VkResult res =
        vkQueueSubmit(g_vulkan_context->GetGraphicsQueue(), 1, &submit_info, resources.fence);
-@@ -435,6 +506,14 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
+@@ -434,7 +516,18 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
+     PanicAlertFmt("Failed to submit command buffer: {} ({})", VkResultToString(res),
                    static_cast<int>(res));
    }
++#ifdef __ORBIS__
++  resources.ps4_submit_position = PS4CommandRecorderPosition();
++#endif
  
 +#ifdef __ORBIS__
 +  if (present_swap_chain != VK_NULL_HANDLE)
@@ -46652,7 +46673,7 @@ index c82417e..afec2a2 100644
    // Do we have a swap chain to present?
    if (present_swap_chain != VK_NULL_HANDLE)
    {
-@@ -479,7 +558,10 @@ void CommandBufferManager::BeginCommandBuffer()
+@@ -479,7 +572,10 @@ void CommandBufferManager::BeginCommandBuffer()
  
    // Wait for the GPU to finish with all resources for this command buffer.
    if (resources.fence_counter > m_completed_fence_counter)
@@ -46663,12 +46684,28 @@ index c82417e..afec2a2 100644
  
    // Reset fence to unsignaled before starting.
    VkResult res = vkResetFences(g_vulkan_context->GetDevice(), 1, &resources.fence);
+diff --git a/Source/Core/VideoBackends/Vulkan/CommandBufferManager.h b/Source/Core/VideoBackends/Vulkan/CommandBufferManager.h
+index 45a322c..b92b5c5 100644
+--- a/Source/Core/VideoBackends/Vulkan/CommandBufferManager.h
++++ b/Source/Core/VideoBackends/Vulkan/CommandBufferManager.h
+@@ -120,6 +120,11 @@ private:
+     bool semaphore_used = false;
+     std::atomic<bool> waiting_for_submit{false};
+     u32 frame_index = 0;
++#ifdef __ORBIS__
++    // The command recorder's position after this buffer's vkQueueSubmit (its fence can be waited
++    // for once the worker has got there).
++    u64 ps4_submit_position = 0;
++#endif
+ 
+     std::vector<std::function<void()>> cleanup_resources;
+   };
 diff --git a/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp
 new file mode 100755
-index 0000000..2be1e33
+index 0000000..ee4973f
 --- /dev/null
 +++ b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp
-@@ -0,0 +1,1238 @@
+@@ -0,0 +1,1266 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -47840,13 +47877,10 @@ index 0000000..2be1e33
 +  return s_active;
 +}
 +
-+void PS4CommandRecorderDrain()
++// Waits until the worker has replayed everything queued before `target`. The monitor counts the
++// waits (ps4_sampler.cpp slot 14: full drains, 15: up to a submit).
++static void PS4DrainTo(u64 target, int count_slot)
 +{
-+  if (!s_active)
-+    return;
-+  // Everything published so far (any thread may drain, e.g. shader compiler threads destroying
-+  // objects; only the video thread records).
-+  const u64 target = s_write.load(std::memory_order_acquire);
 +  if (s_read.load(std::memory_order_acquire) >= target)
 +    return;
 +  const auto t0 = std::chrono::steady_clock::now();
@@ -47857,6 +47891,37 @@ index 0000000..2be1e33
 +    Pause(spins);
 +  }
 +  ps4_wait_add(2, std::chrono::nanoseconds(std::chrono::steady_clock::now() - t0).count());
++  ps4_wait_add(count_slot, 1);
++}
++
++void PS4CommandRecorderDrain()
++{
++  if (!s_active)
++    return;
++  // Everything published so far (any thread may drain, e.g. shader compiler threads destroying
++  // objects; only the video thread records).
++  PS4DrainTo(s_write.load(std::memory_order_acquire), 14);
++}
++
++u64 PS4CommandRecorderPosition()
++{
++  return s_write.load(std::memory_order_acquire);
++}
++
++// The command buffer manager waits for the oldest of its 8 command buffers before reusing it
++// (~400 times a second in Super Mario Galaxy): a full drain there made the video thread wait
++// for the worker to replay the whole frame so far each time (v60.45: ~12% of its time draining).
++// The fence only needs its own vkQueueSubmit replayed - long done, normally - and nothing queued
++// after it touches that fence: the video thread queues its next reset after this wait.
++VkResult PS4CommandRecorderWaitForFence(VkDevice device, VkFence fence, u64 position)
++{
++  if (!s_active)
++    return vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
++  PS4DrainTo(position, 15);
++  const auto t0 = std::chrono::steady_clock::now();
++  const VkResult result = s_real.real_vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
++  ps4_wait_add(3, std::chrono::nanoseconds(std::chrono::steady_clock::now() - t0).count());
++  return result;
 +}
 +
 +void PS4InstallCommandRecorder()
@@ -47909,10 +47974,10 @@ index 0000000..2be1e33
 +}  // namespace Vulkan
 diff --git a/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.h b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.h
 new file mode 100755
-index 0000000..18dc309
+index 0000000..c2dad88
 --- /dev/null
 +++ b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.h
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,30 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -47921,6 +47986,7 @@ index 0000000..18dc309
 +// PS4: Vulkan command recording thread (see PS4CommandRecorder.cpp).
 +
 +#include "Common/CommonTypes.h"
++#include "VideoBackends/Vulkan/VulkanLoader.h"
 +
 +extern "C" int ps4_vk_thread, ps4_vk_thread_core, ps4_vk_thread_mode;
 +
@@ -47930,6 +47996,12 @@ index 0000000..18dc309
 +void PS4InstallCommandRecorder();
 +// Waits until the worker has replayed everything queued so far.
 +void PS4CommandRecorderDrain();
++// The position after everything queued so far (right after a vkQueueSubmit: where the worker
++// will have submitted it).
++u64 PS4CommandRecorderPosition();
++// vkWaitForFences for a fence whose vkQueueSubmit was queued before `position`: waits for the
++// worker only until it has submitted that, not for everything queued since.
++VkResult PS4CommandRecorderWaitForFence(VkDevice device, VkFence fence, u64 position);
 +bool PS4CommandRecorderActive();
 +void PS4ShutdownCommandRecorder();
 +// Runs fn(a, b, c, d) on the worker after everything queued so far (the PS4 flip: right behind
