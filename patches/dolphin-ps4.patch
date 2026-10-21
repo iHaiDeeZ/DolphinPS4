@@ -23933,7 +23933,7 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..551361c 100644
+index 3bf40ea..a7c8fa9 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,17 @@
@@ -23986,7 +23986,7 @@ index 3bf40ea..551361c 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +55,251 @@
+@@ -31,6 +55,252 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -24046,7 +24046,8 @@ index 3bf40ea..551361c 100644
 +extern "C" int sceKernelHasNeoMode(void);
 +extern "C" int sceKernelIsNeoMode(void);
 +extern "C" int sceKernelIsAuthenticNeo(void);
-+extern "C" int ps4_vk_thread, ps4_vk_thread_core, ps4_vk_thread_mode;  // VideoBackends/Vulkan/PS4CommandRecorder.cpp
++extern "C" int ps4_vk_thread, ps4_vk_thread_core, ps4_vk_thread_mode,
++    ps4_vk_spin_us;  // VideoBackends/Vulkan/PS4CommandRecorder.cpp
 +extern "C" int ps4_display_buffers, ps4_flip_async;  // VideoBackends/Vulkan/VKSwapChain.cpp
 +extern "C" int ps4_game_hle;                       // Core/HLE/HLE_PS4Games.cpp
 +extern "C" int ps4_force_dual_core;                // Core/ConfigManager.cpp
@@ -24238,7 +24239,7 @@ index 3bf40ea..551361c 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +442,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +443,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -24249,7 +24250,7 @@ index 3bf40ea..551361c 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +457,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +458,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -24268,7 +24269,7 @@ index 3bf40ea..551361c 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +489,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +490,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -24279,7 +24280,7 @@ index 3bf40ea..551361c 100644
  #endif
        });
  
-@@ -270,7 +556,519 @@ int main(const int argc, char* argv[])
+@@ -270,7 +557,520 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -24697,6 +24698,7 @@ index 3bf40ea..551361c 100644
 +      const std::string mode = Platform::GetPS4Option("vk_thread_mode", "async");
 +      ps4_vk_thread_mode = mode == "inline" ? 2 : mode == "sync" ? 1 : 0;
 +    }
++    ps4_vk_spin_us = std::atoi(Platform::GetPS4Option("vk_spin_us", "100").c_str());
 +    // fifo_defer=on (with fifo_batch): JIT blocks leave GPU commands in the gather pipe until
 +    // 128 bytes collect (flushed before any hardware register access and every timing slice).
 +    ps4_fifo_defer = ps4_fifo_batch && Platform::GetPS4Option("fifo_defer", "off") == "on";
@@ -24799,7 +24801,7 @@ index 3bf40ea..551361c 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +1082,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +1084,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -24815,7 +24817,7 @@ index 3bf40ea..551361c 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +1110,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +1112,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -41166,10 +41168,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..11eb833
+index 0000000..a02daa4
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,2185 @@
+@@ -0,0 +1,2191 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -41996,20 +41998,26 @@ index 0000000..11eb833
 +        // Where the threads wait, ms per second: the CPU thread for the GPU thread (FlushGpu), the
 +        // GPU thread for work, the video thread for the Vulkan recording thread, GPU fences.
 +        {
-+          static long long s_last_waits[6] = {};
++          static long long s_last_waits[14] = {};
 +          const size_t used3 = strlen(line);
-+          long long ms[6];
-+          for (int i = 0; i < 6; i++)
++          long long ms[14];
++          for (int i = 0; i < 14; i++)
 +          {
 +            const long long total = ps4_wait_total(i);
 +            const long long delta = total - s_last_waits[i];
-+            ms[i] = static_cast<long long>(i == 5 ? delta / period : delta / period / 1000000);
++            const bool count = i == 5 || i >= 10;
++            ms[i] = static_cast<long long>(count ? delta / period : delta / period / 1000000);
 +            s_last_waits[i] = total;
 +          }
++          // The video thread's command buffer waits by cause, ms/s (waits/s): a submit waiting for
++          // itself (EFB readbacks...), all command buffers in flight, the frame's descriptor
++          // pools, the rest (stream buffers, texture readbacks).
 +          snprintf(line + used3, sizeof(line) - used3,
-+                   ", waits ms/s: cpu-for-gpu %lld gpu-idle %lld vk-drain %lld fences %lld, "
++                   ", waits ms/s: cpu-for-gpu %lld gpu-idle %lld vk-drain %lld fences %lld "
++                   "(sync %lld/%lld ring %lld/%lld frame %lld/%lld other %lld/%lld), "
 +                   "compiles %lld/s %lld ms/s",
-+                   ms[0], ms[1], ms[2], ms[3], ms[5], ms[4]);
++                   ms[0], ms[1], ms[2], ms[3], ms[6], ms[10], ms[7], ms[11], ms[8], ms[12], ms[9],
++                   ms[13], ms[5], ms[4]);
 +        }
 +#ifdef HAS_VULKAN
 +        {
@@ -46475,10 +46483,16 @@ index 5f5583f..fa7ee2a 100644
  )
  
 diff --git a/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp b/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp
-index c82417e..2918568 100644
+index c82417e..afec2a2 100644
 --- a/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp
 +++ b/Source/Core/VideoBackends/Vulkan/CommandBufferManager.cpp
-@@ -9,6 +9,7 @@
+@@ -4,15 +4,43 @@
+ #include "VideoBackends/Vulkan/CommandBufferManager.h"
+ 
+ #include <array>
++#include <chrono>
+ #include <cstdint>
+ 
  #include "Common/Assert.h"
  #include "Common/MsgHandler.h"
  
@@ -46486,7 +46500,78 @@ index c82417e..2918568 100644
  #include "VideoBackends/Vulkan/VulkanContext.h"
  #include "VideoCommon/Constants.h"
  #include "vulkan/vulkan_core.h"
-@@ -363,6 +364,34 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
+ 
++#ifdef __ORBIS__
++extern "C" void ps4_wait_add(int slot, long long ns);  // port/ps4_sampler.cpp
++namespace
++{
++// Why the video thread waits for a command buffer (the monitor's "fence waits"): ps4_sampler.cpp
++// slots 6 (+4 for the count) and up.
++enum FenceWaitCause
++{
++  FENCE_SYNC = 0,   // a submit that waits for itself (EFB readbacks, bounding box, perf queries)
++  FENCE_RING = 1,   // the next command buffer is still in flight
++  FENCE_FRAME = 2,  // the frame's descriptor pools are still in use
++  FENCE_OTHER = 3,  // WaitForFenceCounter: stream buffers, texture readbacks
++};
++thread_local int s_fence_cause = FENCE_OTHER;
++struct FenceCause
++{
++  explicit FenceCause(int cause) : saved(s_fence_cause) { s_fence_cause = cause; }
++  ~FenceCause() { s_fence_cause = saved; }
++  int saved;
++};
++}  // namespace
++#define PS4_FENCE_CAUSE(cause) FenceCause fence_cause_scope(cause)
++#else
++#define PS4_FENCE_CAUSE(cause)
++#endif
++
+ namespace Vulkan
+ {
+ CommandBufferManager::CommandBufferManager(bool use_threaded_submission)
+@@ -271,6 +299,9 @@ void CommandBufferManager::WaitForCommandBufferCompletion(u32 index)
+ {
+   CmdBufferResources& resources = m_command_buffers[index];
+ 
++#ifdef __ORBIS__
++  const auto wait_start = std::chrono::steady_clock::now();
++#endif
+   // Ensure this command buffer has been submitted.
+   if (resources.waiting_for_submit.load(std::memory_order_acquire))
+   {
+@@ -284,6 +315,11 @@ void CommandBufferManager::WaitForCommandBufferCompletion(u32 index)
+       vkWaitForFences(g_vulkan_context->GetDevice(), 1, &resources.fence, VK_TRUE, UINT64_MAX);
+   if (res != VK_SUCCESS)
+     LOG_VULKAN_ERROR(res, "vkWaitForFences failed: ");
++#ifdef __ORBIS__
++  ps4_wait_add(6 + s_fence_cause,
++               std::chrono::nanoseconds(std::chrono::steady_clock::now() - wait_start).count());
++  ps4_wait_add(10 + s_fence_cause, 1);
++#endif
+ 
+   // Clean up any resources for command buffers between the last known completed buffer and this
+   // now-completed command buffer. If we use >2 buffers, this may be more than one buffer.
+@@ -340,7 +376,10 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
+     // Pass through to normal submission path.
+     SubmitCommandBuffer(m_current_cmd_buffer, present_swap_chain, present_image_index);
+     if (wait_for_completion)
++    {
++      PS4_FENCE_CAUSE(FENCE_SYNC);
+       WaitForCommandBufferCompletion(m_current_cmd_buffer);
++    }
+   }
+ 
+   if (advance_to_next_frame)
+@@ -355,6 +394,7 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
+       if (cmd_buffer.frame_index == m_current_frame && cmd_buffer.fence_counter != 0 &&
+           cmd_buffer.fence_counter > m_completed_fence_counter)
+       {
++        PS4_FENCE_CAUSE(FENCE_FRAME);
+         WaitForCommandBufferCompletion(cmd_buffer_index);
+       }
+       cmd_buffer_index = (cmd_buffer_index + 1) % NUM_COMMAND_BUFFERS;
+@@ -363,6 +403,34 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
      // Reset the descriptor pools
      FrameResources& frame_resources = GetCurrentFrameResources();
  
@@ -46521,7 +46606,7 @@ index c82417e..2918568 100644
      if (frame_resources.descriptor_pools.size() == 1) [[likely]]
      {
        VkResult res = vkResetDescriptorPool(g_vulkan_context->GetDevice(),
-@@ -381,6 +410,7 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
+@@ -381,6 +449,7 @@ void CommandBufferManager::SubmitCommandBuffer(bool submit_on_worker_thread,
        if (descriptor_pool != VK_NULL_HANDLE) [[likely]]
          frame_resources.descriptor_pools.push_back(descriptor_pool);
      }
@@ -46529,7 +46614,7 @@ index c82417e..2918568 100644
  
      frame_resources.current_descriptor_pool_index = 0;
    }
-@@ -420,11 +450,13 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
+@@ -420,11 +489,13 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
      submit_info.waitSemaphoreCount = 1;
    }
  
@@ -46543,7 +46628,7 @@ index c82417e..2918568 100644
  
    VkResult res =
        vkQueueSubmit(g_vulkan_context->GetGraphicsQueue(), 1, &submit_info, resources.fence);
-@@ -435,6 +467,14 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
+@@ -435,6 +506,14 @@ void CommandBufferManager::SubmitCommandBuffer(u32 command_buffer_index,
                    static_cast<int>(res));
    }
  
@@ -46558,12 +46643,23 @@ index c82417e..2918568 100644
    // Do we have a swap chain to present?
    if (present_swap_chain != VK_NULL_HANDLE)
    {
+@@ -479,7 +558,10 @@ void CommandBufferManager::BeginCommandBuffer()
+ 
+   // Wait for the GPU to finish with all resources for this command buffer.
+   if (resources.fence_counter > m_completed_fence_counter)
++  {
++    PS4_FENCE_CAUSE(FENCE_RING);
+     WaitForCommandBufferCompletion(next_buffer_index);
++  }
+ 
+   // Reset fence to unsignaled before starting.
+   VkResult res = vkResetFences(g_vulkan_context->GetDevice(), 1, &resources.fence);
 diff --git a/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp
 new file mode 100755
-index 0000000..30e87b8
+index 0000000..2be1e33
 --- /dev/null
 +++ b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp
-@@ -0,0 +1,1226 @@
+@@ -0,0 +1,1238 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -46589,6 +46685,11 @@ index 0000000..30e87b8
 +#include <atomic>
 +#include <chrono>
 +#include <immintrin.h>
++#ifdef _MSC_VER
++#include <intrin.h>
++#else
++#include <x86intrin.h>
++#endif
 +#include <condition_variable>
 +#include <cstring>
 +#include <mutex>
@@ -46606,6 +46707,10 @@ index 0000000..30e87b8
 +// worker replays each call while the video thread waits), 2 inline (recorded calls are replayed
 +// right away on the video thread - tests the record/replay itself, no second thread).
 +int ps4_vk_thread_mode = 0;
++// ps4.ini vk_spin_us: how long the worker spins for the next call before it sleeps. Each sleep
++// costs the video thread a wake-up system call (v60.42, Super Mario Galaxy: notify and mutex
++// calls were 3% of its time with a spin of 2000 pauses - a few microseconds on the Jaguar).
++int ps4_vk_spin_us = 100;
 +}
 +extern "C" void ps4_boot_trace(const char* stage);
 +extern "C" void ps4_wait_add(int slot, long long ns);  // port/ps4_sampler.cpp
@@ -47199,13 +47304,16 @@ index 0000000..30e87b8
 +    {
 +      if (s_stop.load(std::memory_order_acquire))
 +        break;
-+      // Spin briefly (the video thread usually queues the next call within microseconds), then
-+      // sleep. Timed waits: a lost wakeup costs at most a millisecond.
++      // Spin for vk_spin_us (the video thread usually queues the next call within
++      // microseconds), then sleep. Timed waits: a lost wakeup costs at most a millisecond.
++      // The Jaguar's TSC runs at 1.6 GHz.
++      const u64 spin_until = __rdtsc() + static_cast<u64>(ps4_vk_spin_us) * 1600;
 +      u32 spins = 0;
-+      while (spins < 2000 && s_write.load(std::memory_order_acquire) == read)
++      while (s_write.load(std::memory_order_acquire) == read)
 +      {
 +        _mm_pause();
-+        spins++;
++        if ((++spins & 63) == 0 && __rdtsc() >= spin_until)
++          break;
 +      }
 +      if (s_write.load(std::memory_order_acquire) == read)
 +      {
