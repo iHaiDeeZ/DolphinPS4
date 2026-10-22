@@ -53720,10 +53720,10 @@ index 0000000..cbb6290
 +}
 diff --git a/Source/Core/Common/PS4NetFS.cpp b/Source/Core/Common/PS4NetFS.cpp
 new file mode 100755
-index 0000000..75bac96
+index 0000000..4bc5062
 --- /dev/null
 +++ b/Source/Core/Common/PS4NetFS.cpp
-@@ -0,0 +1,845 @@
+@@ -0,0 +1,954 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -53760,14 +53760,21 @@ index 0000000..75bac96
 +{
 +using Clock = std::chrono::steady_clock;
 +
++// As Crema's network library (port/ps4_netfs.cpp): each share has one connection, kept open and
++// used by everything (one request at a time); a request that fails for another reason than "not
++// there" runs once more on a new connection, and the files open on the old one open again. File
++// data goes through 256 KiB blocks shared by all files (12 MiB), except reads of 1 MiB and up,
++// which go straight to the caller. What a folder holds and a file's size are kept for a minute.
++
 +// DirectIOFile handles from here up: far above any real file descriptor.
 +constexpr int HANDLE_BASE = 0x40000000;
-+// Reads smaller than this go through a per-file read-ahead buffer of this size (disc formats read
-+// a header, then blocks of 32 KiB - 2 MiB; one network round trip per MiB instead of per block).
-+constexpr size_t READ_AHEAD = 1 << 20;
-+constexpr auto STAT_LIFETIME = std::chrono::seconds(10);
-+constexpr auto IDLE_LIFETIME = std::chrono::seconds(120);
-+constexpr size_t IDLE_PER_SERVER = 2;
++constexpr u64 BLOCK_SIZE = 256 * 1024;
++constexpr size_t CACHE_BLOCKS = 48;
++constexpr u64 DIRECT_READ = 1024 * 1024;  // and up: not through the blocks
++constexpr u64 MOST_PER_REQUEST = 8 * 1024 * 1024;
++constexpr auto INFO_LIFETIME = std::chrono::seconds(60);
++// After a failed connection, answer at once instead of waiting for the server again.
++constexpr auto RETRY_AFTER = std::chrono::seconds(10);
 +
 +enum class Kind
 +{
@@ -53790,8 +53797,6 @@ index 0000000..75bac96
 +  std::string key;
 +  nfs_context* nfs = nullptr;
 +  smb2_context* smb = nullptr;
-+  bool busy = false;
-+  Clock::time_point idle_since;
 +
 +  ~Connection()
 +  {
@@ -53813,27 +53818,49 @@ index 0000000..75bac96
 +  Clock::time_point when;
 +};
 +
++// One share's connection (a configured share, or the folder of a path outside them).
++struct Share
++{
++  std::mutex lock;  // one request at a time on the connection; the fields below
++  Location root;    // kind and key
++  std::unique_ptr<Connection> connection;
++  Clock::time_point failed_at{};
++  bool failed = false;
++  u32 generation = 0;  // each new connection: the open files open again
++};
++
 +struct Stream
 +{
-+  std::mutex mutex;  // one read at a time (copied DirectIOFiles share it)
++  std::mutex mutex;  // its handles (copied DirectIOFiles share it)
 +  std::string url;
-+  Location location;
-+  Connection* connection = nullptr;
-+  nfsfh* nfs_file = nullptr;
-+  smb2fh* smb_file = nullptr;
++  std::shared_ptr<Share> share;
++  std::string path;  // in the share
++  u64 id = 0;        // the cache blocks' key
 +  u64 size = 0;
-+  std::vector<u8> cache;
-+  u64 cache_at = 0;
-+  size_t cache_length = 0;
++  nfsfh* nfs_file = nullptr;  // with the share's lock
++  smb2fh* smb_file = nullptr;
++  u32 generation = 0;
++};
++
++struct Block
++{
++  u64 file = 0, index = 0, used = 0;
++  std::vector<u8> data;
 +};
 +
 +std::mutex s_mutex;  // everything below
 +std::vector<std::string> s_shares;
-+std::vector<std::unique_ptr<Connection>> s_pool;
++std::map<std::string, std::shared_ptr<Share>> s_connections;
 +std::map<std::string, StatResult> s_stats;
++std::map<std::string, Clock::time_point> s_listed;  // folders whose entries are all in s_stats
 +std::map<int, std::shared_ptr<Stream>> s_handles;
 +int s_next_handle = HANDLE_BASE;
++u64 s_next_file = 1;
 +std::string s_last_error;
++
++std::mutex s_blocks_mutex;
++Block s_blocks[CACHE_BLOCKS];
++u64 s_block_tick = 0;
 +
 +void Log(const std::string& text)
 +{
@@ -54013,7 +54040,7 @@ index 0000000..75bac96
 +      return nullptr;
 +    }
 +    connection->nfs = nfs;
-+    nfs_set_timeout(nfs, 8000);
++    nfs_set_timeout(nfs, 10000);
 +    nfs_url* url = nfs_parse_url_dir(nfs, location.key.c_str());
 +    if (!url)
 +    {
@@ -54022,7 +54049,7 @@ index 0000000..75bac96
 +    }
 +    // NFS answers on 2049 (v4, and v3 on most servers) or its port mapper on 111.
 +    if (!Reachable(url->server, url->port ? std::vector<int>{url->port} : std::vector<int>{2049, 111},
-+                   2000))
++                   3000))
 +    {
 +      *error = std::string("no answer from ") + url->server + " (is it on, and NFS running?)";
 +      nfs_destroy_url(url);
@@ -54067,7 +54094,7 @@ index 0000000..75bac96
 +    return nullptr;
 +  }
 +  const auto [host, port] = HostAndPort(server, 445);
-+  if (!Reachable(host, {port}, 2000))
++  if (!Reachable(host, {port}, 3000))
 +  {
 +    *error = "no answer from " + host + " (is it on, and the folder shared?)";
 +    return nullptr;
@@ -54095,82 +54122,109 @@ index 0000000..75bac96
 +  return connection;
 +}
 +
-+// A connection for this location, only for the caller until Release.
-+Connection* Acquire(const Location& location, const std::string& url)
++// The share a location connects through (made on first use; connects when a request needs it).
++std::shared_ptr<Share> FindShare(const Location& location)
 +{
-+  {
-+    std::lock_guard lock(s_mutex);
-+    for (const auto& connection : s_pool)
-+    {
-+      if (!connection->busy && connection->key == location.key)
-+      {
-+        connection->busy = true;
-+        return connection.get();
-+      }
-+    }
-+  }
-+  std::string error;
-+  std::unique_ptr<Connection> connection = Connect(location, &error);
-+  if (!connection)
-+  {
-+    Fail(url, error);
-+    return nullptr;
-+  }
-+  Log("connected to " + Redact(location.key));
 +  std::lock_guard lock(s_mutex);
-+  connection->busy = true;
-+  s_pool.push_back(std::move(connection));
-+  return s_pool.back().get();
++  std::shared_ptr<Share>& share = s_connections[location.key];
++  if (!share)
++  {
++    share = std::make_shared<Share>();
++    share->root = location;
++  }
++  return share;
 +}
 +
-+// Back to the pool; broken: closed instead (the server went away: the next use reconnects).
-+void Release(Connection* connection, bool broken)
++// With the share's lock held.
++bool EnsureConnected(Share& share, const std::string& url, bool now = false)
 +{
-+  std::vector<std::unique_ptr<Connection>> closing;
++  if (share.connection)
++    return true;
++  if (!now && share.failed && Clock::now() - share.failed_at < RETRY_AFTER)
 +  {
-+    std::lock_guard lock(s_mutex);
-+    const auto now = Clock::now();
-+    connection->busy = false;
-+    connection->idle_since = now;
-+    std::map<std::string, size_t> idle;
-+    for (auto it = s_pool.rbegin(); it != s_pool.rend(); ++it)
-+    {
-+      Connection& c = **it;
-+      if (c.busy)
-+        continue;
-+      if ((&c == connection && broken) || now - c.idle_since > IDLE_LIFETIME ||
-+          ++idle[c.key] > IDLE_PER_SERVER)
-+      {
-+        closing.push_back(std::move(*it));
-+      }
-+    }
-+    std::erase_if(s_pool, [](const std::unique_ptr<Connection>& c) { return !c; });
++    Fail(url, "not connected (the last try failed moments ago)");
++    return false;
 +  }
++  std::string error;
++  share.connection = Connect(share.root, &error);
++  if (!share.connection)
++  {
++    share.failed = true;
++    share.failed_at = Clock::now();
++    Fail(url, error);
++    return false;
++  }
++  share.failed = false;
++  share.generation++;
++  Log("connected to " + Redact(share.root.key));
++  return true;
++}
++
++// With the share's lock held: the connection is gone (the server restarted, Wi-Fi dropped).
++void Disconnect(Share& share)
++{
++  share.connection.reset();
++}
++
++bool NotThere(int result)
++{
++  return result == -ENOENT || result == -ENOTDIR || result == -EACCES || result == -EPERM ||
++         result == -EINVAL;
++}
++
++// The error number of the connection's last failed SMB call.
++int SmbError(smb2_context* smb)
++{
++  const int status = smb2_get_nterror(smb);
++  const int error = status ? nterror_to_errno(status) : EIO;
++  return -(error ? error : EIO);
++}
++
++// Runs a request (0 or more: done, -errno: failed) with the share's lock held; a failure that
++// isn't "not there" may be the connection: once more on a new one.
++template <typename Request>
++int Run(Share& share, const std::string& url, Request request)
++{
++  if (!EnsureConnected(share, url))
++    return -EIO;
++  const int result = request(*share.connection);
++  if (result >= 0 || NotThere(result))
++    return result;
++  Disconnect(share);
++  if (!EnsureConnected(share, url, true))
++    return -EIO;
++  Log("reconnected for " + Redact(url));
++  return request(*share.connection);
 +}
 +
 +void RememberStat(const std::string& url, bool exists, bool directory, u64 size)
 +{
 +  std::lock_guard lock(s_mutex);
 +  if (s_stats.size() > 20000)
++  {
 +    s_stats.clear();
++    s_listed.clear();
++  }
 +  s_stats[TrimSlashes(url)] = {exists, directory, size, Clock::now()};
 +}
 +
-+bool OpenFile(Stream& stream)
++// With the share's lock held: the stream's file on the current connection (opened again after a
++// reconnection).
++int OpenOnConnection(Stream& stream, Connection& c, u32 generation)
 +{
-+  stream.connection = Acquire(stream.location, stream.url);
-+  if (!stream.connection)
-+    return false;
-+  Connection& c = *stream.connection;
-+  const char* path = stream.location.path.c_str();
++  if (stream.generation == generation && (stream.nfs_file || stream.smb_file))
++    return 0;
++  stream.nfs_file = nullptr;  // belonged to a connection that is gone
++  stream.smb_file = nullptr;
++  const char* path = stream.path.c_str();
 +  if (c.kind == Kind::NFS)
 +  {
-+    if (nfs_open(c.nfs, path, O_RDONLY, &stream.nfs_file) != 0)
++    const int result = nfs_open(c.nfs, path, O_RDONLY, &stream.nfs_file);
++    if (result < 0)
 +    {
 +      Fail(stream.url, std::string("can't open: ") + nfs_get_error(c.nfs));
-+      Release(stream.connection, false);
-+      stream.connection = nullptr;
-+      return false;
++      stream.nfs_file = nullptr;
++      return result;
 +    }
 +    nfs_stat_64 st{};
 +    if (nfs_fstat64(c.nfs, stream.nfs_file, &st) == 0 || nfs_stat64(c.nfs, path, &st) == 0)
@@ -54182,9 +54236,7 @@ index 0000000..75bac96
 +    if (!stream.smb_file)
 +    {
 +      Fail(stream.url, std::string("can't open: ") + smb2_get_error(c.smb));
-+      Release(stream.connection, false);
-+      stream.connection = nullptr;
-+      return false;
++      return SmbError(c.smb);
 +    }
 +    // Some servers don't answer a handle's size (impacket): then the path's.
 +    smb2_stat_64 st{};
@@ -54197,97 +54249,129 @@ index 0000000..75bac96
 +    }
 +    stream.size = st.smb2_size;
 +  }
-+  return true;
++  stream.generation = generation;
++  return 0;
 +}
 +
-+void CloseFile(Stream& stream, bool broken)
++// Reads exactly size bytes at offset (fewer only at the end of the file) from the share.
++s64 ReadFromShare(Stream& stream, u8* out, u64 size, u64 offset)
 +{
-+  if (!stream.connection)
-+    return;
-+  Connection& c = *stream.connection;
-+  if (!broken)
-+  {
-+    if (stream.nfs_file)
-+      nfs_close(c.nfs, stream.nfs_file);
-+    if (stream.smb_file)
-+      smb2_close(c.smb, stream.smb_file);
-+  }
-+  stream.nfs_file = nullptr;
-+  stream.smb_file = nullptr;
-+  Release(stream.connection, broken);
-+  stream.connection = nullptr;
-+}
-+
-+bool RawRead(Stream& stream, u64 offset, u8* out, u64 size)
-+{
-+  if (!stream.connection)
-+    return false;
-+  Connection& c = *stream.connection;
-+  while (size > 0)
-+  {
-+    int result;
-+    if (c.kind == Kind::NFS)
++  Share& share = *stream.share;
++  std::lock_guard lock(share.lock);
++  u64 done = 0;
++  const int result = Run(share, stream.url, [&](Connection& c) -> int {
++    if (const int opened = OpenOnConnection(stream, c, share.generation); opened < 0)
++      return opened;
++    while (done < size)
 +    {
-+      const u64 chunk = std::min<u64>(size, std::max<size_t>(nfs_get_readmax(c.nfs), 32768));
-+      result = nfs_pread(c.nfs, stream.nfs_file, out, chunk, offset);
-+      if (result < 0)
-+        Fail(stream.url, std::string("read failed: ") + nfs_get_error(c.nfs));
++      const u64 want = std::min(size - done, MOST_PER_REQUEST);
++      s64 got;
++      if (c.kind == Kind::NFS)
++      {
++        // libnfs answers at most its read size per call.
++        got = nfs_pread(c.nfs, stream.nfs_file, out + done, want, offset + done);
++        if (got < 0)
++          Fail(stream.url, std::string("read failed: ") + nfs_get_error(c.nfs));
++      }
++      else
++      {
++        const u32 most = smb2_get_max_read_size(c.smb);
++        got = smb2_pread(c.smb, stream.smb_file, out + done,
++                         static_cast<u32>(most ? std::min<u64>(want, most) : want), offset + done);
++        if (got < 0)
++          Fail(stream.url, std::string("read failed: ") + smb2_get_error(c.smb));
++      }
++      if (got < 0)
++      {
++        // The file is open: whatever the error says (libsmb2 can answer a server restart with
++        // EINVAL), the connection is dropped and the file opened again.
++        stream.nfs_file = nullptr;
++        stream.smb_file = nullptr;
++        return -EIO;
++      }
++      if (got == 0)
++        break;
++      done += static_cast<u64>(got);
 +    }
-+    else
-+    {
-+      const u64 chunk = std::min<u64>(size, std::max<u32>(smb2_get_max_read_size(c.smb), 65536));
-+      result = smb2_pread(c.smb, stream.smb_file, out, static_cast<u32>(chunk), offset);
-+      if (result < 0)
-+        Fail(stream.url, std::string("read failed: ") + smb2_get_error(c.smb));
-+    }
-+    if (result <= 0)
-+      return false;
-+    out += result;
-+    offset += result;
-+    size -= result;
-+  }
-+  return true;
-+}
-+
-+// A read; when it fails, the connection is dropped and the file opened again once (a server that
-+// restarted, a dropped Wi-Fi link).
-+bool Fetch(Stream& stream, u64 offset, u8* out, u64 size)
-+{
-+  if (RawRead(stream, offset, out, size))
-+    return true;
-+  CloseFile(stream, true);
-+  if (!OpenFile(stream))
-+    return false;
-+  Log("reconnected for " + Redact(stream.url));
-+  return RawRead(stream, offset, out, size);
++    return 0;
++  });
++  return result < 0 ? result : static_cast<s64>(done);
 +}
 +
 +bool Read(Stream& stream, u64 offset, u8* out, u64 size)
 +{
 +  if (offset > stream.size || size > stream.size - offset)
 +    return false;
-+  while (size > 0)
++  if (size >= DIRECT_READ)
++    return ReadFromShare(stream, out, size, offset) == static_cast<s64>(size);
++  u64 done = 0;
++  while (done < size)
 +  {
-+    if (offset >= stream.cache_at && offset < stream.cache_at + stream.cache_length)
++    const u64 at = offset + done;
++    const u64 index = at / BLOCK_SIZE;
++    const u64 in_block = at % BLOCK_SIZE;
++    const u64 take = std::min(size - done, BLOCK_SIZE - in_block);
++    bool found = false;
 +    {
-+      const u64 n = std::min<u64>(size, stream.cache_at + stream.cache_length - offset);
-+      std::memcpy(out, stream.cache.data() + (offset - stream.cache_at), n);
-+      out += n;
-+      offset += n;
-+      size -= n;
-+      continue;
++      std::lock_guard lock(s_blocks_mutex);
++      for (Block& block : s_blocks)
++      {
++        if (block.used && block.file == stream.id && block.index == index &&
++            block.data.size() >= in_block + take)
++        {
++          std::memcpy(out + done, block.data.data() + in_block, take);
++          block.used = ++s_block_tick;
++          found = true;
++          break;
++        }
++      }
 +    }
-+    if (size >= READ_AHEAD)
-+      return Fetch(stream, offset, out, size);
-+    const u64 n = std::min<u64>(READ_AHEAD, stream.size - offset);
-+    stream.cache.resize(READ_AHEAD);
-+    stream.cache_length = 0;
-+    if (!Fetch(stream, offset, stream.cache.data(), n))
-+      return false;
-+    stream.cache_at = offset;
-+    stream.cache_length = n;
++    if (!found)
++    {
++      const u64 start = index * BLOCK_SIZE;
++      std::vector<u8> data(std::min(BLOCK_SIZE, stream.size - start));
++      const s64 got = ReadFromShare(stream, data.data(), data.size(), start);
++      if (got < static_cast<s64>(in_block + take))
++        return false;
++      data.resize(static_cast<size_t>(got));
++      std::memcpy(out + done, data.data() + in_block, take);
++      std::lock_guard lock(s_blocks_mutex);
++      Block* oldest = &s_blocks[0];
++      for (Block& block : s_blocks)
++      {
++        if (block.used < oldest->used)
++          oldest = &block;
++      }
++      oldest->file = stream.id;
++      oldest->index = index;
++      oldest->data = std::move(data);
++      oldest->used = ++s_block_tick;
++    }
++    done += take;
 +  }
 +  return true;
++}
++
++// The last handle of a file closes it (with the stream's mutex held).
++void CloseFile(Stream& stream)
++{
++  Share& share = *stream.share;
++  std::lock_guard lock(share.lock);
++  if (share.connection && stream.generation == share.generation)
++  {
++    if (stream.nfs_file)
++      nfs_close(share.connection->nfs, stream.nfs_file);
++    if (stream.smb_file)
++      smb2_close(share.connection->smb, stream.smb_file);
++  }
++  stream.nfs_file = nullptr;
++  stream.smb_file = nullptr;
++  std::lock_guard blocks(s_blocks_mutex);
++  for (Block& block : s_blocks)
++  {
++    if (block.file == stream.id)
++      block = {};
++  }
 +}
 +
 +std::shared_ptr<Stream> FindHandle(int handle)
@@ -54356,6 +54440,7 @@ index 0000000..75bac96
 +  std::lock_guard lock(s_mutex);
 +  s_shares = std::move(roots);
 +  s_stats.clear();
++  s_listed.clear();
 +}
 +
 +std::string Redact(const std::string& url)
@@ -54388,53 +54473,55 @@ index 0000000..75bac96
 +    Fail(url, "not a network address (nfs://server/export or smb://server/share)");
 +    return false;
 +  }
-+  Connection* c = Acquire(*location, url);
-+  if (!c)
-+    return false;
-+  bool ok = true;
-+  if (c->kind == Kind::NFS)
++  const std::shared_ptr<Share> share = FindShare(*location);
++  int result;
 +  {
-+    nfsdir* dir = nullptr;
-+    if (nfs_opendir(c->nfs, location->path.c_str(), &dir) != 0)
-+    {
-+      Fail(url, std::string("can't list: ") + nfs_get_error(c->nfs));
-+      ok = false;
-+    }
-+    else
-+    {
-+      while (nfsdirent* entry = nfs_readdir(c->nfs, dir))
++    std::lock_guard lock(share->lock);
++    result = Run(*share, url, [&](Connection& c) -> int {
++      entries->clear();
++      if (c.kind == Kind::NFS)
 +      {
-+        const bool directory = entry->type == NF3DIR || S_ISDIR(entry->mode);
-+        entries->push_back({entry->name, directory, entry->size});
++        nfsdir* dir = nullptr;
++        if (const int opened = nfs_opendir(c.nfs, location->path.c_str(), &dir); opened < 0)
++        {
++          Fail(url, std::string("can't list: ") + nfs_get_error(c.nfs));
++          return opened;
++        }
++        while (nfsdirent* entry = nfs_readdir(c.nfs, dir))
++        {
++          const bool directory = entry->type == NF3DIR || S_ISDIR(entry->mode);
++          entries->push_back({entry->name, directory, directory ? 0 : entry->size});
++        }
++        nfs_closedir(c.nfs, dir);
++        return 0;
 +      }
-+      nfs_closedir(c->nfs, dir);
-+    }
-+  }
-+  else
-+  {
-+    smb2dir* dir = smb2_opendir(c->smb, location->path.c_str());
-+    if (!dir)
-+    {
-+      Fail(url, std::string("can't list: ") + smb2_get_error(c->smb));
-+      ok = false;
-+    }
-+    else
-+    {
-+      while (smb2dirent* entry = smb2_readdir(c->smb, dir))
++      smb2dir* dir = smb2_opendir(c.smb, location->path.c_str());
++      if (!dir)
 +      {
-+        entries->push_back(
-+            {entry->name, entry->st.smb2_type == SMB2_TYPE_DIRECTORY, entry->st.smb2_size});
++        Fail(url, std::string("can't list: ") + smb2_get_error(c.smb));
++        return SmbError(c.smb);
 +      }
-+      smb2_closedir(c->smb, dir);
-+    }
++      while (smb2dirent* entry = smb2_readdir(c.smb, dir))
++      {
++        const bool directory = entry->st.smb2_type == SMB2_TYPE_DIRECTORY;
++        entries->push_back({entry->name, directory, directory ? 0 : entry->st.smb2_size});
++      }
++      smb2_closedir(c.smb, dir);
++      return 0;
++    });
 +  }
-+  Release(c, false);
 +  std::erase_if(*entries, [](const Entry& e) { return e.name == "." || e.name == ".."; });
-+  // What the listing says about each entry saves a request per file while the library is read.
++  if (result < 0)
++    return false;
++  // What the listing says about each entry saves a request per file while the library is read,
++  // and a name it doesn't hold isn't there.
 +  const std::string base = TrimSlashes(url);
 +  for (const Entry& entry : *entries)
 +    RememberStat(base + "/" + entry.name, true, entry.directory, entry.size);
-+  return ok;
++  RememberStat(base, true, true, 0);
++  std::lock_guard lock(s_mutex);
++  s_listed[base] = Clock::now();
++  return true;
 +}
 +
 +bool Stat(const std::string& url, u64* size, bool* directory)
@@ -54443,43 +54530,57 @@ index 0000000..75bac96
 +  {
 +    std::lock_guard lock(s_mutex);
 +    const auto it = s_stats.find(key);
-+    if (it != s_stats.end() && Clock::now() - it->second.when < STAT_LIFETIME)
++    if (it != s_stats.end() && Clock::now() - it->second.when < INFO_LIFETIME)
 +    {
 +      *size = it->second.size;
 +      *directory = it->second.directory;
 +      return it->second.exists;
 +    }
++    // The folder it's in was listed: it's there or it isn't (NFS: names match exactly; SMB
++    // servers ignore case).
++    const size_t slash = key.rfind('/');
++    if (StartsWithNoCase(key, "nfs://") && slash != std::string::npos && slash > key.find("://") + 3)
++    {
++      const auto parent = s_listed.find(key.substr(0, slash));
++      if (parent != s_listed.end() && Clock::now() - parent->second < INFO_LIFETIME)
++      {
++        *size = 0;
++        *directory = false;
++        return false;
++      }
++    }
 +  }
 +  const std::optional<Location> location = Resolve(url, false);
 +  if (!location)
 +    return false;
-+  Connection* c = Acquire(*location, url);
-+  if (!c)
-+    return false;
++  const std::shared_ptr<Share> share = FindShare(*location);
++  u64 found_size = 0;
++  bool found_directory = false;
 +  int result;
-+  if (c->kind == Kind::NFS)
 +  {
-+    nfs_stat_64 st{};
-+    result = nfs_stat64(c->nfs, location->path.c_str(), &st);
-+    *size = st.nfs_size;
-+    *directory = S_ISDIR(st.nfs_mode);
++    std::lock_guard lock(share->lock);
++    result = Run(*share, url, [&](Connection& c) -> int {
++      if (c.kind == Kind::NFS)
++      {
++        nfs_stat_64 st{};
++        const int r = nfs_stat64(c.nfs, location->path.c_str(), &st);
++        found_size = st.nfs_size;
++        found_directory = S_ISDIR(st.nfs_mode);
++        return r;
++      }
++      smb2_stat_64 st{};
++      const int r = smb2_stat(c.smb, location->path.c_str(), &st);
++      found_size = st.smb2_size;
++      found_directory = st.smb2_type == SMB2_TYPE_DIRECTORY;
++      return r;
++    });
 +  }
-+  else
-+  {
-+    smb2_stat_64 st{};
-+    result = smb2_stat(c->smb, location->path.c_str(), &st);
-+    *size = st.smb2_size;
-+    *directory = st.smb2_type == SMB2_TYPE_DIRECTORY;
-+  }
-+  // Missing: a normal answer. Anything else: the connection may be gone.
-+  Release(c, result < 0 && result != -ENOENT && result != -ENOTDIR);
-+  const bool exists = result == 0;
-+  if (!exists)
-+  {
-+    *size = 0;
-+    *directory = false;
-+  }
-+  RememberStat(url, exists, *directory, *size);
++  const bool exists = result >= 0;
++  *size = exists && !found_directory ? found_size : 0;
++  *directory = exists && found_directory;
++  // No connection: not there, and not kept (it may answer later).
++  if (exists || NotThere(result))
++    RememberStat(url, exists, *directory, *size);
 +  return exists;
 +}
 +
@@ -54498,11 +54599,19 @@ index 0000000..75bac96
 +  }
 +  auto stream = std::make_shared<Stream>();
 +  stream->url = url;
-+  stream->location = *location;
-+  if (!OpenFile(*stream))
-+    return -1;
++  stream->share = FindShare(*location);
++  stream->path = location->path;
++  {
++    std::lock_guard lock(stream->share->lock);
++    const int result = Run(*stream->share, url, [&](Connection& c) {
++      return OpenOnConnection(*stream, c, stream->share->generation);
++    });
++    if (result < 0)
++      return -1;
++  }
 +  RememberStat(url, true, false, stream->size);
 +  std::lock_guard lock(s_mutex);
++  stream->id = s_next_file++;
 +  const int handle = s_next_handle++;
 +  s_handles[handle] = std::move(stream);
 +  return handle;
@@ -54549,7 +54658,7 @@ index 0000000..75bac96
 +  if (stream.use_count() == 1)
 +  {
 +    std::lock_guard lock(stream->mutex);
-+    CloseFile(*stream, false);
++    CloseFile(*stream);
 +  }
 +}
 +
