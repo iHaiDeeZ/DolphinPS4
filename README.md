@@ -258,7 +258,7 @@ Everything the app creates sits in **`/data/DolphinPS4/`**:
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Crash of the Titans | Wii | 25–30 with its recommended settings (its normal rate is 30) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Mario Kart Wii | Wii | 45–50 in races with its recommended settings (its normal rate is 60) |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Sonic and the Black Knight | Wii | 50–60 with its recommended settings; one heavy scene 25–40 |
-| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Super Mario Galaxy | Wii | 40–60 (average ~56); don't turn on graphics mods: Bloom Removal halved its speed |
+| ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Super Mario Galaxy | Wii | 40–60 with its recommended settings; busiest scenes ~44–54; don't turn on graphics mods: Bloom Removal halved its speed |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Wii Sports | Wii | ~40 |
 | ![Playable](https://img.shields.io/badge/Playable-1ebc61?style=flat-square) | Wii Sports Resort | Wii | ~37 |
 
