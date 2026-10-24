@@ -23890,7 +23890,7 @@ index 6851466..908e167 100644
  }  // namespace DiscIO
  
 diff --git a/Source/Core/DolphinNoGUI/CMakeLists.txt b/Source/Core/DolphinNoGUI/CMakeLists.txt
-index 51c3fff..b8dfe84 100644
+index 51c3fff..84544d9 100644
 --- a/Source/Core/DolphinNoGUI/CMakeLists.txt
 +++ b/Source/Core/DolphinNoGUI/CMakeLists.txt
 @@ -23,6 +23,30 @@ if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
@@ -23903,7 +23903,7 @@ index 51c3fff..b8dfe84 100644
 +  target_sources(dolphin-nogui PRIVATE PlatformPS4.cpp ${PS4_RUNTIME_SOURCES})
 +  # The XMB launcher: Dear ImGui drawn with Vulkan (PS4XMBDisplay.cpp) through Dolphin's loader.
 +  target_sources(dolphin-nogui PRIVATE PS4XMB.cpp PS4XMBDisplay.cpp PS4IngameMenu.cpp PS4Settings.cpp
-+    PS4Controls.cpp PS4Cheats.cpp PS4Covers.cpp PS4Glyphs.cpp PS4Lang.cpp PS4MemoryCards.cpp PS4Net.cpp PS4Updater.cpp
++    PS4Controls.cpp PS4Cheats.cpp PS4Covers.cpp PS4Glyphs.cpp PS4Lang.cpp PS4MemoryCards.cpp PS4Net.cpp PS4Skylanders.cpp PS4Updater.cpp
 +    ${CMAKE_SOURCE_DIR}/Externals/imgui/imgui/backends/imgui_impl_vulkan.cpp)
 +  set_source_files_properties(
 +    ${CMAKE_SOURCE_DIR}/Externals/imgui/imgui/backends/imgui_impl_vulkan.cpp
@@ -23933,10 +23933,10 @@ index 51c3fff..b8dfe84 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..6dee26d 100644
+index 3bf40ea..7a324bb 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-@@ -2,10 +2,17 @@
+@@ -2,10 +2,18 @@
  // SPDX-License-Identifier: GPL-2.0-or-later
  
  #include "DolphinNoGUI/Platform.h"
@@ -23944,6 +23944,7 @@ index 3bf40ea..6dee26d 100644
 +#include <sys/stat.h>
 +#include "Common/FileUtil.h"
 +#include "DolphinNoGUI/PS4Settings.h"
++#include "DolphinNoGUI/PS4Skylanders.h"
 +#endif
  
  #include <OptionParser.h>
@@ -23954,7 +23955,7 @@ index 3bf40ea..6dee26d 100644
  #include <string>
  #include <vector>
  
-@@ -15,14 +22,31 @@
+@@ -15,14 +23,31 @@
  #include <windows.h>
  #endif
  
@@ -23986,7 +23987,7 @@ index 3bf40ea..6dee26d 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +55,255 @@
+@@ -31,6 +56,255 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -24242,7 +24243,7 @@ index 3bf40ea..6dee26d 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +446,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +447,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -24253,7 +24254,7 @@ index 3bf40ea..6dee26d 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +461,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +462,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -24272,7 +24273,7 @@ index 3bf40ea..6dee26d 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +493,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +494,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -24283,7 +24284,7 @@ index 3bf40ea..6dee26d 100644
  #endif
        });
  
-@@ -270,7 +560,531 @@ int main(const int argc, char* argv[])
+@@ -270,7 +561,542 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -24314,6 +24315,17 @@ index 3bf40ea..6dee26d 100644
 +  // animation) when the user put a dump at User/GC/<region>/IPL.bin; without one, straight in
 +  // (BootManager checks the file for the game's region).
 +  Config::SetBase(Config::MAIN_SKIP_IPL, Platform::GetPS4Option("gc_bios", "on") != "on");
++  // Skylanders: the emulated Portal of Power (a USB device; PS4Skylanders.cpp, run from the
++  // in-game menu) for the Skylanders games. skylander_portal=on: for every game, off: never.
++  {
++    const std::string portal = Platform::GetPS4Option("skylander_portal", "auto");
++    const bool on = portal == "on" ||
++                    (portal == "auto" && PS4Skylanders::IsSkylandersGame(ps4_profile_tag));
++    Config::SetBase(Config::MAIN_EMULATE_SKYLANDER_PORTAL, on);
++    Config::SetBase(Config::MAIN_SKYLANDERS_PATH, PS4Skylanders::CollectionDir());
++    if (on)
++      PS4Skylanders::Restore();
++  }
 +  Config::SetBase(Config::MAIN_OSD_MESSAGES, true);
 +  // Cheats chosen in the XMB / in-game menu (only enabled codes run; PS4Cheats.cpp).
 +  Config::SetBase(Config::MAIN_ENABLE_CHEATS, true);
@@ -24815,7 +24827,7 @@ index 3bf40ea..6dee26d 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +1098,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +1110,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -24831,7 +24843,7 @@ index 3bf40ea..6dee26d 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +1126,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +1138,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -26757,11 +26769,11 @@ index 0000000..5157e21
 +           float alpha);
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-new file mode 100755
-index 0000000..d0d47ec
+new file mode 100644
+index 0000000..12b2e0c
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,3690 @@
+@@ -0,0 +1,3929 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -26817,6 +26829,9 @@ index 0000000..d0d47ec
 +#include "DolphinNoGUI/PS4Lang.h"
 +#include "DolphinNoGUI/Platform.h"
 +#include "DolphinNoGUI/PS4Settings.h"
++#include "DolphinNoGUI/PS4Skylanders.h"
++#include "Common/Config/Config.h"
++#include "Core/Config/MainSettings.h"
 +#include "VideoCommon/Fifo.h"
 +#include "Common/Image.h"
 +#include "VideoCommon/AbstractGfx.h"
@@ -26880,6 +26895,7 @@ index 0000000..d0d47ec
 +  MAIN_CONTROLS,
 +  MAIN_ACHIEVEMENTS,
 +  MAIN_DISC,  // Change Disc: games on more than one disc
++  MAIN_PORTAL,  // Portal of Power: the Skylanders games (PS4Skylanders)
 +  MAIN_COUNT,
 +};
 +
@@ -26890,6 +26906,9 @@ index 0000000..d0d47ec
 +  Cheats,
 +  Controls,
 +  Achievements,
++  Portal,        // the portal's slots
++  PortalPick,    // a figure for a slot: the collection's files, or a new one
++  PortalCreate,  // a new figure, from the list of known ones
 +};
 +
 +// One line of the menu as drawn (prepared by the host thread, drawn by the video thread).
@@ -27525,6 +27544,10 @@ index 0000000..d0d47ec
 +char16_t s_ime_title[64] = {};
 +bool s_cheat_add_gecko = true;
 +std::string s_cheat_add_name, s_cheat_add_status;
++// Portal of Power pages: the slot a figure goes on, and the collection's files (with the figures'
++// names, read when the page opens).
++int s_portal_slot = 0;
++std::vector<std::string> s_portal_files, s_portal_names;
 +uint32_t s_held = 0;
 +float s_repeat = 0.0f;
 +bool s_quit = false;
@@ -27735,6 +27758,14 @@ index 0000000..d0d47ec
 +                                           std::to_string(dvd.PS4DiscPaths().size())});
 +        break;
 +      }
++      case MAIN_PORTAL:
++      {
++        const int on = PS4Skylanders::OnPortal();
++        rows.push_back({"Portal of Power", on == 0 ? std::string("Empty") :
++                                           on == 1 ? std::string("1 figure") :
++                                                     std::to_string(on) + " figures"});
++        break;
++      }
 +      case MAIN_RESTART:
 +        rows.push_back({"Restart Game"});
 +        break;
@@ -27913,6 +27944,69 @@ index 0000000..d0d47ec
 +    else
 +      hints = {{Glyph::Cross, "On/Off"}, {Glyph::UpDown, "Move"}, {Glyph::Circle, "Back"}};
 +  }
++  else if (s_page == Page::Portal)
++  {
++    const std::vector<PS4Skylanders::Slot> slots = PS4Skylanders::Slots();
++    rows.push_back({"On the Portal", "", true});
++    keys.push_back("");
++    for (int i = 0; i < static_cast<int>(slots.size()); i++)
++    {
++      rows.push_back({"Slot " + std::to_string(i + 1), slots[i].used ? slots[i].name : "Empty"});
++      keys.push_back("pslot:" + std::to_string(i));
++    }
++    selected = s_settings_selected;
++    subtitle = "PORTAL OF POWER";
++    const int slot = selected - 1;
++    if (slot >= 0 && slot < static_cast<int>(slots.size()) && slots[slot].used)
++      hints = {{Glyph::Cross, "Swap"}, {Glyph::Square, "Take Off"}, {Glyph::UpDown, "Move"},
++               {Glyph::Circle, "Back"}};
++    else
++      hints = {{Glyph::Cross, "Place a Figure"}, {Glyph::UpDown, "Move"}, {Glyph::Circle, "Back"}};
++  }
++  else if (s_page == Page::PortalPick)
++  {
++    rows.push_back({"Make a New Figure"});
++    keys.push_back("pnew");
++    rows.push_back({"Your Figures", "", true});
++    keys.push_back("");
++    const std::vector<PS4Skylanders::Slot> slots = PS4Skylanders::Slots();
++    for (size_t i = 0; i < s_portal_files.size(); i++)
++    {
++      const bool on = std::any_of(slots.begin(), slots.end(), [&](const PS4Skylanders::Slot& slot) {
++        return slot.used && slot.file == s_portal_files[i];
++      });
++      rows.push_back({s_portal_names[i], on ? "On the portal" : s_portal_files[i]});
++      keys.push_back("pfile:" + std::to_string(i));
++    }
++    if (s_portal_files.empty())
++    {
++      rows.push_back({"None yet: make one, or copy .sky files to " + PS4Skylanders::CollectionDir(),
++                      "", true});
++      keys.push_back("");
++    }
++    selected = s_settings_selected;
++    subtitle = "SLOT " + std::to_string(s_portal_slot + 1) + " - CHOOSE A FIGURE";
++    hints = {{Glyph::Cross, selected == 0 ? "Choose" : "Place"}, {Glyph::UpDown, "Move"},
++             {Glyph::Circle, "Back"}};
++  }
++  else if (s_page == Page::PortalCreate)
++  {
++    const auto& catalog = PS4Skylanders::Catalog();
++    for (size_t i = 0; i < catalog.size(); i++)
++    {
++      if (i == 0 || catalog[i].game != catalog[i - 1].game)
++      {
++        rows.push_back({PS4Skylanders::GameName(catalog[i].game), "", true});
++        keys.push_back("");
++      }
++      rows.push_back({catalog[i].name});
++      keys.push_back("pmake:" + std::to_string(i));
++    }
++    selected = s_settings_selected;
++    subtitle = "SLOT " + std::to_string(s_portal_slot + 1) + " - NEW FIGURE";
++    hints = {{Glyph::Cross, "Make and Place"}, {Glyph::LeftRight, "Next Game"},
++             {Glyph::UpDown, "Move"}, {Glyph::Circle, "Back"}};
++  }
 +  else
 +  {
 +    const bool custom = Custom();
@@ -28037,6 +28131,9 @@ index 0000000..d0d47ec
 +  // Games on several discs (MGS: The Twin Snakes, Killer7, ...): the next disc on demand.
 +  if (system.GetDVDInterface().PS4DiscPaths().size() > 1)
 +    s_main_items.push_back(MAIN_DISC);
++  // Skylanders: the figures on the emulated Portal of Power, right after the states.
++  if (Config::Get(Config::MAIN_EMULATE_SKYLANDER_PORTAL))
++    s_main_items.insert(s_main_items.begin() + 3, MAIN_PORTAL);
 +  s_main_items.insert(s_main_items.end(), {MAIN_RESTART, MAIN_QUIT});
 +  {
 +    // What the slots look like for this game (a report of "empty" slots after an update).
@@ -28473,7 +28570,7 @@ index 0000000..d0d47ec
 +    row += direction;
 +  if (row >= 0 && row < count &&
 +      (row > 0 || s_page == Page::Settings || s_page == Page::Achievements ||
-+       s_page == Page::Cheats))
++       s_page == Page::Cheats || s_page == Page::PortalPick))
 +    s_settings_selected = row;
 +}
 +
@@ -28903,8 +29000,119 @@ index 0000000..d0d47ec
 +      " named from the SDK database (" + std::to_string(ms) + " ms)");
 +}
 +
++bool PortalPage()
++{
++  return s_page == Page::Portal || s_page == Page::PortalPick || s_page == Page::PortalCreate;
++}
++
++// The figure picker for a slot: the collection folder's files, read now.
++void OpenPortalPick(int slot)
++{
++  s_portal_slot = slot;
++  s_portal_files = PS4Skylanders::CollectionFiles();
++  s_portal_names.clear();
++  for (const std::string& file : s_portal_files)
++    s_portal_names.push_back(PS4Skylanders::FigureName(file));
++  s_page = Page::PortalPick;
++  s_settings_selected = s_portal_files.empty() ? 0 : 2;  // the first figure (or Make a New Figure)
++}
++
++// Back to the slots, on the slot that was picked for.
++void BackToPortal()
++{
++  s_page = Page::Portal;
++  s_settings_selected = s_portal_slot + 1;
++}
++
++// Cross on the Portal of Power pages.
++void PortalActivate()
++{
++  if (s_settings_selected < 0 || s_settings_selected >= static_cast<int>(s_row_keys.size()))
++    return;
++  const std::string key = s_row_keys[s_settings_selected];
++  if (key.rfind("pslot:", 0) == 0)
++  {
++    OpenPortalPick(std::atoi(key.c_str() + 6));
++    return;
++  }
++  if (key == "pnew")
++  {
++    s_page = Page::PortalCreate;
++    s_settings_selected = 1;  // row 0 is the first game's title
++    return;
++  }
++  std::string file;
++  if (key.rfind("pfile:", 0) == 0)
++  {
++    const size_t index = static_cast<size_t>(std::atoi(key.c_str() + 6));
++    if (index >= s_portal_files.size())
++      return;
++    file = s_portal_files[index];
++  }
++  else if (key.rfind("pmake:", 0) == 0)
++  {
++    const std::string error =
++        PS4Skylanders::Create(static_cast<size_t>(std::atoi(key.c_str() + 6)), &file);
++    if (!error.empty())
++    {
++      Toast(error, 4000);
++      return;
++    }
++  }
++  else
++  {
++    return;
++  }
++  const std::string error = PS4Skylanders::Place(s_portal_slot, file);
++  if (!error.empty())
++  {
++    Toast(error, 4000);
++    return;
++  }
++  Toast(PS4Skylanders::Slots()[s_portal_slot].name + " is on the portal");
++  BackToPortal();
++}
++
++// Square on the slots page: the figure comes off the portal (its file stays in the collection).
++void PortalTakeOff()
++{
++  const int slot = s_settings_selected - 1;
++  const std::vector<PS4Skylanders::Slot> slots = PS4Skylanders::Slots();
++  if (slot < 0 || slot >= static_cast<int>(slots.size()) || !slots[slot].used)
++    return;
++  const std::string error = PS4Skylanders::Remove(slot);
++  Toast(error.empty() ? slots[slot].name + " taken off the portal" : error);
++}
++
++// Left/Right on the new figure page: the next (or previous) game's figures.
++void PortalJump(int direction)
++{
++  if (s_page != Page::PortalCreate)
++    return;
++  // The games' title rows; the selection goes to the first figure under the next one.
++  std::vector<int> titles;
++  int current = 0;
++  for (int row = 0; row < static_cast<int>(s_row_keys.size()); row++)
++  {
++    if (!s_row_keys[row].empty())
++      continue;
++    if (row <= s_settings_selected)
++      current = static_cast<int>(titles.size());
++    titles.push_back(row);
++  }
++  if (titles.empty())
++    return;
++  const int target = std::clamp(current + direction, 0, static_cast<int>(titles.size()) - 1);
++  s_settings_selected = titles[target] + 1;
++}
++
 +void Activate(Core::System& system)
 +{
++  if (PortalPage())
++  {
++    PortalActivate();
++    return;
++  }
 +  if (s_page != Page::Main)
 +  {
 +    if (s_page == Page::Settings && s_settings_selected >= 0 &&
@@ -28989,6 +29197,10 @@ index 0000000..d0d47ec
 +      CopyPageBadges();
 +    s_settings_selected = 0;
 +    break;
++  case MAIN_PORTAL:
++    s_page = Page::Portal;
++    s_settings_selected = 1;  // Slot 1 (row 0 is the title)
++    break;
 +  case MAIN_CHEATS:
 +    s_page = Page::Cheats;
 +    s_cheats.Load(s_game_id, SConfig::GetInstance().GetRevision());
@@ -29021,9 +29233,11 @@ index 0000000..d0d47ec
 +    // The same clean stop as Quit Game (memory cards and the NAND are written as the game saves);
 +    // the app then restarts into this game instead of the menu: a fresh boot, like a console reset.
 +    s_restart = true;
++    PS4Skylanders::CloseAll();  // the figures' files written (they go back on at the next start)
 +    QuitToXMB(system, "restart the game");
 +    break;
 +  case MAIN_QUIT:
++    PS4Skylanders::CloseAll();
 +    QuitToXMB(system, "quit to the XMB");
 +    break;
 +  }
@@ -29515,6 +29729,23 @@ index 0000000..d0d47ec
 +    dl->PathStroke(col, 0, t);
 +    dl->AddLine(ImVec2(c.x, c.y - r * 0.95f), ImVec2(c.x, c.y - r * 0.15f), col, t);
 +    break;
++  case MAIN_PORTAL:
++  {
++    // The portal seen from the side (a ring as a flat ellipse, its base) and a figure on it.
++    dl->PathClear();
++    for (int i = 0; i <= 24; i++)
++    {
++      const float a = i * 6.2831853f / 24.0f;
++      dl->PathLineTo(ImVec2(c.x + std::cos(a) * r * 0.9f, c.y + r * 0.45f + std::sin(a) * r * 0.32f));
++    }
++    dl->PathStroke(col, 0, t);
++    dl->AddLine(ImVec2(c.x - r * 0.9f, c.y + r * 0.45f), ImVec2(c.x - r * 0.75f, c.y + r * 0.9f), col, t);
++    dl->AddLine(ImVec2(c.x + r * 0.9f, c.y + r * 0.45f), ImVec2(c.x + r * 0.75f, c.y + r * 0.9f), col, t);
++    dl->AddCircleFilled(ImVec2(c.x, c.y - r * 0.6f), r * 0.24f, col);
++    dl->AddTriangleFilled(ImVec2(c.x - r * 0.3f, c.y + r * 0.35f), ImVec2(c.x, c.y - r * 0.4f),
++                          ImVec2(c.x + r * 0.3f, c.y + r * 0.35f), col);
++    break;
++  }
 +  default:
 +    dl->AddCircleFilled(c, r * 0.22f, col);
 +    break;
@@ -30384,6 +30615,10 @@ index 0000000..d0d47ec
 +                 item == MAIN_WII_TOUCH)
 +          ToggleWiiRemote(item, direction);
 +      }
++      else if (PortalPage())
++      {
++        PortalJump(direction);
++      }
 +      else
 +      {
 +        ChangeSetting(s_settings_selected, direction);
@@ -30402,6 +30637,11 @@ index 0000000..d0d47ec
 +    else if (combo)
 +    {
 +      Close(system);
++    }
++    else if ((pressed & ORBIS_PAD_BUTTON_SQUARE) && s_page == Page::Portal)
++    {
++      PortalTakeOff();
++      rebuild = true;
 +    }
 +    else if ((pressed & ORBIS_PAD_BUTTON_SQUARE) && s_page == Page::Controls &&
 +             s_ctl_capture_row < 0)
@@ -30424,7 +30664,18 @@ index 0000000..d0d47ec
 +    }
 +    else if (pressed & ORBIS_PAD_BUTTON_CIRCLE)
 +    {
-+      if (s_page != Page::Main)
++      if (s_page == Page::PortalCreate)
++      {
++        OpenPortalPick(s_portal_slot);
++        s_settings_selected = 0;  // on Make a New Figure
++        rebuild = true;
++      }
++      else if (s_page == Page::PortalPick)
++      {
++        BackToPortal();
++        rebuild = true;
++      }
++      else if (s_page != Page::Main)
 +      {
 +        s_page = Page::Main;
 +        rebuild = true;
@@ -31540,11 +31791,11 @@ index 0000000..c539699
 +long Get(const Request& request, const Sink& sink, const Progress& progress, std::string* error);
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-new file mode 100755
-index 0000000..5a11c2f
+new file mode 100644
+index 0000000..4859a4b
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1093 @@
+@@ -0,0 +1,1098 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -31781,6 +32032,11 @@ index 0000000..5a11c2f
 +     {{"both", "Motion + Stick"}, {"motion", "Motion"}, {"stick", "Left Stick"}}, "both", false,
 +     "How the Wii Remote is tilted (steering in Mario Kart Wii): by moving the DualShock 4, with "
 +     "the left stick (without a Nunchuk), or both."},
++    {"skylander_portal", "Portal of Power", "System",
++     {{"auto", "Skylanders Games"}, {"on", "All Wii Games"}, {"off", "Off"}}, "auto", false,
++     "The Skylanders portal, built in: put figures on it from the in-game menu (L3+R3 -> Portal "
++     "of Power). New figures can be made there; dumps of real ones (.sky) go in "
++     "/data/DolphinPS4/Skylanders."},
 +    {"motion_controls", "Motion Controls", "System", {{"on", "On"}, {"off", "Off"}}, "on", false,
 +     "The DualShock 4's motion sensors move the Wii Remote: tilt, swing and shake it."},
 +    {"wii_touchpad", "Touchpad", "System",
@@ -56696,6 +56952,355 @@ index 0000000..3317422
 +void VerifyBeginFromJit(JitPS4* jit, u32 pc);
 +void VerifyExitFromJit(JitPS4* jit, u32 destination);
 +}  // namespace PS4Jit
+diff --git a/Source/Core/DolphinNoGUI/PS4Skylanders.cpp b/Source/Core/DolphinNoGUI/PS4Skylanders.cpp
+new file mode 100644
+index 0000000..4a6235e
+--- /dev/null
++++ b/Source/Core/DolphinNoGUI/PS4Skylanders.cpp
+@@ -0,0 +1,277 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "DolphinNoGUI/PS4Skylanders.h"
++
++#include <algorithm>
++#include <array>
++#include <cstdio>
++#include <filesystem>
++#include <fstream>
++#include <memory>
++#include <mutex>
++#include <optional>
++#include <sstream>
++
++#include "Common/FileUtil.h"
++#include "Core/IOS/USB/Emulated/Skylanders/Skylander.h"
++#include "Core/IOS/USB/Emulated/Skylanders/SkylanderFigure.h"
++#include "Core/System.h"
++
++extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
++
++namespace PS4Skylanders
++{
++namespace
++{
++using IOS::HLE::USB::SkylanderFigure;
++
++constexpr size_t FILE_SIZE = 0x40 * 0x10;
++
++struct Placed
++{
++  u8 portal_slot;    // the portal's own slot (SkylanderPortal::LoadSkylander)
++  std::string file;  // name in the collection folder
++  std::string name;
++};
++
++std::mutex s_mutex;
++std::array<std::optional<Placed>, SLOTS> s_slots;
++
++void Log(const std::string& text)
++{
++  ps4_boot_trace(("skylanders: " + text).c_str());
++}
++
++std::string ListPath()
++{
++  return CollectionDir() + "/portal.txt";
++}
++
++// The figures on the portal ("slot<TAB>file" lines), written whole (a power cut mid-write leaves
++// the old list).
++void SaveList()
++{
++  std::string text;
++  for (int i = 0; i < SLOTS; i++)
++  {
++    if (s_slots[i])
++      text += std::to_string(i) + "\t" + s_slots[i]->file + "\n";
++  }
++  const std::string temporary = ListPath() + ".tmp";
++  if (File::WriteStringToFile(temporary, text))
++    std::rename(temporary.c_str(), ListPath().c_str());
++}
++
++std::string NameFor(u16 id, u16 variant, const std::string& file)
++{
++  const auto found = IOS::HLE::USB::list_skylanders.find(std::make_pair(id, variant));
++  if (found != IOS::HLE::USB::list_skylanders.end())
++    return found->second.name;
++  return std::filesystem::path(file).stem().string();
++}
++
++// With s_mutex held.
++std::string PlaceLocked(int slot, const std::string& file)
++{
++  if (slot < 0 || slot >= SLOTS)
++    return "No such slot";
++  for (int i = 0; i < SLOTS; i++)
++  {
++    if (i != slot && s_slots[i] && s_slots[i]->file == file)
++      return s_slots[i]->name + " is already on the portal";
++  }
++  const std::string path = CollectionDir() + "/" + file;
++  File::IOFile sky_file(path, "r+b");
++  if (!sky_file)
++    return "Can't open " + file;
++  std::array<u8, FILE_SIZE> data;
++  if (!sky_file.ReadBytes(data.data(), data.size()))
++    return file + " is too small to be a figure";
++  auto& portal = Core::System::GetInstance().GetSkylanderPortal();
++  if (s_slots[slot])
++  {
++    portal.RemoveSkylander(s_slots[slot]->portal_slot);
++    s_slots[slot].reset();
++  }
++  const auto [id, variant] = portal.CalculateIDs(data);
++  const u8 portal_slot = portal.LoadSkylander(std::make_unique<SkylanderFigure>(std::move(sky_file)));
++  if (portal_slot == 0xFF)
++    return "The portal is full";
++  s_slots[slot] = Placed{portal_slot, file, NameFor(id, variant, file)};
++  Log("slot " + std::to_string(slot + 1) + ": " + s_slots[slot]->name + " (" + file + ")");
++  return "";
++}
++
++bool IsFigureFile(const std::filesystem::path& path)
++{
++  std::string extension = path.extension().string();
++  std::transform(extension.begin(), extension.end(), extension.begin(),
++                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++  return extension == ".sky" || extension == ".bin" || extension == ".dmp" || extension == ".dump";
++}
++
++// A name a file can have.
++std::string FileSafe(const std::string& name)
++{
++  std::string out;
++  for (const char c : name)
++    out += (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' ||
++            c == '>' || c == '|') ?
++               '-' :
++               c;
++  return out;
++}
++}  // namespace
++
++bool IsSkylandersGame(const std::string& game_id)
++{
++  const std::string prefix = game_id.substr(0, 3);
++  return prefix == "SSP" || prefix == "SKY" || prefix == "SVX" || prefix == "SK8" ||
++         prefix == "SKN";
++}
++
++std::string CollectionDir()
++{
++  return "/data/DolphinPS4/Skylanders";
++}
++
++void Restore()
++{
++  File::CreateFullPath(CollectionDir() + "/");
++  std::ifstream list(ListPath());
++  std::string line;
++  std::lock_guard lock(s_mutex);
++  int restored = 0;
++  while (std::getline(list, line))
++  {
++    const size_t tab = line.find('\t');
++    if (tab == std::string::npos)
++      continue;
++    const int slot = std::atoi(line.substr(0, tab).c_str());
++    const std::string file = line.substr(tab + 1);
++    const std::string error = PlaceLocked(slot, file);
++    if (error.empty())
++      restored++;
++    else
++      Log("not put back: " + error);
++  }
++  Log("portal on, " + std::to_string(restored) + " figure(s) put back");
++}
++
++void CloseAll()
++{
++  std::lock_guard lock(s_mutex);
++  auto& portal = Core::System::GetInstance().GetSkylanderPortal();
++  for (auto& slot : s_slots)
++  {
++    if (slot)
++      portal.RemoveSkylander(slot->portal_slot);  // writes and closes the file
++    slot.reset();
++  }
++}
++
++std::vector<Slot> Slots()
++{
++  std::lock_guard lock(s_mutex);
++  std::vector<Slot> slots(SLOTS);
++  for (int i = 0; i < SLOTS; i++)
++  {
++    if (s_slots[i])
++      slots[i] = {true, s_slots[i]->name, s_slots[i]->file};
++  }
++  return slots;
++}
++
++int OnPortal()
++{
++  std::lock_guard lock(s_mutex);
++  return static_cast<int>(std::count_if(s_slots.begin(), s_slots.end(),
++                                        [](const auto& slot) { return slot.has_value(); }));
++}
++
++std::vector<std::string> CollectionFiles()
++{
++  std::vector<std::string> files;
++  std::error_code error;
++  for (const auto& entry : std::filesystem::directory_iterator(CollectionDir(), error))
++  {
++    if (entry.is_regular_file(error) && IsFigureFile(entry.path()))
++      files.push_back(entry.path().filename().string());
++  }
++  std::sort(files.begin(), files.end());
++  return files;
++}
++
++std::string FigureName(const std::string& file)
++{
++  File::IOFile sky_file(CollectionDir() + "/" + file, "rb");
++  std::array<u8, FILE_SIZE> data;
++  if (!sky_file || !sky_file.ReadBytes(data.data(), data.size()))
++    return std::filesystem::path(file).stem().string();
++  const auto [id, variant] = Core::System::GetInstance().GetSkylanderPortal().CalculateIDs(data);
++  return NameFor(id, variant, file);
++}
++
++std::string Place(int slot, const std::string& file)
++{
++  std::lock_guard lock(s_mutex);
++  const std::string error = PlaceLocked(slot, file);
++  if (error.empty())
++    SaveList();
++  return error;
++}
++
++std::string Remove(int slot)
++{
++  std::lock_guard lock(s_mutex);
++  if (slot < 0 || slot >= SLOTS || !s_slots[slot])
++    return "The slot is empty";
++  Core::System::GetInstance().GetSkylanderPortal().RemoveSkylander(s_slots[slot]->portal_slot);
++  Log("slot " + std::to_string(slot + 1) + ": " + s_slots[slot]->name + " taken off");
++  s_slots[slot].reset();
++  SaveList();
++  return "";
++}
++
++const std::vector<Figure>& Catalog()
++{
++  static const std::vector<Figure> s_catalog = [] {
++    std::vector<Figure> catalog;
++    for (const auto& [ids, data] : IOS::HLE::USB::list_skylanders)
++      catalog.push_back({ids.first, ids.second, data.name, static_cast<int>(data.game)});
++    std::stable_sort(catalog.begin(), catalog.end(), [](const Figure& a, const Figure& b) {
++      return a.game != b.game ? a.game < b.game : a.name < b.name;
++    });
++    return catalog;
++  }();
++  return s_catalog;
++}
++
++const char* GameName(int game)
++{
++  static const char* const NAMES[] = {"Spyro's Adventure", "Giants", "Swap Force", "Trap Team",
++                                      "SuperChargers"};
++  return game >= 0 && game < 5 ? NAMES[game] : "Other";
++}
++
++std::string Create(size_t index, std::string* file)
++{
++  const std::vector<Figure>& catalog = Catalog();
++  if (index >= catalog.size())
++    return "No such figure";
++  const Figure& figure = catalog[index];
++  File::CreateFullPath(CollectionDir() + "/");
++  const std::string base = FileSafe(figure.name);
++  std::string name = base + ".sky";
++  for (int n = 2; File::Exists(CollectionDir() + "/" + name); n++)
++    name = base + " (" + std::to_string(n) + ").sky";
++  SkylanderFigure created(CollectionDir() + "/" + name);
++  if (!created.FileIsOpen() || !created.Create(figure.id, figure.variant))
++    return "Can't make " + name;
++  created.Close();
++  Log("made " + name);
++  *file = name;
++  return "";
++}
++}  // namespace PS4Skylanders
+diff --git a/Source/Core/DolphinNoGUI/PS4Skylanders.h b/Source/Core/DolphinNoGUI/PS4Skylanders.h
+new file mode 100644
+index 0000000..dec8221
+--- /dev/null
++++ b/Source/Core/DolphinNoGUI/PS4Skylanders.h
+@@ -0,0 +1,60 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++// Skylanders: Dolphin's emulated Portal of Power (a USB device the Skylanders games talk to), run
++// from the in-game menu. Figures are files in /data/DolphinPS4/Skylanders (.sky dumps of real
++// figures, or new ones made from the list of known figures); the ones on the portal go back on
++// it the next time a game starts.
++
++#pragma once
++
++#include <cstdint>
++#include <string>
++#include <vector>
++
++namespace PS4Skylanders
++{
++constexpr int SLOTS = 8;
++
++// The Skylanders games on the Wii: Spyro's Adventure, Giants, Swap Force, Trap Team and
++// SuperChargers Racing.
++bool IsSkylandersGame(const std::string& game_id);
++std::string CollectionDir();
++
++// At game start, with the portal switched on: the figures that were on it go back on it.
++void Restore();
++// The game is stopping: the figures' files are written and closed (they stay listed for the
++// next start).
++void CloseAll();
++
++struct Slot
++{
++  bool used = false;
++  std::string name;  // the figure's name (or the file's, for one not in the list)
++  std::string file;  // in the collection folder
++};
++std::vector<Slot> Slots();
++int OnPortal();
++
++// The figure files in the collection folder, by name.
++std::vector<std::string> CollectionFiles();
++// The figure in a file (by its IDs), or the file's name.
++std::string FigureName(const std::string& file);
++
++// "" when done, else why not.
++std::string Place(int slot, const std::string& file);
++std::string Remove(int slot);
++
++// The known figures, by game then name (the index is what Create takes).
++struct Figure
++{
++  uint16_t id;
++  uint16_t variant;
++  std::string name;
++  int game;  // 0 Spyro's Adventure ... 4 SuperChargers
++};
++const std::vector<Figure>& Catalog();
++const char* GameName(int game);
++// A new figure in the collection folder; its file name in *file.
++std::string Create(size_t index, std::string* file);
++}  // namespace PS4Skylanders
 diff --git a/Source/Core/VideoCommon/PS4FrameGen.cpp b/Source/Core/VideoCommon/PS4FrameGen.cpp
 new file mode 100644
 index 0000000..6e27338
