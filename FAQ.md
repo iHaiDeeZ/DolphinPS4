@@ -100,6 +100,12 @@ Pair the Move with the PS4, set *Settings → System → Wii Remote Controller* 
 the Move on **before** you start the game. Press Start + Select together to re-centre the pointer.
 The DualShock 4 then acts as the Nunchuk.
 
+**How do I play Skylanders? I have no portal.**
+The portal is built in (from v04.18). In the game, press L3 + R3 → *Portal of Power*, pick a
+slot, then *Make a New Figure* and choose one. Figures are saved in `/data/DolphinPS4/Skylanders`;
+copies of real figures (`.sky` files) can go there too. Whatever is on the portal stays on it
+the next time you play.
+
 ## Speed and stutter
 
 **Why does a game slow down in busy scenes?**
