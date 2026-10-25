@@ -96,9 +96,11 @@ Yes, in Wii games: *Settings → System → Touchpad*. *Pointer* aims with your 
 swings the Wii Remote with a quick swipe. Clicking the touchpad is still HOME.
 
 **How do I use a PS Move as the Wii Remote?**
-Pair the Move with the PS4, set *Settings → System → Wii Remote Controller* to *Auto*, and turn
-the Move on **before** you start the game. Press Start + Select together to re-centre the pointer.
-The DualShock 4 then acts as the Nunchuk.
+From v04.19. Pair the Move with the PS4 (USB cable, press its PS button, pick the same user as
+your DualShock 4) and set *Settings → System → Wii Remote Controller* to *Auto*. Turn the Move on
+before or during a Wii game; it takes over within a second, and the DualShock 4 becomes the
+Nunchuk. Move = A, T or Circle = B, Cross = 1, Square = 2, Triangle = Minus, Start = Plus. To
+re-centre the pointer, point at the middle of the TV, hold still and press Select.
 
 **How do I play Skylanders? I have no portal.**
 The portal is built in (from v04.18). In the game, press L3 + R3 → *Portal of Power*, pick a
@@ -138,8 +140,9 @@ Open the game's settings and set *Speed Features* to *Compatible*. If it still h
 **A game crashed and Dolphin went back to the game list.**
 Dolphin saves a `crash.log`. Please send it with the files listed below.
 
-**Dolphin crashed when I started a Wii game (firmware 12.02, error CE-34878-0).**
-That came from the PS Move support and is fixed in v04.01. Update the app.
+**Dolphin crashed when I started a Wii game (error CE-34878-0).**
+With *Wii Remote Controller* on *Auto*, that came from the PS Move support. It's fixed in v04.19.
+Update the app.
 
 **How do I report a bug?**
 Turn on *Settings → Diagnostics → All Diagnostics*, play until the problem shows up, then
