@@ -23933,7 +23933,7 @@ index 51c3fff..84544d9 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..7a324bb 100644
+index 3bf40ea..69040ea 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,18 @@
@@ -24284,7 +24284,7 @@ index 3bf40ea..7a324bb 100644
  #endif
        });
  
-@@ -270,7 +561,542 @@ int main(const int argc, char* argv[])
+@@ -270,7 +561,546 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -24326,6 +24326,10 @@ index 3bf40ea..7a324bb 100644
 +    if (on)
 +      PS4Skylanders::Restore();
 +  }
++  // Just Dance (SDN, every region) waits forever at a black screen when the Wii is set to
++  // progressive scan (a bug in the game: https://bugs.dolphin-emu.org/issues/13966).
++  if (std::string_view(ps4_profile_tag).substr(0, 3) == "SDN")
++    Config::SetCurrent(Config::SYSCONF_PROGRESSIVE_SCAN, false);  // this run only
 +  Config::SetBase(Config::MAIN_OSD_MESSAGES, true);
 +  // Cheats chosen in the XMB / in-game menu (only enabled codes run; PS4Cheats.cpp).
 +  Config::SetBase(Config::MAIN_ENABLE_CHEATS, true);
@@ -24827,7 +24831,7 @@ index 3bf40ea..7a324bb 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +1110,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +1114,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -24843,7 +24847,7 @@ index 3bf40ea..7a324bb 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +1138,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +1142,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -43789,10 +43793,10 @@ index 8f7f4ba..34feb8e 100644
  {
 diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
 new file mode 100644
-index 0000000..d47377c
+index 0000000..b3df183
 --- /dev/null
 +++ b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
-@@ -0,0 +1,785 @@
+@@ -0,0 +1,798 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -44411,19 +44415,32 @@ index 0000000..d47377c
 +    return it->second;
 +  if (!ps4_move_enabled)
 +    return -1;
-+  // libSceMove is linked into the app (loaded with it), so no sceSysmoduleLoadModule. Each step is
-+  // traced first, so a crash inside the library shows where.
++  // Each step is traced first, so a crash inside the library shows where.
 +  static int s_init = 1;
 +  if (s_init == 1)
 +  {
-+    // sceMoveInit killed the app on some consoles (a firmware 12.02 report: CE-34878-0 at every
-+    // Wii game start with Wii Remote Controller on Auto). A marker file is left while it runs: if
-+    // the app dies inside it, the next start finds the marker and leaves PS Move alone for good.
-+    static const char* const MARKER = "/data/DolphinPS4/ps-move-init-crashed";
++    // libSceMove isn't loaded with the app: calling sceMoveInit without loading it first killed
++    // the app with PRX_NOT_RESOLVED_FUNCTION (CE-34878-0, the firmware 12.02 report and every
++    // console up to v60.55). The marker those crashes left behind is removed.
++    unlink("/data/DolphinPS4/ps-move-init-crashed");
++    const int module = sceSysmoduleLoadModule(ORBIS_SYSMODULE_MOVE);
++    {
++      char line[64];
++      snprintf(line, sizeof(line), "PS Move: libSceMove %#x", static_cast<unsigned>(module));
++      ps4_boot_trace(line);
++    }
++    if (module != 0)
++    {
++      s_init = -1;
++      return -1;
++    }
++    // A marker file is left while sceMoveInit runs: if the app dies inside it, the next start
++    // finds the marker and leaves PS Move alone for good.
++    static const char* const MARKER = "/data/DolphinPS4/ps-move-init-crashed-2";
 +    if (access(MARKER, F_OK) == 0)
 +    {
 +      ps4_boot_trace("PS Move: off (sceMoveInit ended the app before; delete "
-+                     "/data/DolphinPS4/ps-move-init-crashed to try again)");
++                     "/data/DolphinPS4/ps-move-init-crashed-2 to try again)");
 +      s_init = -1;
 +      return -1;
 +    }
