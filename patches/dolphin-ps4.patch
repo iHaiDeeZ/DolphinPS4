@@ -23933,7 +23933,7 @@ index 51c3fff..84544d9 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..7a324bb 100644
+index 3bf40ea..69040ea 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,18 @@
@@ -24284,7 +24284,7 @@ index 3bf40ea..7a324bb 100644
  #endif
        });
  
-@@ -270,7 +561,542 @@ int main(const int argc, char* argv[])
+@@ -270,7 +561,546 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -24326,6 +24326,10 @@ index 3bf40ea..7a324bb 100644
 +    if (on)
 +      PS4Skylanders::Restore();
 +  }
++  // Just Dance (SDN, every region) waits forever at a black screen when the Wii is set to
++  // progressive scan (a bug in the game: https://bugs.dolphin-emu.org/issues/13966).
++  if (std::string_view(ps4_profile_tag).substr(0, 3) == "SDN")
++    Config::SetCurrent(Config::SYSCONF_PROGRESSIVE_SCAN, false);  // this run only
 +  Config::SetBase(Config::MAIN_OSD_MESSAGES, true);
 +  // Cheats chosen in the XMB / in-game menu (only enabled codes run; PS4Cheats.cpp).
 +  Config::SetBase(Config::MAIN_ENABLE_CHEATS, true);
@@ -24827,7 +24831,7 @@ index 3bf40ea..7a324bb 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +1110,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +1114,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -24843,7 +24847,7 @@ index 3bf40ea..7a324bb 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +1138,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +1142,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -25208,11 +25212,11 @@ index 0000000..0ab9db5
 +};
 +}  // namespace PS4Cheats
 diff --git a/Source/Core/DolphinNoGUI/PS4Controls.cpp b/Source/Core/DolphinNoGUI/PS4Controls.cpp
-new file mode 100755
-index 0000000..d015aff
+new file mode 100644
+index 0000000..d2c70c2
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Controls.cpp
-@@ -0,0 +1,852 @@
+@@ -0,0 +1,860 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -25604,6 +25608,8 @@ index 0000000..d015aff
 +  const size_t at = expression.find(" | `PS4/0/PS Move");
 +  if (at != std::string::npos)
 +    expression.erase(at);
++  else if (expression.rfind("`PS4/0/PS Move", 0) == 0)  // the Move alone on that button
++    expression.clear();
 +  return expression;
 +}
 +
@@ -25672,10 +25678,12 @@ index 0000000..d015aff
 +  constexpr const char* ACCEL[] = {"Up", "Down", "Left", "Right", "Forward", "Backward"};
 +  constexpr const char* GYRO[] = {"Pitch Up", "Pitch Down", "Roll Left", "Roll Right", "Yaw Left",
 +                                  "Yaw Right"};
-+  // Wii Remote button -> the Move's.
-+  constexpr const char* MOVE_BUTTONS[][2] = {{"Buttons/A", "Move"},  {"Buttons/B", "T"},
-+                                             {"Buttons/1", "Cross"}, {"Buttons/2", "Circle"},
-+                                             {"Buttons/-", "Select"}, {"Buttons/+", "Start"}};
++  // Wii Remote button -> the Move's (as Porpoise on the PS5): Circle is a second B, Select only
++  // re-centres the pointer (below), so Minus moves to Triangle.
++  constexpr const char* MOVE_BUTTONS[][3] = {
++      {"Buttons/A", "Move", nullptr},    {"Buttons/B", "T", "Circle"},
++      {"Buttons/1", "Cross", nullptr},   {"Buttons/2", "Square", nullptr},
++      {"Buttons/-", "Triangle", nullptr}, {"Buttons/+", "Start", nullptr}};
 +  for (int player = 1; player <= 4; player++)
 +  {
 +    Common::IniFile::Section* section = ini.GetSection("Wiimote" + std::to_string(player));
@@ -25684,13 +25692,17 @@ index 0000000..d015aff
 +    const bool move = moves[player - 1] && controller != "ds4";
 +    const std::string device = "PS4/0/PS Move " + std::to_string(player);
 +    auto from_move = [&](const std::string& input) { return "`" + device + ":" + input + "`"; };
-+    for (const auto& [key, input] : MOVE_BUTTONS)
++    for (const auto& [key, input, second] : MOVE_BUTTONS)
 +    {
 +      std::string value;
 +      section->Get(key, &value);
 +      value = WithoutMove(value);
 +      if (move)
-+        value = value.empty() ? from_move(input) : value + " | " + from_move(input);
++      {
++        const std::string inputs =
++            from_move(input) + (second ? " | " + from_move(second) : std::string());
++        value = value.empty() ? inputs : value + " | " + inputs;
++      }
 +      section->Set(key, value);
 +    }
 +    // Tilt With: Left Stick leaves the accelerometer out (the stick tilts the Wii Remote alone).
@@ -25707,7 +25719,7 @@ index 0000000..d015aff
 +      section->Set(std::string("IMUGyroscope/") + direction,
 +                   move ? from_move(input) : motion ? "`" + input + "`" : std::string());
 +    }
-+    // The pointer: the Move's gyroscope (Start + Select recentres it); with Pointer: Motion the
++    // The pointer: the Move's gyroscope (Select re-centres it); with Pointer: Motion the
 +    // DualShock 4's own (re-centred by the player's Pointer Re-centre button); else the right
 +    // stick.
 +    // Touchpad: Pointer - the finger aims (the motion pointer would override it); Swing - a
@@ -25744,7 +25756,7 @@ index 0000000..d015aff
 +                                                                                   "False"));
 +    if (move)
 +    {
-+      section->Set("IMUIR/Recenter", from_move("Start") + " & " + from_move("Select"));
++      section->Set("IMUIR/Recenter", from_move("Select"));
 +    }
 +    else
 +    {
@@ -41447,10 +41459,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..91aa124
+index 0000000..81f1e97
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,2209 @@
+@@ -0,0 +1,2251 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -41540,6 +41552,8 @@ index 0000000..91aa124
 +
 +// The signed-in users (defined below; the main loop watches them for players joining).
 +std::array<int32_t, 4> PS4LoginUsers();
++// A PS Move turned on or off mid-game (defined below).
++void PS4CheckMoves();
 +
 +extern "C" int sceSystemServiceLoadExec(const char* path, char* const argv[]);
 +extern "C" void ps4_boot_trace(const char* stage);
@@ -41997,6 +42011,7 @@ index 0000000..91aa124
 +        g_controller_interface.RefreshDevices();
 +        ApplyPS4Players();
 +      }
++      PS4CheckMoves();
 +    }
 +    {
 +      const auto now = std::chrono::steady_clock::now();
@@ -43171,6 +43186,64 @@ index 0000000..91aa124
 +  return out;
 +}
 +
++// Which players have a PS Move on (players in the order PS4Pad uses: the user who started the
++// app, then the others). Only in Wii games with Wii Remote Controller on Auto.
++static std::array<bool, 4> s_moves{};
++
++static std::array<bool, 4> FindMoves()
++{
++  std::array<bool, 4> moves{};
++  if (!ps4_move_enabled)
++    return moves;
++  int32_t initial = -1;
++  sceUserServiceGetInitialUser(&initial);
++  std::vector<int32_t> players;
++  if (initial >= 0)
++    players.push_back(initial);
++  for (const int32_t user : PS4LoginUsers())
++  {
++    if (user >= 0 && user != initial && players.size() < 4)
++      players.push_back(user);
++  }
++  for (size_t i = 0; i < players.size(); i++)
++    moves[i] = ps4_move_connected(players[i]) != 0;
++  return moves;
++}
++
++static void TraceMoves(const std::array<bool, 4>& moves)
++{
++  std::string found;
++  for (size_t i = 0; i < moves.size(); i++)
++  {
++    if (moves[i])
++      found += " " + std::to_string(i + 1);
++  }
++  Platform::BootTrace(("PS Move: players with one on:" + (found.empty() ? std::string(" none") : found)).c_str());
++}
++
++static void ApplyMoves()
++{
++  PS4Controls::SetWiiMotion(Platform::GetPS4Option("wii_controller", "ds4"),
++                            Platform::GetPS4Option("motion_controls", "on") == "on", s_moves,
++                            Platform::GetPS4Option("wii_pointer", "motion") == "motion");
++}
++
++// The main loop, about once a second: a Move turned on mid-game becomes its player's Wii Remote
++// (and one turned off hands back to the DualShock 4), without restarting the game.
++void PS4CheckMoves()
++{
++  if (!s_wii_game || !ps4_move_enabled)
++    return;
++  const auto moves = FindMoves();
++  if (moves == s_moves)
++    return;
++  s_moves = moves;
++  TraceMoves(moves);
++  g_controller_interface.RefreshDevices();
++  ApplyMoves();
++  Wiimote::LoadConfig();
++}
++
 +// A downloaded update (PS4Updater.h) newer than the installed package: the installed program
 +// starts it with sceSystemServiceLoadExec, as the PS4 Homebrew Store starts its updates. The
 +// update knows itself by its built-in version. app-starting.txt is written before the switch and
@@ -43580,34 +43653,15 @@ index 0000000..91aa124
 +  }
 +  // PS Move controllers (players in the order PS4Pad uses: the user who started the app, then
 +  // the others) and motion controls for the Wii Remote. The Move is looked for only in Wii games
-+  // with Wii Remote Controller on Auto.
++  // with Wii Remote Controller on Auto (at the start, then by PS4CheckMoves).
 +  if (s_wii_game)
 +  {
-+    std::array<bool, 4> moves{};
 +    ps4_move_enabled = GetPS4Option("wii_controller", "ds4") == "auto";
-+    int32_t initial = -1;
-+    sceUserServiceGetInitialUser(&initial);
-+    std::vector<int32_t> players;
-+    if (initial >= 0)
-+      players.push_back(initial);
-+    for (const int32_t user : PS4LoginUsers())
-+    {
-+      if (user >= 0 && user != initial && players.size() < 4)
-+        players.push_back(user);
-+    }
-+    std::string found;
-+    for (size_t i = 0; i < players.size() && ps4_move_enabled; i++)
-+    {
-+      moves[i] = ps4_move_connected(players[i]) != 0;
-+      if (moves[i])
-+        found += " " + std::to_string(i + 1);
-+    }
++    s_moves = FindMoves();
 +    if (ps4_move_enabled)
-+      BootTrace(("PS Move: players with one on:" + (found.empty() ? std::string(" none") : found)).c_str());
++      TraceMoves(s_moves);
 +    PS4Controls::SetWiiTouchpad(GetPS4Option("wii_touchpad", "off"));
-+    PS4Controls::SetWiiMotion(GetPS4Option("wii_controller", "ds4"),
-+                              GetPS4Option("motion_controls", "on") == "on", moves,
-+                              GetPS4Option("wii_pointer", "motion") == "motion");
++    ApplyMoves();
 +  }
 +  // Speed Features: Compatible turns off the command-stream shortcuts (freezes and missing menu
 +  // items in Crash Tag Team Racing and FIFA Street 2 came from them).
@@ -43739,10 +43793,10 @@ index 8f7f4ba..34feb8e 100644
  {
 diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
 new file mode 100644
-index 0000000..09cfc12
+index 0000000..b3df183
 --- /dev/null
 +++ b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
-@@ -0,0 +1,723 @@
+@@ -0,0 +1,798 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -44234,12 +44288,12 @@ index 0000000..09cfc12
 +    AddInput(new Motion("Accel Right",    m_state.accelerometer[0], GRAVITY));
 +    AddInput(new Motion("Accel Forward",  m_state.accelerometer[1], GRAVITY));
 +    AddInput(new Motion("Accel Backward", m_state.accelerometer[1], -GRAVITY));
-+    AddInput(new Motion("Gyro Pitch Up",   m_state.gyro[0], 1.0));
-+    AddInput(new Motion("Gyro Pitch Down", m_state.gyro[0], -1.0));
-+    AddInput(new Motion("Gyro Roll Left",  m_state.gyro[1], -1.0));
-+    AddInput(new Motion("Gyro Roll Right", m_state.gyro[1], 1.0));
-+    AddInput(new Motion("Gyro Yaw Left",   m_state.gyro[2], 1.0));
-+    AddInput(new Motion("Gyro Yaw Right",  m_state.gyro[2], -1.0));
++    AddInput(new Motion("Gyro Pitch Up",   m_gyro[0], 1.0));
++    AddInput(new Motion("Gyro Pitch Down", m_gyro[0], -1.0));
++    AddInput(new Motion("Gyro Roll Left",  m_gyro[1], -1.0));
++    AddInput(new Motion("Gyro Roll Right", m_gyro[1], 1.0));
++    AddInput(new Motion("Gyro Yaw Left",   m_gyro[2], 1.0));
++    AddInput(new Motion("Gyro Yaw Right",  m_gyro[2], -1.0));
 +    AddOutput(new Rumble(m_handle));
 +    // clang-format on
 +    // The ball in the player's colour (Wii Remote LEDs: blue, red, green, pink).
@@ -44276,7 +44330,20 @@ index 0000000..09cfc12
 +                 state.accelerometer[2], state.gyro[0], state.gyro[1], state.gyro[2]);
 +        ps4_boot_trace(line);
 +      }
++      if (state.timestamp != m_state.timestamp)
++      {
++        for (int axis = 0; axis < 3; axis++)
++          m_gyro_history[m_history_next][axis] = state.gyro[axis];
++        m_history_next = (m_history_next + 1) % HISTORY;
++        m_history_count = std::min(m_history_count + 1, HISTORY);
++      }
++      // Select (which re-centres the pointer) also zeroes the gyroscope if the Move was held
++      // still, so the pointer stops creeping (as Porpoise on the PS5).
++      if ((state.buttons & MOVE_SELECT) && !(m_state.buttons & MOVE_SELECT))
++        ZeroGyro();
 +      m_state = state;
++      for (int axis = 0; axis < 3; axis++)
++        m_gyro[axis] = m_state.gyro[axis] - m_gyro_zero[axis];
 +    }
 +    else
 +    {
@@ -44287,9 +44354,52 @@ index 0000000..09cfc12
 +  }
 +
 +private:
++  static constexpr int HISTORY = 32;
++
++  void ZeroGyro()
++  {
++    if (m_history_count < 16)
++      return;
++    float mean[3]{}, variance[3]{};
++    for (int i = 0; i < m_history_count; i++)
++    {
++      for (int axis = 0; axis < 3; axis++)
++        mean[axis] += m_gyro_history[i][axis] / m_history_count;
++    }
++    for (int i = 0; i < m_history_count; i++)
++    {
++      for (int axis = 0; axis < 3; axis++)
++      {
++        const float d = m_gyro_history[i][axis] - mean[axis];
++        variance[axis] += d * d / m_history_count;
++      }
++    }
++    for (int axis = 0; axis < 3; axis++)
++    {
++      if (!std::isfinite(mean[axis]) || std::abs(mean[axis]) > 0.08f || variance[axis] > 0.0004f)
++        return;  // moving: keep the old zero
++    }
++    for (int axis = 0; axis < 3; axis++)
++      m_gyro_zero[axis] = mean[axis];
++    if (m_zero_logs < 5)
++    {
++      m_zero_logs++;
++      char line[128];
++      snprintf(line, sizeof(line), "%s gyro zero %.4f %.4f %.4f", m_name.c_str(), mean[0], mean[1],
++               mean[2]);
++      ps4_boot_trace(line);
++    }
++  }
++
 +  const int32_t m_handle;
 +  const std::string m_name;
 +  MoveState m_state{};
++  float m_gyro[3]{};  // less m_gyro_zero
++  float m_gyro_zero[3]{};
++  float m_gyro_history[HISTORY][3]{};
++  int m_history_next = 0;
++  int m_history_count = 0;
++  int m_zero_logs = 0;
 +  uint16_t m_logged_buttons = 0;
 +  int m_button_logs = 0;
 +  int m_reads = 0;
@@ -44305,19 +44415,32 @@ index 0000000..09cfc12
 +    return it->second;
 +  if (!ps4_move_enabled)
 +    return -1;
-+  // libSceMove is linked into the app (loaded with it), so no sceSysmoduleLoadModule. Each step is
-+  // traced first, so a crash inside the library shows where.
++  // Each step is traced first, so a crash inside the library shows where.
 +  static int s_init = 1;
 +  if (s_init == 1)
 +  {
-+    // sceMoveInit killed the app on some consoles (a firmware 12.02 report: CE-34878-0 at every
-+    // Wii game start with Wii Remote Controller on Auto). A marker file is left while it runs: if
-+    // the app dies inside it, the next start finds the marker and leaves PS Move alone for good.
-+    static const char* const MARKER = "/data/DolphinPS4/ps-move-init-crashed";
++    // libSceMove isn't loaded with the app: calling sceMoveInit without loading it first killed
++    // the app with PRX_NOT_RESOLVED_FUNCTION (CE-34878-0, the firmware 12.02 report and every
++    // console up to v60.55). The marker those crashes left behind is removed.
++    unlink("/data/DolphinPS4/ps-move-init-crashed");
++    const int module = sceSysmoduleLoadModule(ORBIS_SYSMODULE_MOVE);
++    {
++      char line[64];
++      snprintf(line, sizeof(line), "PS Move: libSceMove %#x", static_cast<unsigned>(module));
++      ps4_boot_trace(line);
++    }
++    if (module != 0)
++    {
++      s_init = -1;
++      return -1;
++    }
++    // A marker file is left while sceMoveInit runs: if the app dies inside it, the next start
++    // finds the marker and leaves PS Move alone for good.
++    static const char* const MARKER = "/data/DolphinPS4/ps-move-init-crashed-2";
 +    if (access(MARKER, F_OK) == 0)
 +    {
 +      ps4_boot_trace("PS Move: off (sceMoveInit ended the app before; delete "
-+                     "/data/DolphinPS4/ps-move-init-crashed to try again)");
++                     "/data/DolphinPS4/ps-move-init-crashed-2 to try again)");
 +      s_init = -1;
 +      return -1;
 +    }
@@ -44336,12 +44459,18 @@ index 0000000..09cfc12
 +  }
 +  if (s_init != 0)
 +    return -1;
-+  char line[64];
-+  snprintf(line, sizeof(line), "PS Move: open user %#x", static_cast<unsigned>(user));
-+  ps4_boot_trace(line);
++  // Tried again about once a second while it fails (a Move turned on mid-game); traced when the
++  // answer changes.
++  static std::map<int32_t, int32_t> s_last_open;
 +  const int32_t handle = sceMoveOpen(user, 0, 0);
-+  snprintf(line, sizeof(line), "PS Move: handle %#x", static_cast<unsigned>(handle));
-+  ps4_boot_trace(line);
++  if (const auto it = s_last_open.find(user); it == s_last_open.end() || it->second != handle)
++  {
++    s_last_open[user] = handle;
++    char line[80];
++    snprintf(line, sizeof(line), "PS Move: open user %#x: handle %#x", static_cast<unsigned>(user),
++             static_cast<unsigned>(handle));
++    ps4_boot_trace(line);
++  }
 +  if (handle >= 0)
 +    s_move_handles[user] = handle;
 +  return handle;
