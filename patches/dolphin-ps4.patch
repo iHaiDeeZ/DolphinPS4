@@ -23933,7 +23933,7 @@ index 51c3fff..84544d9 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..69040ea 100644
+index 3bf40ea..3da32b6 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,18 @@
@@ -23987,7 +23987,7 @@ index 3bf40ea..69040ea 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +56,255 @@
+@@ -31,6 +56,256 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -24060,6 +24060,7 @@ index 3bf40ea..69040ea 100644
 +extern "C" int ps4_game_fprf;                      // Core/PowerPC/JitPS4/Jit.cpp
 +extern "C" char ps4_profile_tag[32];               // port/ps4_sampler.cpp: the game's ID
 +extern "C" int ps4_zoom_letterbox;                 // VideoCommon/Present.cpp
++extern "C" int ps4_vibration;  // InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
 +extern "C" char ps4_game_hle_only[64];             // Core/HLE/HLE_PS4Games.cpp
 +extern "C" int ps4_auto_clock, ps4_auto_clock_min, ps4_auto_clock_max;  // PlatformPS4.cpp
 +extern "C" size_t sceKernelGetDirectMemorySize();  // libkernel
@@ -24243,7 +24244,7 @@ index 3bf40ea..69040ea 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +447,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +448,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -24254,7 +24255,7 @@ index 3bf40ea..69040ea 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +462,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +463,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -24273,7 +24274,7 @@ index 3bf40ea..69040ea 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +494,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +495,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -24284,7 +24285,7 @@ index 3bf40ea..69040ea 100644
  #endif
        });
  
-@@ -270,7 +561,546 @@ int main(const int argc, char* argv[])
+@@ -270,7 +562,548 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -24662,6 +24663,8 @@ index 3bf40ea..69040ea 100644
 +    ps4_game_hle = Platform::GetPS4Option("game_hle", "on") == "on";
 +    // zoom=letterbox: fill a 16:9 TV with a game's letterboxed 4:3 picture (VideoCommon/Present.cpp).
 +    ps4_zoom_letterbox = Platform::GetPS4Option("zoom", "off") == "letterbox";
++    // vibration: the rumble strength in percent (InputCommon/.../PS4Pad/PS4Pad.cpp).
++    ps4_vibration = std::atoi(Platform::GetPS4Option("vibration", "100").c_str());
 +    // manual_texture_sampling=on: Dolphin's "Manual Texture Sampling" (exact texture lookups;
 +    // EA's VP6 videos need it - FIFA Street 2).
 +    Config::SetBase(Config::GFX_HACK_FAST_TEXTURE_SAMPLING,
@@ -24831,7 +24834,7 @@ index 3bf40ea..69040ea 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +1114,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +1117,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -24847,7 +24850,7 @@ index 3bf40ea..69040ea 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +1142,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +1145,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -25213,10 +25216,10 @@ index 0000000..0ab9db5
 +}  // namespace PS4Cheats
 diff --git a/Source/Core/DolphinNoGUI/PS4Controls.cpp b/Source/Core/DolphinNoGUI/PS4Controls.cpp
 new file mode 100644
-index 0000000..d2c70c2
+index 0000000..64b9156
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Controls.cpp
-@@ -0,0 +1,860 @@
+@@ -0,0 +1,862 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -25679,11 +25682,13 @@ index 0000000..d2c70c2
 +  constexpr const char* GYRO[] = {"Pitch Up", "Pitch Down", "Roll Left", "Roll Right", "Yaw Left",
 +                                  "Yaw Right"};
 +  // Wii Remote button -> the Move's (as Porpoise on the PS5): Circle is a second B, Select only
-+  // re-centres the pointer (below), so Minus moves to Triangle.
++  // re-centres the pointer (below), so Minus moves to Triangle. The Wii Remote's rumble goes to
++  // the Move's motor as well as the DualShock 4's.
 +  constexpr const char* MOVE_BUTTONS[][3] = {
-+      {"Buttons/A", "Move", nullptr},    {"Buttons/B", "T", "Circle"},
-+      {"Buttons/1", "Cross", nullptr},   {"Buttons/2", "Square", nullptr},
-+      {"Buttons/-", "Triangle", nullptr}, {"Buttons/+", "Start", nullptr}};
++      {"Buttons/A", "Move", nullptr},     {"Buttons/B", "T", "Circle"},
++      {"Buttons/1", "Cross", nullptr},    {"Buttons/2", "Square", nullptr},
++      {"Buttons/-", "Triangle", nullptr}, {"Buttons/+", "Start", nullptr},
++      {"Rumble/Motor", "Motor", nullptr}};
 +  for (int player = 1; player <= 4; player++)
 +  {
 +    Common::IniFile::Section* section = ini.GetSection("Wiimote" + std::to_string(player));
@@ -31804,10 +31809,10 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100644
-index 0000000..4859a4b
+index 0000000..518ef9c
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1098 @@
+@@ -0,0 +1,1105 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -31836,6 +31841,7 @@ index 0000000..4859a4b
 +extern "C" int ps4_show_fps;        // VideoCommon/Present.cpp
 +extern "C" int ps4_bezel_mode;      // VideoCommon/Present.cpp
 +extern "C" int ps4_zoom_letterbox;  // VideoCommon/Present.cpp
++extern "C" int ps4_vibration;       // InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
 +extern "C" int ps4_fps_limit;       // VideoCommon/Present.cpp
 +extern "C" int ps4_frame_gen;       // VideoCommon/Present.cpp
 +extern "C" int ps4_auto_clock;      // DolphinNoGUI/PlatformPS4.cpp
@@ -32049,6 +32055,10 @@ index 0000000..4859a4b
 +     "The Skylanders portal, built in: put figures on it from the in-game menu (L3+R3 -> Portal "
 +     "of Power). New figures can be made there; dumps of real ones (.sky) go in "
 +     "/data/DolphinPS4/Skylanders."},
++    {"vibration", "Vibration", "System",
++     {{"100", "Strong"}, {"60", "Medium"}, {"30", "Light"}, {"0", "Off"}}, "100", true,
++     "How strongly the controller vibrates when the game rumbles (the DualShock 4, and the PS "
++     "Move in Wii games)."},
 +    {"motion_controls", "Motion Controls", "System", {{"on", "On"}, {"off", "Off"}}, "on", false,
 +     "The DualShock 4's motion sensors move the Wii Remote: tilt, swing and shake it."},
 +    {"wii_touchpad", "Touchpad", "System",
@@ -32556,6 +32566,8 @@ index 0000000..4859a4b
 +  }
 +  else if (key == "zoom")
 +    ps4_zoom_letterbox = value == "letterbox";
++  else if (key == "vibration")
++    ps4_vibration = std::atoi(value.c_str());
 +  else if (key == "widescreen_hack")
 +    Config::SetBase(Config::GFX_WIDESCREEN_HACK, on);
 +  else if (key == "crop")
@@ -43793,10 +43805,10 @@ index 8f7f4ba..34feb8e 100644
  {
 diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
 new file mode 100644
-index 0000000..b3df183
+index 0000000..21f676d
 --- /dev/null
 +++ b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
-@@ -0,0 +1,798 @@
+@@ -0,0 +1,822 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -43836,6 +43848,30 @@ index 0000000..b3df183
 +// GameCube ports / Wii Remotes.
 +extern "C" int ps4_pad_count;
 +int ps4_pad_count = 0;
++// Settings -> System -> Vibration: how strongly the controllers vibrate, in percent (0: off).
++extern "C" int ps4_vibration;
++int ps4_vibration = 100;
++extern "C" void ps4_boot_trace(const char* line);
++
++namespace
++{
++// The game's rumble (0..1) as a motor value, at the Vibration setting's strength. The first
++// rumble a game sends is traced, so "it doesn't vibrate" shows whether the game asked at all.
++uint8_t MotorValue(double state, const char* controller)
++{
++  static bool s_traced = false;
++  if (state > 0 && !s_traced)
++  {
++    s_traced = true;
++    char line[96];
++    snprintf(line, sizeof(line), "vibration: first rumble from the game (%s, strength %d%%)",
++             controller, ps4_vibration);
++    ps4_boot_trace(line);
++  }
++  return static_cast<uint8_t>(std::clamp(state, 0.0, 1.0) * std::clamp(ps4_vibration, 0, 100) *
++                              255 / 100);
++}
++}  // namespace
 +
 +// libScePad / libSceMove calls the OpenOrbis headers only have as stubs (no parameters). The
 +// Move's state layout follows shadPS4 (src/core/libraries/move/move.h).
@@ -44179,7 +44215,7 @@ index 0000000..b3df183
 +
 +  void SetMotor(bool large, ControlState state)
 +  {
-+    const u8 value = static_cast<u8>(std::clamp(state, 0.0, 1.0) * 255);
++    const u8 value = MotorValue(state, "DualShock 4");
 +    if (large)
 +      m_vibration.lgMotor = value;
 +    else
@@ -44260,7 +44296,7 @@ index 0000000..b3df183
 +    std::string GetName() const override { return "Motor"; }
 +    void SetState(ControlState state) override
 +    {
-+      sceMoveSetVibration(m_handle, static_cast<uint8_t>(std::clamp(state, 0.0, 1.0) * 255));
++      sceMoveSetVibration(m_handle, MotorValue(state, "PS Move"));
 +    }
 +
 +  private:
