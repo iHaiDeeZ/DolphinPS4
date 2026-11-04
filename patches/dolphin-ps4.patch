@@ -41479,10 +41479,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..c67fb9e
+index 0000000..2a25911
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,2254 @@
+@@ -0,0 +1,2279 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -42132,6 +42132,11 @@ index 0000000..c67fb9e
 +      // raise for about a minute.
 +      static int s_raised_from = -1, s_lag_block_checks = 0;
 +      static double s_fps_before_raise = 0.0;
++      // Each lowering is checked too: a game whose work doesn't shrink with the clock (Super Mario
++      // Galaxy: the same 83% speed at 40, 50, 75 and 100%, limited by the video thread) gained
++      // nothing and ran with 40% of the GameCube's CPU -> back up, and no lowering for ~2 minutes.
++      static int s_lowered_from = -1, s_lower_block_checks = 0;
++      static double s_speed_before_lower = 0.0;
 +      const double fps = perf.GetFPS();
 +      if (s_lag_floor_checks > 0 && --s_lag_floor_checks == 0)
 +        s_lag_floor = 0;
@@ -42145,6 +42150,8 @@ index 0000000..c67fb9e
 +      }
 +      if (s_lag_block_checks > 0)
 +        s_lag_block_checks--;
++      if (s_lower_block_checks > 0)
++        s_lower_block_checks--;
 +      const bool running = Core::GetState(system) == Core::State::Running && speed > 0.1;
 +      bool reverted = false;
 +      if (running && s_raised_from >= 0 && s_since_change >= 2)
@@ -42164,6 +42171,21 @@ index 0000000..c67fb9e
 +        }
 +        s_raised_from = -1;
 +      }
++      if (running && !reverted && s_lowered_from >= 0 && s_since_change >= 3)
++      {
++        if (speed < s_speed_before_lower + 0.03)
++        {
++          char line[160];
++          snprintf(line, sizeof(line),
++                   "auto clock: lowering to %d%% didn't help (speed %.0f%%, was %.0f%%) -> %d%%",
++                   clock, speed * 100.0, s_speed_before_lower * 100.0, s_lowered_from);
++          BootTrace(line);
++          clock = s_lowered_from;
++          s_lower_block_checks = 120;
++          reverted = true;
++        }
++        s_lowered_from = -1;
++      }
 +      const int floor = std::max(ps4_auto_clock_min, s_lag_floor);
 +      if (running && !reverted)
 +      {
@@ -42182,12 +42204,15 @@ index 0000000..c67fb9e
 +                   s_normal_fps, clock);
 +          BootTrace(line);
 +        }
-+        else if (speed < 0.97 && max_speed < 1.0 && cpu_chain >= 0.90 && clock > floor)
++        else if (speed < 0.97 && max_speed < 1.0 && cpu_chain >= 0.90 && clock > floor &&
++                 s_lower_block_checks == 0 && s_lowered_from < 0)
 +        {
 +          // Straight to what the CPU thread sustains (its speed scales with the clock), not 5
 +          // points per second: a match starting at a clock raised during a menu stuttered for
 +          // ~15 s in Super Smash Bros. Melee while the clock came down.
 +          const int target = static_cast<int>(clock * max_speed * 0.98) / 5 * 5;
++          s_lowered_from = clock;
++          s_speed_before_lower = speed;
 +          clock = std::max(floor, std::min(clock - 5, target));
 +        }
 +        else if (s_since_change >= 3 && perf.GetFPS() > 5.0 &&
@@ -57154,7 +57179,7 @@ index 0000000..3317422
 +}  // namespace PS4Jit
 diff --git a/Source/Core/DolphinNoGUI/PS4Hook.cpp b/Source/Core/DolphinNoGUI/PS4Hook.cpp
 new file mode 100644
-index 0000000..5e7d514
+index 0000000..ef778d3
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Hook.cpp
 @@ -0,0 +1,900 @@
@@ -57228,7 +57253,7 @@ index 0000000..5e7d514
 +// Every boot trace line, in a ring the tap fills without locking (it runs on any thread, also in
 +// signal handlers). A reader can rarely see a slot being rewritten: one garbled line.
 +constexpr uint32_t TRACE_LINES = 512;
-+constexpr size_t TRACE_WIDTH = 480;
++constexpr size_t TRACE_WIDTH = 2048;  // the monitor line is ~1.5 KB
 +char s_trace[TRACE_LINES][TRACE_WIDTH];
 +std::atomic<uint32_t> s_trace_pos{0};
 +std::atomic<bool> s_monitor_in_trace{false};
