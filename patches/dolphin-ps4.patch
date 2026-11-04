@@ -23890,7 +23890,7 @@ index 6851466..908e167 100644
  }  // namespace DiscIO
  
 diff --git a/Source/Core/DolphinNoGUI/CMakeLists.txt b/Source/Core/DolphinNoGUI/CMakeLists.txt
-index 51c3fff..84544d9 100644
+index 51c3fff..ad6c0a9 100644
 --- a/Source/Core/DolphinNoGUI/CMakeLists.txt
 +++ b/Source/Core/DolphinNoGUI/CMakeLists.txt
 @@ -23,6 +23,30 @@ if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
@@ -23903,7 +23903,7 @@ index 51c3fff..84544d9 100644
 +  target_sources(dolphin-nogui PRIVATE PlatformPS4.cpp ${PS4_RUNTIME_SOURCES})
 +  # The XMB launcher: Dear ImGui drawn with Vulkan (PS4XMBDisplay.cpp) through Dolphin's loader.
 +  target_sources(dolphin-nogui PRIVATE PS4XMB.cpp PS4XMBDisplay.cpp PS4IngameMenu.cpp PS4Settings.cpp
-+    PS4Controls.cpp PS4Cheats.cpp PS4Covers.cpp PS4Glyphs.cpp PS4Lang.cpp PS4MemoryCards.cpp PS4Net.cpp PS4Skylanders.cpp PS4Updater.cpp
++    PS4Controls.cpp PS4Cheats.cpp PS4Covers.cpp PS4Glyphs.cpp PS4Hook.cpp PS4Lang.cpp PS4MemoryCards.cpp PS4Net.cpp PS4Skylanders.cpp PS4Updater.cpp
 +    ${CMAKE_SOURCE_DIR}/Externals/imgui/imgui/backends/imgui_impl_vulkan.cpp)
 +  set_source_files_properties(
 +    ${CMAKE_SOURCE_DIR}/Externals/imgui/imgui/backends/imgui_impl_vulkan.cpp
@@ -31809,14 +31809,15 @@ index 0000000..c539699
 +}  // namespace PS4Net
 diff --git a/Source/Core/DolphinNoGUI/PS4Settings.cpp b/Source/Core/DolphinNoGUI/PS4Settings.cpp
 new file mode 100644
-index 0000000..518ef9c
+index 0000000..7a71217
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Settings.cpp
-@@ -0,0 +1,1105 @@
+@@ -0,0 +1,1113 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
 +#include "DolphinNoGUI/PS4Settings.h"
++#include "DolphinNoGUI/PS4Hook.h"
 +
 +#include <algorithm>
 +#include <cstdlib>
@@ -32103,6 +32104,9 @@ index 0000000..518ef9c
 +     true, "Where the emulator was stuck when a game freezes, stalls or starts slowly."},
 +    {"emu_log", "Emulator Log", "Diagnostics", {{"on", "On"}, {"off", "Off"}}, "on", true,
 +     "Dolphin's own messages (dolphin.log)."},
++    {"hook", "Hook", "Diagnostics", {{"off", "Off"}, {"on", "On"}}, "off", true,
++     "For developers: a command port (TCP 9520) to watch and steer the emulator from a PC "
++     "(tools/ps4hook.py). Anyone on your network could use it while it is on."},
 +    {"jit_trace", "Branch Traces", "Performance", {{"off", "Off"}, {"on", "On"}}, "off", true,
 +     "PS4 JIT only, experimental: blocks learn which branches are usually taken and are "
 +     "compiled again to follow them. Faster on a PC, slower on the PS4 in Bully - off."},
@@ -32556,6 +32560,10 @@ index 0000000..518ef9c
 +    if (key == "profiler")
 +      s_profiler_mode = value;
 +    ApplyDiagnostics();
++  }
++  else if (key == "hook")
++  {
++    PS4Hook::SetEnabled(on);
 +  }
 +  else if (key == "aspect")
 +  {
@@ -41471,10 +41479,10 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..81f1e97
+index 0000000..c67fb9e
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,2251 @@
+@@ -0,0 +1,2254 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -41518,6 +41526,7 @@ index 0000000..81f1e97
 +
 +#include "Common/Config/Config.h"
 +#include "DolphinNoGUI/PS4Controls.h"
++#include "DolphinNoGUI/PS4Hook.h"
 +#include "DolphinNoGUI/PS4IngameMenu.h"
 +#include "DolphinNoGUI/PS4Lang.h"
 +#include "DolphinNoGUI/PS4MemoryCards.h"
@@ -42014,6 +42023,7 @@ index 0000000..81f1e97
 +  {
 +    UpdateRunningFlag();
 +    Core::HostDispatchJobs(Core::System::GetInstance());
++    PS4Hook::Poll();
 +    if (frame % 60 == 30)
 +    {
 +      const auto users = PS4LoginUsers();
@@ -42380,6 +42390,7 @@ index 0000000..81f1e97
 +        s_last_groups = groups;
 +        s_last_grouped = grouped;
 +      }
++      PS4Hook::NoteMonitor(line);
 +      if (ps4_perf_log)
 +      {
 +        BootTrace(line);
@@ -43805,16 +43816,17 @@ index 8f7f4ba..34feb8e 100644
  {
 diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
 new file mode 100644
-index 0000000..21f676d
+index 0000000..15a3cef
 --- /dev/null
 +++ b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
-@@ -0,0 +1,822 @@
+@@ -0,0 +1,846 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
 +#include "InputCommon/ControllerInterface/PS4Pad/PS4Pad.h"
 +
 +#include <algorithm>
++#include <atomic>
 +#include <cmath>
 +#include <cstring>
 +#include <chrono>
@@ -43840,6 +43852,14 @@ index 0000000..21f676d
 +int ps4_pad_handle = -1;
 +extern "C" int ps4_pad_block;
 +int ps4_pad_block = 0;
++// The hook (DolphinNoGUI/PS4Hook.cpp) can press buttons and move the sticks of every DualShock 4,
++// on top of what the player does: ORBIS_PAD_BUTTON_* bits, and stick positions 0..255 (lx ly rx ry)
++// while ps4_remote_sticks is set.
++extern "C" {
++std::atomic<uint32_t> ps4_remote_buttons{0};
++std::atomic<uint32_t> ps4_remote_stick_xy{0x80808080};
++std::atomic<int> ps4_remote_sticks{0};
++}
 +// Set by PlatformPS4 before the game starts: a Wii game with Wii Remote Controller on Auto. The
 +// PS Move library is touched only then (v03.20 started it for every game and crashed at boot).
 +extern "C" int ps4_move_enabled;
@@ -44209,6 +44229,21 @@ index 0000000..21f676d
 +      m_state.leftStick = {128, 128};
 +      m_state.rightStick = {128, 128};
 +      m_state.analogButtons = {0, 0};
++    }
++    if (!ps4_pad_block)
++    {
++      const uint32_t remote = ps4_remote_buttons.load(std::memory_order_relaxed);
++      m_buttons |= remote;
++      if (remote & ORBIS_PAD_BUTTON_L2)
++        m_state.analogButtons.l2 = 255;
++      if (remote & ORBIS_PAD_BUTTON_R2)
++        m_state.analogButtons.r2 = 255;
++      if (ps4_remote_sticks.load(std::memory_order_relaxed))
++      {
++        const uint32_t xy = ps4_remote_stick_xy.load(std::memory_order_relaxed);
++        m_state.leftStick = {static_cast<uint8_t>(xy), static_cast<uint8_t>(xy >> 8)};
++        m_state.rightStick = {static_cast<uint8_t>(xy >> 16), static_cast<uint8_t>(xy >> 24)};
++      }
 +    }
 +    return Core::DeviceRemoval::Keep;
 +  }
@@ -57117,6 +57152,942 @@ index 0000000..3317422
 +void VerifyBeginFromJit(JitPS4* jit, u32 pc);
 +void VerifyExitFromJit(JitPS4* jit, u32 destination);
 +}  // namespace PS4Jit
+diff --git a/Source/Core/DolphinNoGUI/PS4Hook.cpp b/Source/Core/DolphinNoGUI/PS4Hook.cpp
+new file mode 100644
+index 0000000..5e7d514
+--- /dev/null
++++ b/Source/Core/DolphinNoGUI/PS4Hook.cpp
+@@ -0,0 +1,900 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "DolphinNoGUI/PS4Hook.h"
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <condition_variable>
++#include <cstdarg>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <deque>
++#include <map>
++#include <memory>
++#include <mutex>
++#include <optional>
++#include <sstream>
++#include <thread>
++#include <unordered_map>
++#include <vector>
++
++#include <fcntl.h>
++#include <netinet/in.h>
++#include <poll.h>
++#include <signal.h>
++#include <sys/socket.h>
++#include <unistd.h>
++
++#include "Common/Config/Config.h"
++#include "Common/GekkoDisassembler.h"
++#include "Core/Config/MainSettings.h"
++#include "Core/Core.h"
++#include "Core/PowerPC/JitCommon/JitCache.h"
++#include "Core/PowerPC/JitInterface.h"
++#include "Core/PowerPC/MMU.h"
++#include "Core/PowerPC/PowerPC.h"
++#include "Core/State.h"
++#include "Core/System.h"
++#include "DolphinNoGUI/PS4Settings.h"
++#include "VideoCommon/PerformanceMetrics.h"
++
++extern "C" void ps4_boot_trace(const char* line);
++extern "C" void (*ps4_boot_trace_tap)(const char* line);  // port/ps4_crashlog.cpp
++extern "C" int ps4_sampler_ring(int index, const char** name, uint64_t* out, int max);
++extern "C" int ps4_sampler_on();
++extern "C" void ps4_sampler_set_enabled(int on);
++extern "C" void ps4_dump_thread_stacks(const char* path, const char* reason);
++extern "C" const char* ps4_app_version();
++extern "C" char ps4_profile_tag[32];
++// InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp: buttons and sticks on top of the player's.
++extern "C" std::atomic<uint32_t> ps4_remote_buttons;
++extern "C" std::atomic<uint32_t> ps4_remote_stick_xy;
++extern "C" std::atomic<int> ps4_remote_sticks;
++
++namespace PS4Hook
++{
++namespace
++{
++const auto s_start = std::chrono::steady_clock::now();
++
++double Now()
++{
++  return std::chrono::duration<double>(std::chrono::steady_clock::now() - s_start).count();
++}
++
++// Every boot trace line, in a ring the tap fills without locking (it runs on any thread, also in
++// signal handlers). A reader can rarely see a slot being rewritten: one garbled line.
++constexpr uint32_t TRACE_LINES = 512;
++constexpr size_t TRACE_WIDTH = 480;
++char s_trace[TRACE_LINES][TRACE_WIDTH];
++std::atomic<uint32_t> s_trace_pos{0};
++std::atomic<bool> s_monitor_in_trace{false};
++
++void TraceTap(const char* line)
++{
++  const uint32_t slot = s_trace_pos.load(std::memory_order_relaxed);
++  char* out = s_trace[slot % TRACE_LINES];
++  const int used = snprintf(out, TRACE_WIDTH, "[%8.3f] %s", Now(), line);
++  if (used > 0)
++  {
++    size_t end = std::min<size_t>(used, TRACE_WIDTH - 1);
++    while (end > 0 && (out[end - 1] == '\n' || out[end - 1] == '\r'))
++      out[--end] = 0;
++  }
++  if (!strncmp(line, "monitor:", 8))
++    s_monitor_in_trace.store(true, std::memory_order_relaxed);
++  s_trace_pos.store(slot + 1, std::memory_order_release);
++}
++
++std::mutex s_monitor_lock;
++std::string s_monitor;
++double s_monitor_time = -1;
++uint64_t s_monitor_seq = 0;
++
++// Commands that touch the emulator run on the main loop's thread (Poll), like the in-game menu.
++struct Job
++{
++  std::string command;
++  std::string reply;
++  bool done = false;
++};
++std::mutex s_jobs_lock;
++std::condition_variable s_jobs_done;
++std::deque<std::shared_ptr<Job>> s_jobs;
++
++std::atomic<bool> s_enabled{false};
++std::atomic<bool> s_thread_started{false};
++
++std::vector<std::string> Split(const std::string& text)
++{
++  std::vector<std::string> words;
++  std::istringstream in(text);
++  std::string word;
++  while (in >> word)
++    words.push_back(word);
++  return words;
++}
++
++std::string Format(const char* format, ...) __attribute__((format(printf, 1, 2)));
++std::string Format(const char* format, ...)
++{
++  char buffer[1024];
++  va_list args;
++  va_start(args, format);
++  vsnprintf(buffer, sizeof(buffer), format, args);
++  va_end(args);
++  return buffer;
++}
++
++const char* StateName(Core::State state)
++{
++  switch (state)
++  {
++  case Core::State::Uninitialized:
++    return "stopped";
++  case Core::State::Paused:
++    return "paused";
++  case Core::State::Running:
++    return "running";
++  case Core::State::Stopping:
++    return "stopping";
++  case Core::State::Starting:
++    return "starting";
++  }
++  return "?";
++}
++
++bool GameLoaded(Core::System& system)
++{
++  const Core::State state = Core::GetState(system);
++  return state == Core::State::Running || state == Core::State::Paused;
++}
++
++u32 ParseNumber(const std::string& text, bool* ok)
++{
++  char* end = nullptr;
++  const unsigned long value = strtoul(text.c_str(), &end, 0);
++  *ok = !text.empty() && end && *end == 0;
++  return static_cast<u32>(value);
++}
++
++// "samples": what each sampled thread did over its last samples (1 kHz), grouped. ELF addresses
++// are for the PC to name (tools/ps4hook.py symbolizes with the build's .oelf).
++std::string Samples(const std::string& which, int count)
++{
++  static uint64_t ring[4096];
++  std::string out;
++  for (int i = 0;; i++)
++  {
++    const char* name = nullptr;
++    const int n = ps4_sampler_ring(i, &name, ring, std::clamp(count, 1, 4096));
++    if (n < 0)
++      break;
++    if (!which.empty() && which != "all" && which != std::to_string(i) && which != name)
++      continue;
++    std::unordered_map<uint64_t, int> tally;
++    for (int k = 0; k < n; k++)
++    {
++      uint64_t sample = ring[k];
++      const uint64_t kind = sample >> 60;
++      if (kind == 2)
++        sample = 2ULL << 60;  // recompiled game code: "jit top" splits it by block
++      else if (kind == 4)
++        sample &= ~0xFULL;
++      tally[sample]++;
++    }
++    std::vector<std::pair<int, uint64_t>> sorted;
++    for (const auto& [sample, hits] : tally)
++      sorted.emplace_back(hits, sample);
++    std::sort(sorted.rbegin(), sorted.rend());
++    out += Format("thread %d %s samples %d\n", i, name, n);
++    for (size_t k = 0; k < sorted.size() && k < 400; k++)
++    {
++      const auto [hits, sample] = sorted[k];
++      const uint64_t kind = sample >> 60, value = sample & ((1ULL << 60) - 1);
++      switch (kind)
++      {
++      case 1:
++        out += Format("%d e 0x%llx\n", hits, static_cast<unsigned long long>(value));
++        break;
++      case 2:
++        out += Format("%d j\n", hits);
++        break;
++      case 3:
++        out += Format("%d w 0x%llx 0x%llx\n", hits,
++                      static_cast<unsigned long long>(value & 0x3FFFFFF),
++                      static_cast<unsigned long long>(value >> 26));
++        break;
++      default:
++        out += Format("%d s 0x%llx\n", hits, static_cast<unsigned long long>(value));
++        break;
++      }
++    }
++  }
++  if (out.empty())
++    out = "no sampled threads (profiler off? \"profiler on\")\n";
++  return out;
++}
++
++// "jit top": the CPU thread's samples in recompiled code, by the game's code block.
++std::string JitTop(Core::System& system, int top)
++{
++  static uint64_t ring[4096];
++  int cpu = -1, n = 0;
++  for (int i = 0;; i++)
++  {
++    const char* name = nullptr;
++    const int k = ps4_sampler_ring(i, &name, ring, 4096);
++    if (k < 0)
++      break;
++    if (!strcmp(name, "CPU thread"))
++    {
++      cpu = i;
++      n = k;
++      break;
++    }
++  }
++  if (cpu < 0)
++    return "error no CPU thread samples (profiler off? \"profiler on\")\n";
++  std::vector<uint64_t> jit;
++  int total = 0;
++  for (int k = 0; k < n; k++)
++  {
++    if (ring[k] >> 60 == 2)
++      jit.push_back(ring[k] & ((1ULL << 60) - 1));
++  }
++  total = n;
++  struct Range
++  {
++    uintptr_t begin, end;
++    u32 address, instructions;
++    bool far;
++  };
++  std::vector<Range> ranges;
++  {
++    Core::CPUThreadGuard guard(system);
++    system.GetJitInterface().RunOnBlocks(guard, [&](const JitBlock& block) {
++      ranges.push_back({reinterpret_cast<uintptr_t>(block.normalEntry),
++                        reinterpret_cast<uintptr_t>(block.near_end), block.effectiveAddress,
++                        block.originalSize, false});
++      if (block.far_end > block.far_begin)
++        ranges.push_back({reinterpret_cast<uintptr_t>(block.far_begin),
++                          reinterpret_cast<uintptr_t>(block.far_end), block.effectiveAddress,
++                          block.originalSize, true});
++    });
++  }
++  std::sort(ranges.begin(), ranges.end(),
++            [](const Range& a, const Range& b) { return a.begin < b.begin; });
++  std::map<std::pair<u32, bool>, int> hits;
++  std::map<std::pair<u32, bool>, const Range*> info;
++  int unmatched = 0;
++  for (uint64_t address : jit)
++  {
++    auto it = std::upper_bound(ranges.begin(), ranges.end(), address,
++                               [](uint64_t a, const Range& r) { return a < r.begin; });
++    if (it == ranges.begin() || address >= std::prev(it)->end)
++    {
++      unmatched++;
++      continue;
++    }
++    const Range& r = *std::prev(it);
++    hits[{r.address, r.far}]++;
++    info[{r.address, r.far}] = &r;
++  }
++  std::vector<std::pair<int, std::pair<u32, bool>>> sorted;
++  for (const auto& [key, count] : hits)
++    sorted.emplace_back(count, key);
++  std::sort(sorted.rbegin(), sorted.rend());
++  std::string out = Format("cpu samples %d, in game code %zu (%.1f%%), %zu blocks, outside blocks "
++                           "%d (dispatcher, routines)\n",
++                           total, jit.size(), total ? 100.0 * jit.size() / total : 0.0,
++                           ranges.size(), unmatched);
++  for (size_t k = 0; k < sorted.size() && static_cast<int>(k) < top; k++)
++  {
++    const auto& [count, key] = sorted[k];
++    const Range& r = *info[key];
++    out += Format("%5.1f%% %6d  %08x %s guest %u instr, host %zu bytes\n",
++                  total ? 100.0 * count / total : 0.0, count, key.first,
++                  key.second ? "far " : "near", r.instructions,
++                  static_cast<size_t>(r.end - r.begin));
++  }
++  return out;
++}
++
++std::string Regs(Core::System& system)
++{
++  Core::CPUThreadGuard guard(system);
++  const PowerPC::PowerPCState& ppc = system.GetPPCState();
++  std::string out = Format("pc %08x npc %08x msr %08x lr %08x ctr %08x cr %08x xer %08x\n", ppc.pc,
++                           ppc.npc, ppc.msr.Hex, LR(ppc), CTR(ppc), ppc.cr.Get(), ppc.GetXER().Hex);
++  for (int i = 0; i < 32; i += 4)
++    out += Format("r%-2d %08x  r%-2d %08x  r%-2d %08x  r%-2d %08x\n", i, ppc.gpr[i], i + 1,
++                  ppc.gpr[i + 1], i + 2, ppc.gpr[i + 2], i + 3, ppc.gpr[i + 3]);
++  for (int i = 0; i < 32; i += 2)
++    out += Format("f%-2d %-14g %-14g  f%-2d %-14g %-14g\n", i, ppc.ps[i].PS0AsDouble(),
++                  ppc.ps[i].PS1AsDouble(), i + 1, ppc.ps[i + 1].PS0AsDouble(),
++                  ppc.ps[i + 1].PS1AsDouble());
++  return out;
++}
++
++std::string ReadMemory(Core::System& system, u32 address, u32 length)
++{
++  length = std::min<u32>(length, 0x10000);
++  Core::CPUThreadGuard guard(system);
++  std::string out;
++  for (u32 line = 0; line < length; line += 16)
++  {
++    out += Format("%08x ", address + line);
++    for (u32 i = line; i < std::min(line + 16, length); i++)
++    {
++      const auto value = PowerPC::MMU::HostTryRead<u8>(guard, address + i);
++      out += value ? Format(" %02x", value->value) : std::string(" ??");
++    }
++    out += "\n";
++  }
++  return out;
++}
++
++std::string Disassemble(Core::System& system, u32 address, u32 count)
++{
++  count = std::min<u32>(count, 512);
++  Core::CPUThreadGuard guard(system);
++  std::string out;
++  for (u32 i = 0; i < count; i++)
++  {
++    const u32 at = address + 4 * i;
++    const auto word = PowerPC::MMU::HostTryReadInstruction(guard, at);
++    if (!word)
++    {
++      out += Format("%08x ????????\n", at);
++      continue;
++    }
++    out += Format("%08x %08x  %s\n", at, word->value,
++                  Common::GekkoDisassembler::Disassemble(word->value, at).c_str());
++  }
++  return out;
++}
++
++// ORBIS_PAD_BUTTON_* (OpenOrbis pad.h); "start" / "select" for the Options / touch pad buttons.
++u32 ButtonMask(const std::string& names)
++{
++  static const std::map<std::string, u32> buttons = {
++      {"l3", 0x0002},       {"r3", 0x0004},     {"options", 0x0008}, {"start", 0x0008},
++      {"up", 0x0010},       {"right", 0x0020},  {"down", 0x0040},    {"left", 0x0080},
++      {"l2", 0x0100},       {"r2", 0x0200},     {"l1", 0x0400},      {"r1", 0x0800},
++      {"triangle", 0x1000}, {"circle", 0x2000}, {"cross", 0x4000},   {"square", 0x8000},
++      {"touchpad", 0x100000}, {"select", 0x100000}};
++  u32 mask = 0;
++  size_t from = 0;
++  while (from <= names.size())
++  {
++    const size_t plus = std::min(names.find('+', from), names.size());
++    const auto it = buttons.find(names.substr(from, plus - from));
++    if (it == buttons.end())
++      return 0;
++    mask |= it->second;
++    from = plus + 1;
++  }
++  return mask;
++}
++
++std::optional<Config::Location> ParseLocation(const std::string& text)
++{
++  // System.Section.Key, e.g. GFX.Settings.InternalResolution or Main.Core.CPUThread
++  const size_t a = text.find('.');
++  const size_t b = a == std::string::npos ? a : text.find('.', a + 1);
++  if (b == std::string::npos)
++    return std::nullopt;
++  const auto system = Config::GetSystemFromName(text.substr(0, a));
++  if (!system)
++    return std::nullopt;
++  return Config::Location{*system, text.substr(a + 1, b - a - 1), text.substr(b + 1)};
++}
++
++const char* HELP =
++    "Inside the game (one command per line, every reply ends with a line \".\"):\n"
++    "  info                         app version, game, state, recompiler blocks\n"
++    "  status                       the latest monitor line (every ~2 s)\n"
++    "  watch [seconds]              stream monitor and trace lines (default 10 s, max 600)\n"
++    "  trace [lines]                the last trace lines (boot-trace.log)\n"
++    "  mark <text>                  write a marker into the trace\n"
++    "  profiler on|off              the sampler (1 kHz per thread)\n"
++    "  samples [thread|all] [n]     where each thread spent its last n samples (ELF addresses)\n"
++    "  jit top [n]                  hottest game code blocks (CPU thread samples)\n"
++    "  jit stats | jit clear        recompiler blocks and code space / clear the cache\n"
++    "  stacks                       every thread's stack to /data/DolphinPS4/hook-stacks.txt\n"
++    "Control:\n"
++    "  pause | resume | step        frame step pauses first\n"
++    "  speed <percent>              emulation speed limit (0 = unlimited, this run)\n"
++    "  settings [filter]            the port's settings and their values\n"
++    "  set <key> <value>            apply a live setting for this run (not saved)\n"
++    "  save <key> <value> [game]    save a setting (global or this game) and apply it\n"
++    "  config <Sys.Section.Key> [value]  Dolphin's config (this run), e.g. GFX.Settings.MSAA\n"
++    "  regs | read <addr> [len] | write <addr> <hex> | dis <addr> [n]\n"
++    "  state save|load <slot>       save states 1-10\n"
++    "  screenshot\n"
++    "Controller (on top of the player's, every DualShock 4):\n"
++    "  press <b>[+<b>] [ms]         cross circle square triangle up down left right l1 r1 l2 r2\n"
++    "                               l3 r3 start select; 150 ms by default\n"
++    "  hold <b>[+<b>] | release [<b>[+<b>]]   release alone lets go of everything\n"
++    "  stick <lx> <ly> [<rx> <ry>] | stick off   positions 0..255, 128 is the centre\n"
++    "  wait <ms>\n";
++
++// Runs on the main loop's thread.
++std::string RunOnMain(const std::string& command)
++{
++  auto& system = Core::System::GetInstance();
++  const auto words = Split(command);
++  const std::string& verb = words[0];
++  const auto arg = [&](size_t i) { return i < words.size() ? words[i] : std::string(); };
++  bool ok = true;
++  if (verb == "info")
++  {
++    auto& perf = system.GetPerfMetrics();
++    return Format("version %s\ngame %s\nstate %s\ncpu core %d\nspeed %.0f%% fps %.1f\nblocks "
++                  "%zu\nprofiler %s\nuptime %.0f s\n",
++                  ps4_app_version(), ps4_profile_tag, StateName(Core::GetState(system)),
++                  static_cast<int>(Config::Get(Config::MAIN_CPU_CORE)), perf.GetSpeed() * 100.0,
++                  perf.GetFPS(), GameLoaded(system) ? system.GetJitInterface().GetBlockCount() : 0,
++                  ps4_sampler_on() ? "on" : "off", Now());
++  }
++  if (verb == "pause" || verb == "resume")
++  {
++    if (!GameLoaded(system))
++      return "error no game running\n";
++    Core::SetState(system, verb == "pause" ? Core::State::Paused : Core::State::Running);
++    return Format("ok %s\n", StateName(Core::GetState(system)));
++  }
++  if (verb == "step")
++  {
++    if (!GameLoaded(system))
++      return "error no game running\n";
++    Core::DoFrameStep(system);
++    return "ok\n";
++  }
++  if (verb == "speed")
++  {
++    const u32 percent = ParseNumber(arg(1), &ok);
++    if (!ok)
++      return "error speed <percent>\n";
++    Config::SetCurrent(Config::MAIN_EMULATION_SPEED, percent / 100.0f);
++    return Format("ok speed limit %u%%\n", percent);
++  }
++  if (verb == "settings" || verb == "get")
++  {
++    std::string out;
++    const std::string filter = arg(1);
++    for (const PS4Settings::Setting& setting : PS4Settings::All())
++    {
++      const std::string key = setting.key;
++      if (verb == "get" ? key != filter :
++                          !filter.empty() && key.find(filter) == std::string::npos &&
++                              std::string(setting.category).find(filter) == std::string::npos)
++        continue;
++      out += Format("%s = %s  (%s, %s%s)\n", setting.key,
++                    PS4Settings::Get(key, ps4_profile_tag).c_str(), setting.category,
++                    setting.live ? "live" : "next start",
++                    PS4Settings::IsCustom(ps4_profile_tag) &&
++                            PS4Settings::HasGameValue(key, ps4_profile_tag) ?
++                        ", this game" :
++                        "");
++      if (verb == "get")
++      {
++        out += "choices:";
++        for (const auto& choice : setting.choices)
++          out += Format(" %s(%s)", choice.value, choice.label);
++        out += Format("\n%s\n", setting.help);
++      }
++    }
++    return out.empty() ? "error no such setting\n" : out;
++  }
++  if (verb == "set" || verb == "save")
++  {
++    const PS4Settings::Setting* setting = PS4Settings::Find(arg(1));
++    if (!setting || words.size() < 3)
++      return Format("error %s <key> <value>\n", verb.c_str());
++    if (verb == "set" && !setting->live)
++      return "error not a live setting: \"save\" it and restart the game\n";
++    const std::string value = arg(2);
++    if (verb == "save")
++    {
++      const bool game = arg(3) == "game";
++      if (game)
++        PS4Settings::SetCustom(ps4_profile_tag, true);
++      PS4Settings::Set(setting->key, value, game ? std::string(ps4_profile_tag) : std::string());
++    }
++    if (setting->live)
++      PS4Settings::ApplyLive(setting->key, value);
++    ps4_boot_trace(Format("hook: %s %s=%s", verb.c_str(), setting->key, value.c_str()).c_str());
++    return Format("ok %s=%s%s\n", setting->key, value.c_str(),
++                  setting->live ? "" : " (applies at the next game start)");
++  }
++  if (verb == "config")
++  {
++    const auto location = ParseLocation(arg(1));
++    if (!location)
++      return "error config <System.Section.Key> [value], e.g. GFX.Settings.InternalResolution\n";
++    if (words.size() >= 3)
++    {
++      std::string value = words[2];
++      for (size_t i = 3; i < words.size(); i++)
++        value += " " + words[i];
++      Config::GetLayer(Config::LayerType::CurrentRun)->Set(*location, value);
++      Config::OnConfigChanged();
++      ps4_boot_trace(Format("hook: config %s=%s", arg(1).c_str(), value.c_str()).c_str());
++    }
++    const auto value = Config::GetAsString(*location);
++    return Format("%s = %s (%s)\n", arg(1).c_str(), value ? value->c_str() : "(default)",
++                  Config::GetLayerName(Config::GetActiveLayerForConfig(*location)).c_str());
++  }
++  if (!GameLoaded(system))
++    return "error no game running\n";
++  if (verb == "regs")
++    return Regs(system);
++  if (verb == "read" || verb == "dis")
++  {
++    const u32 address = ParseNumber(arg(1), &ok);
++    const u32 length = words.size() > 2 ? ParseNumber(arg(2), &ok) : (verb == "read" ? 64 : 16);
++    if (!ok)
++      return Format("error %s <address> [length]\n", verb.c_str());
++    return verb == "read" ? ReadMemory(system, address, length) :
++                            Disassemble(system, address, length);
++  }
++  if (verb == "write")
++  {
++    const u32 address = ParseNumber(arg(1), &ok);
++    const std::string hex = arg(2);
++    if (!ok || hex.empty() || hex.size() % 2)
++      return "error write <address> <hex bytes>\n";
++    Core::CPUThreadGuard guard(system);
++    for (size_t i = 0; i < hex.size(); i += 2)
++    {
++      const u8 byte = static_cast<u8>(strtoul(hex.substr(i, 2).c_str(), nullptr, 16));
++      if (!PowerPC::MMU::HostTryWrite<u8>(guard, byte, address + static_cast<u32>(i / 2)))
++        return Format("error not mapped at %08x\n", address + static_cast<u32>(i / 2));
++    }
++    system.GetJitInterface().InvalidateICache(address, static_cast<u32>(hex.size() / 2), true);
++    return Format("ok %zu bytes\n", hex.size() / 2);
++  }
++  if (verb == "jit")
++  {
++    if (arg(1) == "top")
++      return JitTop(system, words.size() > 2 ? std::max<int>(1, std::atoi(arg(2).c_str())) : 30);
++    if (arg(1) == "clear")
++    {
++      Core::CPUThreadGuard guard(system);
++      system.GetJitInterface().ClearCache(guard);
++      ps4_boot_trace("hook: jit cache cleared");
++      return "ok\n";
++    }
++    std::string out = Format("blocks %zu\n", system.GetJitInterface().GetBlockCount());
++    for (const auto& [name, stats] : system.GetJitInterface().GetMemoryStats())
++      out += Format("%.*s free %zu KiB, fragmentation %.2f\n", static_cast<int>(name.size()),
++                    name.data(), stats.first / 1024, stats.second);
++    return out;
++  }
++  if (verb == "state")
++  {
++    const u32 slot = ParseNumber(arg(2), &ok);
++    if (!ok || slot < 1 || slot > 10 || (arg(1) != "save" && arg(1) != "load"))
++      return "error state save|load <1-10>\n";
++    if (arg(1) == "save")
++      State::Save(system, slot);
++    else
++      State::Load(system, slot);
++    return "ok\n";
++  }
++  if (verb == "screenshot")
++  {
++    Core::SaveScreenShot();
++    return "ok (in /data/DolphinPS4/ScreenShots)\n";
++  }
++  if (verb == "stacks")
++  {
++    ps4_dump_thread_stacks("/data/DolphinPS4/hook-stacks.txt", "hook");
++    return "ok /data/DolphinPS4/hook-stacks.txt\n";
++  }
++  return "error unknown command (help)\n";
++}
++
++std::string RunQueued(const std::string& command)
++{
++  auto job = std::make_shared<Job>();
++  job->command = command;
++  std::unique_lock lock(s_jobs_lock);
++  s_jobs.push_back(job);
++  if (!s_jobs_done.wait_for(lock, std::chrono::seconds(15), [&] { return job->done; }))
++    return "error the main loop didn't answer in 15 s\n";
++  return job->reply;
++}
++
++bool SendAll(int fd, const std::string& text)
++{
++  size_t sent = 0;
++  while (sent < text.size())
++  {
++    const ssize_t n = send(fd, text.data() + sent, text.size() - sent, 0);
++    if (n <= 0)
++      return false;
++    sent += n;
++  }
++  return true;
++}
++
++bool Reply(int fd, std::string text)
++{
++  if (!text.empty() && text.back() != '\n')
++    text += '\n';
++  return SendAll(fd, text + ".\n");
++}
++
++// Streams new trace lines (and the monitor, when it isn't in the trace) for some seconds. Any
++// input from the client ends it early.
++bool Watch(int fd, double seconds)
++{
++  uint32_t trace_seen = s_trace_pos.load(std::memory_order_acquire);
++  uint64_t monitor_seen;
++  {
++    std::lock_guard lock(s_monitor_lock);
++    monitor_seen = s_monitor_seq;
++  }
++  const double until = Now() + std::clamp(seconds, 0.5, 600.0);
++  while (Now() < until && s_enabled.load())
++  {
++    std::string out;
++    const uint32_t pos = s_trace_pos.load(std::memory_order_acquire);
++    if (pos - trace_seen > TRACE_LINES)
++      trace_seen = pos - TRACE_LINES;
++    for (; trace_seen != pos; trace_seen++)
++      out += std::string(s_trace[trace_seen % TRACE_LINES]) + "\n";
++    if (!s_monitor_in_trace.load(std::memory_order_relaxed))
++    {
++      std::lock_guard lock(s_monitor_lock);
++      if (s_monitor_seq != monitor_seen)
++      {
++        monitor_seen = s_monitor_seq;
++        out += Format("[%8.3f] ", s_monitor_time) + s_monitor + "\n";
++      }
++    }
++    if (!out.empty() && !SendAll(fd, out))
++      return false;
++    pollfd p{fd, POLLIN, 0};
++    if (poll(&p, 1, 200) > 0)
++    {
++      char discard[256];
++      if (recv(fd, discard, sizeof(discard), 0) <= 0)
++        return false;
++      break;
++    }
++  }
++  return Reply(fd, "");
++}
++
++// Commands that only read the port's own counters run here, on the hook thread.
++bool Serve(int fd, const std::string& command)
++{
++  const auto words = Split(command);
++  if (words.empty())
++    return true;
++  const std::string& verb = words[0];
++  const auto arg = [&](size_t i) { return i < words.size() ? words[i] : std::string(); };
++  if (verb == "help")
++    return Reply(fd, HELP);
++  if (verb == "ping")
++    return Reply(fd, "pong");
++  if (verb == "status")
++  {
++    std::lock_guard lock(s_monitor_lock);
++    return Reply(fd, s_monitor.empty() ? "no monitor line yet" :
++                                         Format("age %.1f s\n", Now() - s_monitor_time) +
++                                             s_monitor);
++  }
++  if (verb == "watch")
++    return Watch(fd, words.size() > 1 ? std::atof(arg(1).c_str()) : 10.0);
++  if (verb == "trace")
++  {
++    const uint32_t want = std::clamp(words.size() > 1 ? std::atoi(arg(1).c_str()) : 40, 1,
++                                     static_cast<int>(TRACE_LINES));
++    const uint32_t pos = s_trace_pos.load(std::memory_order_acquire);
++    std::string out;
++    for (uint32_t i = pos - std::min(pos, want); i != pos; i++)
++      out += std::string(s_trace[i % TRACE_LINES]) + "\n";
++    return Reply(fd, out);
++  }
++  if (verb == "mark")
++  {
++    ps4_boot_trace(("mark: " + command.substr(std::min(command.size(), size_t{5}))).c_str());
++    return Reply(fd, "ok");
++  }
++  if (verb == "profiler")
++  {
++    if (arg(1) == "on" || arg(1) == "off")
++      ps4_sampler_set_enabled(arg(1) == "on");
++    return Reply(fd, Format("profiler %s", ps4_sampler_on() ? "on" : "off"));
++  }
++  if (verb == "press" || verb == "hold" || verb == "release")
++  {
++    const u32 mask = words.size() > 1 ? ButtonMask(arg(1)) : 0xFFFFFFFF;
++    if (!mask || (verb != "release" && words.size() < 2))
++      return Reply(fd, Format("error %s <button>[+<button>] (help)", verb.c_str()));
++    if (verb == "release")
++    {
++      ps4_remote_buttons.fetch_and(~mask);
++      return Reply(fd, "ok");
++    }
++    ps4_remote_buttons.fetch_or(mask);
++    if (verb == "press")
++    {
++      const int ms = words.size() > 2 ? std::clamp(std::atoi(arg(2).c_str()), 16, 10000) : 150;
++      std::this_thread::sleep_for(std::chrono::milliseconds(ms));
++      ps4_remote_buttons.fetch_and(~mask);
++    }
++    return Reply(fd, "ok");
++  }
++  if (verb == "stick")
++  {
++    if (arg(1) == "off")
++    {
++      ps4_remote_sticks.store(0);
++      return Reply(fd, "ok");
++    }
++    if (words.size() != 3 && words.size() != 5)
++      return Reply(fd, "error stick <lx> <ly> [<rx> <ry>] | stick off");
++    u32 xy = 0x80808080;
++    for (size_t i = 1; i < words.size(); i++)
++    {
++      const u32 v = static_cast<u32>(std::clamp(std::atoi(words[i].c_str()), 0, 255));
++      xy = (xy & ~(0xFFu << (8 * (i - 1)))) | v << (8 * (i - 1));
++    }
++    ps4_remote_stick_xy.store(xy);
++    ps4_remote_sticks.store(1);
++    return Reply(fd, "ok");
++  }
++  if (verb == "wait")
++  {
++    std::this_thread::sleep_for(
++        std::chrono::milliseconds(std::clamp(std::atoi(arg(1).c_str()), 0, 60000)));
++    return Reply(fd, "ok");
++  }
++  if (verb == "samples")
++    return Reply(fd, Samples(arg(1), words.size() > 2 ? std::atoi(arg(2).c_str()) : 4096));
++  return Reply(fd, RunQueued(command));
++}
++
++void ServeClient(int fd)
++{
++  ps4_boot_trace("hook: client connected");
++  SendAll(fd, Format("Dolphin for PS4 %s hook, game %s (help)\n.\n", ps4_app_version(),
++                     ps4_profile_tag));
++  std::string pending;
++  char buffer[4096];
++  while (s_enabled.load())
++  {
++    pollfd p{fd, POLLIN, 0};
++    const int ready = poll(&p, 1, 500);
++    if (ready < 0)
++      break;
++    if (ready == 0)
++      continue;
++    const ssize_t n = recv(fd, buffer, sizeof(buffer), 0);
++    if (n <= 0)
++      break;
++    pending.append(buffer, n);
++    size_t end;
++    bool alive = true;
++    while (alive && (end = pending.find('\n')) != std::string::npos)
++    {
++      std::string command = pending.substr(0, end);
++      pending.erase(0, end + 1);
++      if (!command.empty() && command.back() == '\r')
++        command.pop_back();
++      if (command == "quit" || command == "exit")
++        alive = false;
++      else
++        alive = Serve(fd, command);
++    }
++    if (!alive || pending.size() > 65536)
++      break;
++  }
++  close(fd);
++  ps4_remote_buttons.store(0);
++  ps4_remote_sticks.store(0);
++  ps4_boot_trace("hook: client left");
++}
++
++void ServerThread()
++{
++  // A client vanishing mid-reply must not end the program (writing to a closed connection
++  // raises SIGPIPE).
++  signal(SIGPIPE, SIG_IGN);
++  int listener = -1;
++  while (true)
++  {
++    if (!s_enabled.load())
++    {
++      if (listener >= 0)
++      {
++        close(listener);
++        listener = -1;
++        ps4_boot_trace("hook: stopped");
++      }
++      std::this_thread::sleep_for(std::chrono::milliseconds(500));
++      continue;
++    }
++    if (listener < 0)
++    {
++      listener = socket(AF_INET, SOCK_STREAM, 0);
++      const int yes = 1;
++      setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
++      sockaddr_in address{};
++      address.sin_family = AF_INET;
++      address.sin_port = htons(PORT);
++      address.sin_addr.s_addr = htonl(INADDR_ANY);
++      if (listener < 0 ||
++          bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0 ||
++          listen(listener, 2) < 0)
++      {
++        ps4_boot_trace(Format("hook: can't listen on port %d", PORT).c_str());
++        if (listener >= 0)
++          close(listener);
++        listener = -1;
++        std::this_thread::sleep_for(std::chrono::seconds(5));
++        continue;
++      }
++      ps4_boot_trace(Format("hook: listening on port %d", PORT).c_str());
++    }
++    pollfd p{listener, POLLIN, 0};
++    if (poll(&p, 1, 500) <= 0)
++      continue;
++    const int client = accept(listener, nullptr, nullptr);
++    if (client < 0)
++      continue;
++    const int nodelay = 1;
++    setsockopt(client, IPPROTO_TCP, 1 /* TCP_NODELAY */, &nodelay, sizeof(nodelay));
++    ServeClient(client);
++  }
++}
++}  // namespace
++
++void SetEnabled(bool on)
++{
++  s_enabled.store(on);
++  if (!on)
++    return;
++  ps4_boot_trace_tap = TraceTap;
++  if (!s_thread_started.exchange(true))
++    std::thread(ServerThread).detach();
++}
++
++void Poll()
++{
++  std::shared_ptr<Job> job;
++  {
++    std::lock_guard lock(s_jobs_lock);
++    if (s_jobs.empty())
++      return;
++    job = s_jobs.front();
++    s_jobs.pop_front();
++  }
++  const std::string reply = RunOnMain(job->command);
++  {
++    std::lock_guard lock(s_jobs_lock);
++    job->reply = reply;
++    job->done = true;
++  }
++  s_jobs_done.notify_all();
++}
++
++void NoteMonitor(const std::string& line)
++{
++  if (!s_enabled.load(std::memory_order_relaxed))
++    return;
++  std::lock_guard lock(s_monitor_lock);
++  s_monitor = line;
++  s_monitor_time = Now();
++  s_monitor_seq++;
++}
++}  // namespace PS4Hook
+diff --git a/Source/Core/DolphinNoGUI/PS4Hook.h b/Source/Core/DolphinNoGUI/PS4Hook.h
+new file mode 100644
+index 0000000..e2aaefd
+--- /dev/null
++++ b/Source/Core/DolphinNoGUI/PS4Hook.h
+@@ -0,0 +1,24 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++// The hook: a text command port (TCP 9520) for looking inside a running game and steering it from
++// a PC - the monitor's numbers live, where each thread spends its time, the recompiled game code
++// that is hottest, settings and Dolphin's own config, pause / frame step, memory and registers.
++// Settings > Diagnostics > Hook (off by default: anyone on the network could use it).
++// PC client: tools/ps4hook.py in the port repo.
++
++#pragma once
++
++#include <string>
++
++namespace PS4Hook
++{
++constexpr int PORT = 9520;
++
++// Starts / stops listening (PS4Settings::ApplyLive "hook").
++void SetEnabled(bool on);
++// The main loop, every frame: runs the commands that touch the emulator, on this thread.
++void Poll();
++// The monitor line (PlatformPS4's, every ~2 s), for "status" and "watch".
++void NoteMonitor(const std::string& line);
++}  // namespace PS4Hook
 diff --git a/Source/Core/DolphinNoGUI/PS4Skylanders.cpp b/Source/Core/DolphinNoGUI/PS4Skylanders.cpp
 new file mode 100644
 index 0000000..4a6235e
