@@ -317,7 +317,11 @@ def main():
         i = args.index("--oelf")
         oelf = args[i + 1]
         del args[i:i + 2]
-    hook = Hook(ip, timeout=700)
+    try:
+        hook = Hook(ip, timeout=700)
+    except OSError as e:
+        sys.exit("can't reach the hook at %s:%d (%s): JIT Lab v60.58+ with Settings > Diagnostics > "
+                 "Hook on, and a game running" % (ip, PORT, e))
     try:
         if not args:
             print(hook.banner)
