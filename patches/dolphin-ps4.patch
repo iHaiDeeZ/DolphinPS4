@@ -3752,10 +3752,18 @@ index abd632d..baa6943 100644
        {
          // Signal event if the mode changes.
 diff --git a/Source/Core/Core/HW/DSPHLE/UCodes/AX.cpp b/Source/Core/Core/HW/DSPHLE/UCodes/AX.cpp
-index 7159a5b..08a90da 100644
+index 7159a5b..d5dd77a 100644
 --- a/Source/Core/Core/HW/DSPHLE/UCodes/AX.cpp
 +++ b/Source/Core/Core/HW/DSPHLE/UCodes/AX.cpp
-@@ -38,7 +38,119 @@ AXUCode::AXUCode(DSPHLE* dsphle, u32 crc) : AXUCode(dsphle, crc, false)
+@@ -10,6 +10,7 @@
+ #include "Common/ChunkFile.h"
+ #include "Common/CommonTypes.h"
+ #include "Common/FileUtil.h"
++#include "Common/Thread.h"
+ #include "Common/Hash.h"
+ #include "Common/IOFile.h"
+ #include "Common/Logging/Log.h"
+@@ -38,7 +39,122 @@ AXUCode::AXUCode(DSPHLE* dsphle, u32 crc) : AXUCode(dsphle, crc, false)
    m_accelerator = std::make_unique<HLEAccelerator>(dsphle->GetSystem().GetDSP());
  }
  
@@ -3785,6 +3793,9 @@ index 7159a5b..08a90da 100644
 +  if (!m_ps4_worker.joinable())
 +  {
 +    m_ps4_worker = std::thread([this] {
++      // Started from the CPU thread, whose core it inherited: it could only run while the CPU
++      // thread waited, so the lists never overlapped with the game's code.
++      Common::PS4SetCurrentThreadCoreMask((1ULL << 0) | (1ULL << 4));
 +      std::unique_lock lock(m_ps4_mutex);
 +      for (;;)
 +      {
@@ -3875,7 +3886,7 @@ index 7159a5b..08a90da 100644
  
  void AXUCode::Initialize()
  {
-@@ -706,6 +818,10 @@ void AXUCode::SendAUXAndMix(u32 auxa_lrs_up, u32 auxb_s_up, u32 main_l_dl, u32 m
+@@ -706,6 +822,10 @@ void AXUCode::SendAUXAndMix(u32 auxa_lrs_up, u32 auxb_s_up, u32 main_l_dl, u32 m
  
  void AXUCode::HandleMail(u32 mail)
  {
@@ -3886,7 +3897,7 @@ index 7159a5b..08a90da 100644
    if (m_upload_setup_in_progress)
    {
      PrepareBootUCode(mail);
-@@ -730,6 +846,16 @@ void AXUCode::HandleMail(u32 mail)
+@@ -730,6 +850,16 @@ void AXUCode::HandleMail(u32 mail)
  
    case MailState::WaitingForCmdListAddress:
      CopyCmdList(mail, m_cmdlist_size);
@@ -3903,7 +3914,7 @@ index 7159a5b..08a90da 100644
      HandleCommandList();
      m_cmdlist_size = 0;
      SignalWorkEnd();
-@@ -792,6 +918,20 @@ void AXUCode::CopyCmdList(u32 addr, u16 size)
+@@ -792,6 +922,20 @@ void AXUCode::CopyCmdList(u32 addr, u16 size)
  
  void AXUCode::Update()
  {
@@ -10265,10 +10276,10 @@ index 0000000..482d3bc
 +}  // namespace PS4Jit
 diff --git a/Source/Core/Core/PowerPC/JitPS4/Jit.cpp b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
 new file mode 100644
-index 0000000..5712274
+index 0000000..7dd4a1e
 --- /dev/null
 +++ b/Source/Core/Core/PowerPC/JitPS4/Jit.cpp
-@@ -0,0 +1,2930 @@
+@@ -0,0 +1,2932 @@
 +// Copyright 2008 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -12373,7 +12384,7 @@ index 0000000..5712274
 +    bl = false;
 +  PS4VerifyExit(std::nullopt);
 +  MOV(32, PPCSTATE(pc), R(RSCRATCH));
-+  Cleanup();
++  const bool disturbed = Cleanup();
 +
 +  if (bl)
 +  {
@@ -12390,8 +12401,10 @@ index 0000000..5712274
 +  if (ps4_jit_inline_dispatch && !GetBlockCache()->GetEntryPoints())
 +  {
 +    FixupBranch out_of_cycles = J_CC(CC_LE, Jump::Near);
-+    // Cleanup() may have used RSCRATCH: the target PC again (MOV keeps the flags).
-+    MOV(32, R(RSCRATCH), PPCSTATE(pc));
++    // Cleanup() may have used RSCRATCH: the target PC again (MOV keeps the flags). Only then:
++    // reloading the value just stored put a store-to-load forward on every bctr's path.
++    if (disturbed)
++      MOV(32, R(RSCRATCH), PPCSTATE(pc));
 +    MOV(32, R(RSCRATCH2), R(RSCRATCH));
 +    AND(32, R(RSCRATCH2), Imm32(JitBaseBlockCache::FAST_BLOCK_MAP_FALLBACK_MASK << 2));
 +    SHL(64, R(RSCRATCH), Imm8(32));
@@ -23933,7 +23946,7 @@ index 51c3fff..ad6c0a9 100644
 +  ps4_add_eboot(dolphin-nogui)
 +endif()
 diff --git a/Source/Core/DolphinNoGUI/MainNoGUI.cpp b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
-index 3bf40ea..3da32b6 100644
+index 3bf40ea..4424ddf 100644
 --- a/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 +++ b/Source/Core/DolphinNoGUI/MainNoGUI.cpp
 @@ -2,10 +2,18 @@
@@ -23955,7 +23968,7 @@ index 3bf40ea..3da32b6 100644
  #include <string>
  #include <vector>
  
-@@ -15,14 +23,31 @@
+@@ -15,14 +23,32 @@
  #include <windows.h>
  #endif
  
@@ -23968,6 +23981,7 @@ index 3bf40ea..3da32b6 100644
 +#include "Common/IniFile.h"
 +#include "Core/Config/SYSCONFSettings.h"
 +#include "DolphinNoGUI/PS4Lang.h"
++#include "Common/Thread.h"
 +#include "Core/Config/MainSettings.h"
 +#include "Core/PowerPC/PowerPC.h"
  #include "Core/Boot/Boot.h"
@@ -23987,7 +24001,7 @@ index 3bf40ea..3da32b6 100644
  #include "UICommon/CommandLineParse.h"
  #ifdef USE_DISCORD_PRESENCE
  #include "UICommon/DiscordPresence.h"
-@@ -31,6 +56,256 @@
+@@ -31,6 +57,256 @@
  
  static std::unique_ptr<Platform> s_platform;
  
@@ -24244,7 +24258,7 @@ index 3bf40ea..3da32b6 100644
  static void signal_handler(int)
  {
    constexpr char message[] = "A signal was received. A second signal will force Dolphin to stop.\n";
-@@ -173,6 +448,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -173,6 +449,10 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
    if (platform_name == "macos" || platform_name.empty())
      return Platform::CreateMacOSPlatform();
  #endif
@@ -24255,7 +24269,7 @@ index 3bf40ea..3da32b6 100644
  
    if (platform_name == "headless" || platform_name.empty())
      return Platform::CreateHeadlessPlatform();
-@@ -184,8 +463,17 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
+@@ -184,8 +464,23 @@ static std::unique_ptr<Platform> GetPlatform(const optparse::Values& options)
  #define main app_main
  #endif
  
@@ -24263,6 +24277,12 @@ index 3bf40ea..3da32b6 100644
 +int main(int argc, char* argv[])
  {
 +#ifdef __ORBIS__
++  // Threads inherit their creator's cores, and nothing set the main thread's: the main loop,
++  // the DVD thread, the sampler, memory card flushes and the hook could run on the CPU thread's
++  // and the video thread's cores (2, 3) or the vertex / VK workers' (1, 5). The emulator's own
++  // threads pin themselves; everything else stays on 0, 4 (and 6 when the system lends it).
++  if (Common::PS4SetCurrentThreadCoreMask((1ULL << 0) | (1ULL << 4) | (1ULL << 6)) != 0)
++    Common::PS4SetCurrentThreadCoreMask((1ULL << 0) | (1ULL << 4));
 +  std::vector<std::string> ps4_args = Platform::GetPS4Arguments();
 +  std::vector<char*> ps4_argv;
 +  for (std::string& arg : ps4_args)
@@ -24274,7 +24294,7 @@ index 3bf40ea..3da32b6 100644
    const auto parser =
        CommandLineParse::CreateParser(CommandLineParse::ParserOptions::OmitGUIOptions);
    parser->add_option("-p", "--platform")
-@@ -207,6 +495,10 @@ int main(const int argc, char* argv[])
+@@ -207,6 +502,10 @@ int main(const int argc, char* argv[])
  #ifdef __APPLE__
                  ,
                  "macos"
@@ -24285,7 +24305,7 @@ index 3bf40ea..3da32b6 100644
  #endif
        });
  
-@@ -270,7 +562,548 @@ int main(const int argc, char* argv[])
+@@ -270,7 +569,550 @@ int main(const int argc, char* argv[])
  
    UICommon::SetUserDirectory(user_directory);
    UICommon::Init();
@@ -24546,7 +24566,9 @@ index 3bf40ea..3da32b6 100644
 +    // Started here, on the main thread: the sampler thread takes its creator's core and
 +    // priority, and started from the CPU thread it shared the CPU thread's core - it only ran
 +    // when the CPU thread waited, so every sample landed in a system call (JIT Lab v60.29-31).
-+    if (ps4_jit_hot)
++    // Only the PS4 recompiler uses the hot samples: other cores' CPU threads were signalled
++    // 1000 times a second for nothing.
++    if (ps4_jit_hot && Config::Get(Config::MAIN_CPU_CORE) == PowerPC::CPUCore::JITPS4)
 +      ps4_hot_sampling(1);
 +#endif
 +#ifdef __ORBIS__
@@ -24834,7 +24856,7 @@ index 3bf40ea..3da32b6 100644
  
    Common::ScopeGuard ui_common_guard([] {
      UICommon::ShutdownControllers();
-@@ -284,6 +1117,15 @@ int main(const int argc, char* argv[])
+@@ -284,6 +1126,15 @@ int main(const int argc, char* argv[])
    }
  
    auto core_state_changed_hook = Core::AddOnStateChangedCallback([](const Core::State state) {
@@ -24850,7 +24872,7 @@ index 3bf40ea..3da32b6 100644
      if (state == Core::State::Uninitialized)
        s_platform->Stop();
    });
-@@ -303,9 +1145,57 @@ int main(const int argc, char* argv[])
+@@ -303,9 +1154,57 @@ int main(const int argc, char* argv[])
  
    DolphinAnalytics::Instance().ReportDolphinStart("nogui");
  
@@ -47215,10 +47237,10 @@ index 45a322c..b92b5c5 100644
    };
 diff --git a/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp
 new file mode 100644
-index 0000000..dc774c2
+index 0000000..4136a0e
 --- /dev/null
 +++ b/Source/Core/VideoBackends/Vulkan/PS4CommandRecorder.cpp
-@@ -0,0 +1,1290 @@
+@@ -0,0 +1,1306 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -47434,10 +47456,17 @@ index 0000000..dc774c2
 +  }
 +}
 +
++// The consumer's position as last seen: reading s_read for every record (~200k a second in Super
++// Mario Galaxy) pulled its cache line over from the worker's core each time, for a 16 MiB ring
++// that is almost never close to full.
++u64 s_read_seen = 0;
++
 +void WaitForSpace(size_t size)
 +{
++  if (s_reserve + size - s_read_seen <= RING_SIZE)
++    return;
 +  const u64 start = __rdtsc();
-+  while (s_reserve + size - s_read.load(std::memory_order_acquire) > RING_SIZE)
++  while (s_reserve + size - (s_read_seen = s_read.load(std::memory_order_acquire)) > RING_SIZE)
 +  {
 +    WakeWorker();
 +    Pause(start);
@@ -47462,7 +47491,7 @@ index 0000000..dc774c2
 +    h->size = static_cast<u32>(pad);
 +    h->op = OP_PAD;
 +    s_reserve += pad;
-+    s_write.store(s_reserve, std::memory_order_seq_cst);
++    s_write.store(s_reserve, std::memory_order_release);
 +    offset = 0;
 +  }
 +  WaitForSpace(size);
@@ -47475,10 +47504,13 @@ index 0000000..dc774c2
 +
 +void ExecuteInline();
 +
++// A release store (a plain mov), not seq_cst (a locked xchg on every record). Without the full
++// fence the worker can go to sleep just as a record arrives; its timed wait (1 ms) and the waits'
++// own WakeWorker calls cover that.
 +void Commit()
 +{
 +  s_reserve += s_pending;
-+  s_write.store(s_reserve, std::memory_order_seq_cst);
++  s_write.store(s_reserve, std::memory_order_release);
 +  if (ps4_vk_thread_mode == 2)
 +  {
 +    ExecuteInline();
@@ -47893,13 +47925,18 @@ index 0000000..dc774c2
 +      }
 +      continue;
 +    }
++    // The position is published after each submit and at the end of the batch, not after every
++    // record: the video thread's waits are for submits or for everything.
 +    while (read != write)
 +    {
 +      const auto* h = reinterpret_cast<const Header*>(s_ring + (read & RING_MASK));
++      const bool submit = h->op == OP_QueueSubmit;
 +      Execute(h);
 +      read += h->size;
-+      s_read.store(read, std::memory_order_release);
++      if (submit)
++        s_read.store(read, std::memory_order_release);
 +    }
++    s_read.store(read, std::memory_order_release);
 +  }
 +}
 +
@@ -48467,6 +48504,7 @@ index 0000000..dc774c2
 +    return;
 +  s_ring = static_cast<u8*>(::operator new(RING_SIZE, std::align_val_t{64}));
 +  s_write = s_read = 0;
++  s_read_seen = 0;
 +  s_reserve = 0;
 +  s_stop = false;
 +
@@ -48888,10 +48926,10 @@ index 61979c6..3570641 100644
  
  }  // namespace Vulkan
 diff --git a/Source/Core/VideoBackends/Vulkan/VKSwapChain.cpp b/Source/Core/VideoBackends/Vulkan/VKSwapChain.cpp
-index 370e22d..ed9b0e8 100644
+index 370e22d..abff503 100644
 --- a/Source/Core/VideoBackends/Vulkan/VKSwapChain.cpp
 +++ b/Source/Core/VideoBackends/Vulkan/VKSwapChain.cpp
-@@ -4,14 +4,19 @@
+@@ -4,14 +4,20 @@
  #include "VideoBackends/Vulkan/VKSwapChain.h"
  
  #include <algorithm>
@@ -48903,6 +48941,7 @@ index 370e22d..ed9b0e8 100644
  #include "Common/Contains.h"
  #include "Common/Logging/Log.h"
  #include "Common/MsgHandler.h"
++#include "Common/Thread.h"
  
  #include "VideoBackends/Vulkan/CommandBufferManager.h"
 +#ifdef __ORBIS__
@@ -48911,7 +48950,7 @@ index 370e22d..ed9b0e8 100644
  #include "VideoBackends/Vulkan/ObjectCache.h"
  #include "VideoBackends/Vulkan/VKTexture.h"
  #include "VideoBackends/Vulkan/VulkanContext.h"
-@@ -21,8 +26,231 @@
+@@ -21,8 +27,241 @@
  #include <X11/Xlib.h>
  #endif
  
@@ -49010,7 +49049,17 @@ index 370e22d..ed9b0e8 100644
 +
 +static void PS4FlipThread()
 +{
-+  ps4_boot_trace("display: flip thread started");
++  // Started from the video thread, whose core (3) it inherited: the busy video thread held that
++  // core while a finished frame waited to be flipped (a missed vblank, then the video thread
++  // waiting for a display buffer). Off the CPU / video / vertex / VK cores, above them.
++  {
++    const int mask = Common::PS4SetCurrentThreadCoreMask((1ULL << 0) | (1ULL << 4));
++    const auto [affinity, priority] = Common::PS4SetCurrentThreadCoreAndPriority(-1, 400);
++    char line[112];
++    snprintf(line, sizeof(line), "display: flip thread started (cores 0+4: 0x%x, priority 400: 0x%x)",
++             mask, priority);
++    ps4_boot_trace(line);
++  }
 +  for (;;)
 +  {
 +    PS4PendingFlip flip;
@@ -49143,7 +49192,7 @@ index 370e22d..ed9b0e8 100644
  SwapChain::SwapChain(const WindowSystemInfo& wsi, VkSurfaceKHR surface, bool vsync)
      : m_wsi(wsi), m_surface(surface), m_vsync_enabled(vsync),
        m_fullscreen_supported(g_vulkan_context->SupportsExclusiveFullscreen(wsi, surface))
-@@ -38,6 +266,11 @@ SwapChain::~SwapChain()
+@@ -38,6 +277,11 @@ SwapChain::~SwapChain()
  
  VkSurfaceKHR SwapChain::CreateVulkanSurface(VkInstance instance, const WindowSystemInfo& wsi)
  {
@@ -49155,7 +49204,7 @@ index 370e22d..ed9b0e8 100644
  #if defined(VK_USE_PLATFORM_WIN32_KHR)
    if (wsi.type == WindowSystemType::Windows)
    {
-@@ -273,6 +506,18 @@ bool SwapChain::SelectPresentMode()
+@@ -273,6 +517,18 @@ bool SwapChain::SelectPresentMode()
  
  bool SwapChain::CreateSwapChain()
  {
@@ -49174,7 +49223,7 @@ index 370e22d..ed9b0e8 100644
    // Look up surface properties to determine image count and dimensions
    VkSurfaceCapabilitiesKHR surface_capabilities;
    VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vulkan_context->GetPhysicalDevice(),
-@@ -407,6 +652,96 @@ bool SwapChain::CreateSwapChain()
+@@ -407,6 +663,96 @@ bool SwapChain::CreateSwapChain()
  bool SwapChain::SetupSwapChainImages()
  {
    ASSERT(m_swap_chain_images.empty());
@@ -49271,7 +49320,7 @@ index 370e22d..ed9b0e8 100644
  
    uint32_t image_count;
    VkResult res =
-@@ -464,6 +799,22 @@ bool SwapChain::SetupSwapChainImages()
+@@ -464,6 +810,22 @@ bool SwapChain::SetupSwapChainImages()
  
  void SwapChain::DestroySwapChainImages()
  {
@@ -49294,7 +49343,7 @@ index 370e22d..ed9b0e8 100644
    for (auto& it : m_swap_chain_images)
    {
      // Images themselves are cleaned up by the swap chain object
-@@ -477,6 +828,10 @@ void SwapChain::DestroySwapChain()
+@@ -477,6 +839,10 @@ void SwapChain::DestroySwapChain()
  {
    if (m_swap_chain == VK_NULL_HANDLE)
      return;
@@ -49305,7 +49354,7 @@ index 370e22d..ed9b0e8 100644
  
    // Release exclusive fullscreen before destroying.
    if (m_current_fullscreen_state)
-@@ -488,6 +843,14 @@ void SwapChain::DestroySwapChain()
+@@ -488,6 +854,14 @@ void SwapChain::DestroySwapChain()
  
  VkResult SwapChain::AcquireNextImage()
  {
@@ -49320,7 +49369,7 @@ index 370e22d..ed9b0e8 100644
    VkResult res = vkAcquireNextImageKHR(g_vulkan_context->GetDevice(), m_swap_chain, UINT64_MAX,
                                         g_command_buffer_mgr->GetCurrentCommandBufferSemaphore(),
                                         VK_NULL_HANDLE, &m_current_swap_chain_image_index);
-@@ -532,6 +895,13 @@ bool SwapChain::SetVSync(bool enabled)
+@@ -532,6 +906,13 @@ bool SwapChain::SetVSync(bool enabled)
  
    // Recreate the swap chain with the new present mode.
    m_vsync_enabled = enabled;
@@ -49334,7 +49383,7 @@ index 370e22d..ed9b0e8 100644
    return RecreateSwapChain();
  }
  
-@@ -612,6 +982,10 @@ bool SwapChain::RecreateSurface(void* native_handle)
+@@ -612,6 +993,10 @@ bool SwapChain::RecreateSurface(void* native_handle)
  
  void SwapChain::DestroySurface()
  {
@@ -52724,7 +52773,7 @@ index 785afc8..f2584dc 100644
    // per loader public state
    PortableVertexDeclaration m_native_vtx_decl{};
 diff --git a/Source/Core/VideoCommon/VertexLoaderManager.cpp b/Source/Core/VideoCommon/VertexLoaderManager.cpp
-index e3d3b9f..b3f9c65 100644
+index e3d3b9f..11d0269 100644
 --- a/Source/Core/VideoCommon/VertexLoaderManager.cpp
 +++ b/Source/Core/VideoCommon/VertexLoaderManager.cpp
 @@ -3,9 +3,17 @@
@@ -53231,7 +53280,7 @@ index e3d3b9f..b3f9c65 100644
        src += loader->m_vertex_size * max_vertices;
  
        if (can_cpu_cull && !cullall)
-@@ -483,6 +930,216 @@ template int RunVertices<false>(int vtx_attr_group, OpcodeDecoder::Primitive pri
+@@ -483,6 +930,224 @@ template int RunVertices<false>(int vtx_attr_group, OpcodeDecoder::Primitive pri
  template int RunVertices<true>(int vtx_attr_group, OpcodeDecoder::Primitive primitive, int count,
                                 const u8* src);
  
@@ -53409,6 +53458,14 @@ index e3d3b9f..b3f9c65 100644
 +  if (ps4_vtx_groups == 1 || ps4_vtx_groups % 20000 == 0)
 +    fprintf(stderr, "[vtxrun] %llu runs of %llu commands\n", ps4_vtx_groups, ps4_vtx_grouped);
 +#endif
++  // The CP/XF check (a warning only) once for the run: nothing between a run's commands changes
++  // CP or XF state. It used to keep the whole run off the stretch path - games that set the
++  // current matrix per shape (MATINDEX writes) ran every first run command by command.
++  if (g_needs_cp_xf_consistency_check) [[unlikely]]
++  {
++    CheckCPConfiguration(vtx_attr_group);
++    g_needs_cp_xf_consistency_check = false;
++  }
 +  const bool cullall = bpmem.genMode.cull_mode == CullMode::All &&
 +                       primitive < OpcodeDecoder::Primitive::GX_DRAW_LINES;
 +  const bool stretches = g_backend_info.bSupportsPrimitiveRestart && !g_ActiveConfig.bCPUCull &&
@@ -54038,6 +54095,34 @@ index c56f32c..64e5240 100644
  
    customDriverLibraryName = Config::Get(Config::GFX_DRIVER_LIB_NAME);
  
+diff --git a/Source/Core/VideoCommon/XFStructs.cpp b/Source/Core/VideoCommon/XFStructs.cpp
+index 4ac11c8..3a994a8 100644
+--- a/Source/Core/VideoCommon/XFStructs.cpp
++++ b/Source/Core/VideoCommon/XFStructs.cpp
+@@ -232,12 +232,19 @@ void LoadXFReg(u16 base_address, u8 transfer_size, const u8* data)
+       base_address = XFMEM_REGISTERS_START;
+     }
+ 
+-    XFMemWritten(xf_state_manager, xf_mem_transfer_size, xf_mem_base);
+-    for (u32 i = 0; i < xf_mem_transfer_size; i++)
++    // Like LoadIndexedXF: matrices reloaded with the values they already have (games set the
++    // current matrix per shape) neither split the draw nor dirty the shader constants.
++    u32* const current = reinterpret_cast<u32*>(&xfmem) + xf_mem_base;
++    u32 i = 0;
++    while (i < xf_mem_transfer_size && current[i] == Common::swap32(data + 4 * i))
++      i++;
++    if (i < xf_mem_transfer_size)
+     {
+-      ((u32*)&xfmem)[xf_mem_base + i] = Common::swap32(data);
+-      data += 4;
++      XFMemWritten(xf_state_manager, xf_mem_transfer_size, xf_mem_base);
++      for (; i < xf_mem_transfer_size; i++)
++        current[i] = Common::swap32(data + 4 * i);
+     }
++    data += 4 * xf_mem_transfer_size;
+   }
+ 
+   // write to XF regs
 diff --git a/Data/Sys/Shaders/FSR1.glsl b/Data/Sys/Shaders/FSR1.glsl
 new file mode 100644
 index 0000000..cbb6290
