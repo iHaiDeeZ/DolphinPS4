@@ -25238,7 +25238,7 @@ index 0000000..0ab9db5
 +}  // namespace PS4Cheats
 diff --git a/Source/Core/DolphinNoGUI/PS4Controls.cpp b/Source/Core/DolphinNoGUI/PS4Controls.cpp
 new file mode 100644
-index 0000000..64b9156
+index 0000000..c3728c4
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Controls.cpp
 @@ -0,0 +1,862 @@
@@ -25703,11 +25703,11 @@ index 0000000..64b9156
 +  constexpr const char* ACCEL[] = {"Up", "Down", "Left", "Right", "Forward", "Backward"};
 +  constexpr const char* GYRO[] = {"Pitch Up", "Pitch Down", "Roll Left", "Roll Right", "Yaw Left",
 +                                  "Yaw Right"};
-+  // Wii Remote button -> the Move's (as Porpoise on the PS5): Circle is a second B, Select only
-+  // re-centres the pointer (below), so Minus moves to Triangle. The Wii Remote's rumble goes to
-+  // the Move's motor as well as the DualShock 4's.
++  // Wii Remote button -> the Move's (as Porpoise on the PS5, but Circle re-centres the pointer:
++  // the PS4 takes Select as its Share button, so a Select re-centre never arrived). Minus is on
++  // Triangle. The Wii Remote's rumble goes to the Move's motor as well as the DualShock 4's.
 +  constexpr const char* MOVE_BUTTONS[][3] = {
-+      {"Buttons/A", "Move", nullptr},     {"Buttons/B", "T", "Circle"},
++      {"Buttons/A", "Move", nullptr},     {"Buttons/B", "T", nullptr},
 +      {"Buttons/1", "Cross", nullptr},    {"Buttons/2", "Square", nullptr},
 +      {"Buttons/-", "Triangle", nullptr}, {"Buttons/+", "Start", nullptr},
 +      {"Rumble/Motor", "Motor", nullptr}};
@@ -25746,7 +25746,7 @@ index 0000000..64b9156
 +      section->Set(std::string("IMUGyroscope/") + direction,
 +                   move ? from_move(input) : motion ? "`" + input + "`" : std::string());
 +    }
-+    // The pointer: the Move's gyroscope (Select re-centres it); with Pointer: Motion the
++    // The pointer: the Move's gyroscope (Circle re-centres it); with Pointer: Motion the
 +    // DualShock 4's own (re-centred by the player's Pointer Re-centre button); else the right
 +    // stick.
 +    // Touchpad: Pointer - the finger aims (the motion pointer would override it); Swing - a
@@ -25783,7 +25783,7 @@ index 0000000..64b9156
 +                                                                                   "False"));
 +    if (move)
 +    {
-+      section->Set("IMUIR/Recenter", from_move("Select"));
++      section->Set("IMUIR/Recenter", from_move("Circle") + " | " + from_move("Select"));
 +    }
 +    else
 +    {
@@ -43863,10 +43863,10 @@ index 8f7f4ba..34feb8e 100644
  {
 diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
 new file mode 100644
-index 0000000..15a3cef
+index 0000000..574205d
 --- /dev/null
 +++ b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
-@@ -0,0 +1,846 @@
+@@ -0,0 +1,851 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -44398,20 +44398,23 @@ index 0000000..15a3cef
 +    AddInput(new Button("Triangle", m_state.buttons, MOVE_TRIANGLE));
 +    AddInput(new Button("Start",    m_state.buttons, MOVE_START));
 +    AddInput(new Button("Select",   m_state.buttons, MOVE_SELECT));
-+    // Held like a Wii Remote, the ball towards the TV, buttons up. Move axes as libScePad's with
-+    // the controller upright: x right, y towards the ball, z out of the button face.
-+    AddInput(new Motion("Accel Up",       m_state.accelerometer[2], GRAVITY));
-+    AddInput(new Motion("Accel Down",     m_state.accelerometer[2], -GRAVITY));
-+    AddInput(new Motion("Accel Left",     m_state.accelerometer[0], -GRAVITY));
-+    AddInput(new Motion("Accel Right",    m_state.accelerometer[0], GRAVITY));
-+    AddInput(new Motion("Accel Forward",  m_state.accelerometer[1], GRAVITY));
-+    AddInput(new Motion("Accel Backward", m_state.accelerometer[1], -GRAVITY));
-+    AddInput(new Motion("Gyro Pitch Up",   m_gyro[0], 1.0));
-+    AddInput(new Motion("Gyro Pitch Down", m_gyro[0], -1.0));
-+    AddInput(new Motion("Gyro Roll Left",  m_gyro[1], -1.0));
-+    AddInput(new Motion("Gyro Roll Right", m_gyro[1], 1.0));
-+    AddInput(new Motion("Gyro Yaw Left",   m_gyro[2], 1.0));
-+    AddInput(new Motion("Gyro Yaw Right",  m_gyro[2], -1.0));
++    // Held like a Wii Remote, the ball towards the TV, buttons up. libSceMove's axes there: x left,
++    // y up, z towards the ball (the DualShock 4's, turned to face the TV). v60.55-v60.60 took
++    // y as the ball and z as the button face: the pointer was level only with the Move pointing
++    // at the ceiling, up and down were swapped, and left/right came from the roll axis (GitHub
++    // report, Resident Evil: The Umbrella Chronicles).
++    AddInput(new Motion("Accel Up",       m_state.accelerometer[1], GRAVITY));
++    AddInput(new Motion("Accel Down",     m_state.accelerometer[1], -GRAVITY));
++    AddInput(new Motion("Accel Left",     m_state.accelerometer[0], GRAVITY));
++    AddInput(new Motion("Accel Right",    m_state.accelerometer[0], -GRAVITY));
++    AddInput(new Motion("Accel Forward",  m_state.accelerometer[2], GRAVITY));
++    AddInput(new Motion("Accel Backward", m_state.accelerometer[2], -GRAVITY));
++    AddInput(new Motion("Gyro Pitch Up",   m_gyro[0], -1.0));
++    AddInput(new Motion("Gyro Pitch Down", m_gyro[0], 1.0));
++    AddInput(new Motion("Gyro Roll Left",  m_gyro[2], -1.0));
++    AddInput(new Motion("Gyro Roll Right", m_gyro[2], 1.0));
++    AddInput(new Motion("Gyro Yaw Left",   m_gyro[1], 1.0));
++    AddInput(new Motion("Gyro Yaw Right",  m_gyro[1], -1.0));
 +    AddOutput(new Rumble(m_handle));
 +    // clang-format on
 +    // The ball in the player's colour (Wii Remote LEDs: blue, red, green, pink).
@@ -44455,9 +44458,11 @@ index 0000000..15a3cef
 +        m_history_next = (m_history_next + 1) % HISTORY;
 +        m_history_count = std::min(m_history_count + 1, HISTORY);
 +      }
-+      // Select (which re-centres the pointer) also zeroes the gyroscope if the Move was held
-+      // still, so the pointer stops creeping (as Porpoise on the PS5).
-+      if ((state.buttons & MOVE_SELECT) && !(m_state.buttons & MOVE_SELECT))
++      // Circle (which re-centres the pointer; the PS4 keeps Select for itself as Share) also
++      // zeroes the gyroscope if the Move was held still, so the pointer stops creeping (as
++      // Porpoise on the PS5).
++      constexpr uint16_t RECENTRE = MOVE_CIRCLE | MOVE_SELECT;
++      if ((state.buttons & RECENTRE) && !(m_state.buttons & RECENTRE))
 +        ZeroGyro();
 +      m_state = state;
 +      for (int axis = 0; axis < 3; axis++)
