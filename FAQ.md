@@ -99,8 +99,10 @@ swings the Wii Remote with a quick swipe. Clicking the touchpad is still HOME.
 From v04.19. Pair the Move with the PS4 (USB cable, press its PS button, pick the same user as
 your DualShock 4) and set *Settings → System → Wii Remote Controller* to *Auto*. Turn the Move on
 before or during a Wii game; it takes over within a second, and the DualShock 4 becomes the
-Nunchuk. Move = A, T or Circle = B, Cross = 1, Square = 2, Triangle = Minus, Start = Plus. To
-re-centre the pointer, point at the middle of the TV, hold still and press Select.
+Nunchuk. Move = A, T = B, Cross = 1, Square = 2, Triangle = Minus, Start = Plus. To re-centre
+the pointer, point at the middle of the TV, hold still and press Circle (from v04.20; the PS4 uses
+Select as its Share button). Before v04.20 the pointer moved the wrong way up and down and was
+only level with the Move pointing at the ceiling.
 
 **How do I play Skylanders? I have no portal.**
 The portal is built in (from v04.18). In the game, press L3 + R3 → *Portal of Power*, pick a
