@@ -839,7 +839,11 @@ int __wrap_clock_gettime(clockid_t id, struct timespec* ts) {
     }();
     if (!anchor.ok)
         return __real_clock_gettime(id, ts);
-    ps4_clock_reads++;
+    // Counted per thread and added up every 256 reads: one counter written by every thread at
+    // ~25k reads/s kept its cache line moving between the cores.
+    static __attribute__((tls_model("initial-exec"))) thread_local unsigned s_reads = 0;
+    if ((++s_reads & 255) == 0)
+        __atomic_fetch_add(&ps4_clock_reads, 256, __ATOMIC_RELAXED);
     const uint64_t ticks = __builtin_ia32_rdtsc() - anchor.tsc;
     const uint64_t ns =
         anchor.ns + static_cast<uint64_t>((static_cast<unsigned __int128>(ticks) * anchor.mult) >> 32);

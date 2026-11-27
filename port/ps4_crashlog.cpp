@@ -199,9 +199,16 @@ extern "C" __attribute__((noinline)) void ps4_trace_callers(const char* what) {
     ps4_boot_trace(line);
 }
 
+// The hook (DolphinNoGUI/PS4Hook.cpp) sees every line too. Called from any thread, also from
+// signal handlers: the tap must not lock or allocate.
+extern "C" void (*ps4_boot_trace_tap)(const char* line);
+void (*ps4_boot_trace_tap)(const char* line) = nullptr;
+
 // Appends a line to /data/DolphinPS4/boot-trace.log (startup milestones), prefixed with the
 // seconds since the first trace line.
 extern "C" void ps4_boot_trace(const char* stage) {
+    if (ps4_boot_trace_tap)
+        ps4_boot_trace_tap(stage);
     const int fd = traceFd();
     if (fd < 0)
         return;

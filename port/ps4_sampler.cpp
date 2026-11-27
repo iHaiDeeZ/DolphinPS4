@@ -919,6 +919,44 @@ extern "C" int ps4_hot_take(uint64_t* out, int max) {
     return n;
 }
 
+// The hook (DolphinNoGUI/PS4Hook.cpp): a registered thread's name and its last samples from the
+// ring (at most max, newest last), each tagged in bits 60-63: 1 = Dolphin code (ELF address),
+// 2 = recompiled game code (host address), 3 = a wait (the waiting Dolphin code, ELF address,
+// and its caller in bits 26-51), 4 = a system module (address). -1 when there is no such thread.
+extern "C" int ps4_sampler_ring(int index, const char** name, uint64_t* out, int max) {
+    if (index < 0 || index >= g_thread_count.load(std::memory_order_acquire))
+        return -1;
+    ThreadSamples& t = g_threads[index];
+    *name = t.name ? t.name : "?";
+    const uintptr_t text = reinterpret_cast<uintptr_t>(__text_start);
+    const uintptr_t text_end = g_text_end ? g_text_end : ebootTextEnd();
+    const uint32_t pos = t.ring_pos.load(std::memory_order_acquire);
+    const uint32_t k = std::min<uint32_t>({pos, kRing, static_cast<uint32_t>(max)});
+    for (uint32_t i = 0; i < k; i++) {
+        const uint64_t sample = t.ring[(pos - k + i) % kRing];
+        uint64_t kind, value;
+        if (sample & kWaitTag) {
+            kind = 3;
+            value = sample & ~kWaitTag;
+        } else if (sample & kCallerTag) {
+            kind = 4;
+            value = sample & ~kCallerTag;
+        } else if (sample >= text && sample < text_end) {
+            kind = 1;
+            value = sample - text;
+        } else {
+            kind = 2;
+            value = sample;
+        }
+        out[i] = kind << 60 | (value & ((1ULL << 60) - 1));
+    }
+    return static_cast<int>(k);
+}
+
+extern "C" int ps4_sampler_on() {
+    return g_sampler_on.load() ? 1 : 0;
+}
+
 // The game is stopping (MainNoGUI's core state callback, PlatformPS4's exit): the sampler stops
 // for good, after a snapshot of the game's memory in progress.
 extern "C" void ps4_sampler_shutdown() {
